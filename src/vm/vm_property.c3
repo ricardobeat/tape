@@ -169,13 +169,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         return (TVal){};
                     }
                     // ES5 strict mode: function.caller and function.arguments throw TypeError
-                    // — but only the poison-pill accessor (no own property with this
-                    // key), so a user-defined method literally named "caller"/
-                    // "arguments" (e.g. class methods) remains accessible.
                     if (hobj.is_callable() && hobj_cls == hobject::ObjClass.FUNCTION) {
                         HString* key_hstr = (HString*)key;
-                        if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))
-                            && hobj.find_prop_idx(key) < 0) {
+                        if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
                             if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -547,12 +543,8 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             return (TVal){};
                         }
                         // ES5 strict mode: function.caller and function.arguments throw TypeError
-                        // — but only the poison-pill accessor (no own property with
-                        // this key), so a user-defined method literally named
-                        // "caller"/"arguments" (e.g. class methods) remains accessible.
                         if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION
-                            && (key_hstr.equals("caller") || key_hstr.equals("arguments"))
-                            && hobj.find_prop_idx(key) < 0) {
+                            && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
                             if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -1884,6 +1876,19 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
 
+                // ES5 strict mode: function.caller = ... and function.arguments = ...
+                // throw TypeError (AddRestrictedFunctionProperties poison pill).
+                // Strict-only engine: always throws.
+                if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION && rb.is_string()) {
+                    HString* key_hstr = (HString*)rb.get_heapptr();
+                    if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return (TVal){};
+                    }
+                }
+
                 // Proxy exotic: route through [[Set]].
                 if (hobj.flags.exotic_proxyobj) {
                     void* pkey = get_prop_key(vm, rb);
@@ -2222,6 +2227,14 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
                                         TVal* new_regs = new_act.bottom;
                                         libc::memset(new_regs, 0, (usz)target.num_regs * TVal::size);
+                                        // A setter always receives exactly one argument (the
+                                        // assigned value). Any additional declared formal
+                                        // parameters must be `undefined`, not the raw zeroed
+                                        // bytes from memset (which decode as fastint 0 in this
+                                        // TVal encoding, not undefined).
+                                        for (uint pi = 1; pi < target.num_regs; pi++) {
+                                            new_regs[pi].set_undefined();
+                                        }
                                         vm.heap.tval_copy_ref(&new_regs[0], &put_val);
 
                                         vm.valstack_top = new_regs + target.num_regs;
@@ -2283,6 +2296,17 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
                         // Property doesn't exist: check prototype for accessors
                         hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
+                        // find_accessor_proto sets found=true for any accessor property on
+                        // the chain, even a get-only one (accessor_fn left as undefined in
+                        // that case). ES2024 §10.1.9.2 OrdinarySet step 2: an inherited
+                        // accessor with no [[Set]] must throw TypeError (strict-only engine),
+                        // not fall through to the data-property/create-own-property path.
+                        if (acc.found && (!acc.accessor_fn.is_object() || acc.accessor_fn.get_heapptr() == null)) {
+                            if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot set property which has only a getter", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            return (TVal){};
+                        }
                         if (acc.found && acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
                             // Invoke setter from prototype
                             HObject* setter_obj = (HObject*)acc.accessor_fn.get_heapptr();
@@ -2412,25 +2436,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
                 return (TVal){};
             }
-            // Capture super_base BEFORE ToPropertyKey (get_prop_key may invoke
-            // user JS via toString()/valueOf(), which can reallocate the
-            // register file and invalidate the `ra` pointer).
-            HObject* super_base = (HObject*)ra.get_heapptr();
             void* skey = get_prop_key(vm, rb);
-            // get_prop_key may have invoked user JS (toString()/valueOf()),
-            // reallocating the register file — re-derive `rc` before reading
-            // the value to store.
-            rc = ds.regs_base + (uint)insn.c;
-            if (skey == null) {
-                // ToPropertyKey abrupt completion: propagate as a real throw.
-                if (vm.throw_pending) {
-                    vm.throw_pending = false;
-                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &vm.throw_value);
-                    }
-                }
-                return (TVal){};
-            }
+            if (skey == null) { return (TVal){}; }
+            HObject* super_base = (HObject*)ra.get_heapptr();
             bool sres;
             if (!builtins::js_set_with_receiver(vm, vm.heap, super_base, (HString*)skey, *rc, ds.act.this_binding, &sres)) {
                 return vm_proxy_rethrow(vm, ds);
@@ -2454,27 +2462,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
                 return (TVal){};
             }
-            // Capture super_base BEFORE ToPropertyKey (get_prop_key may invoke
-            // user JS via toString()/valueOf(), which can reallocate the
-            // register file and invalidate the `ra`/`rb` pointers — read the
-            // heap pointer out of `rb` first, then re-derive `ra` from
-            // ds.regs_base afterwards before writing the result.
-            HObject* super_base = (HObject*)rb.get_heapptr();
             void* gkey = get_prop_key(vm, rc);
-            ra = ds.regs_base + (uint)insn.a;
-            if (gkey == null) {
-                // ToPropertyKey abrupt completion (e.g. key.toString() threw):
-                // propagate as a real throw instead of silently returning undefined.
-                if (vm.throw_pending) {
-                    vm.throw_pending = false;
-                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        return vm_uncaught_error(vm, &vm.throw_value);
-                    }
-                    return (TVal){};
-                }
-                ra.set_undefined();
-                return (TVal){};
-            }
+            if (gkey == null) { ra.set_undefined(); return (TVal){}; }
+            HObject* super_base = (HObject*)rb.get_heapptr();
             hobject::PropLookupResult gres = super_base.get_prop_or_accessor_proto(gkey, true);
             if (gres.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
                 // Use this_binding as receiver for the getter call.

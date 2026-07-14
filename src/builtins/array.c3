@@ -501,13 +501,15 @@ fn void builtin_array(BuiltinContext* ctx) {
     HObject* arr = arr_raw;
     arr.prototype = builtin_proto_from_new_target(ctx, ctx.heap.array_proto);
 
-    HString* len_key = builtin_intern_string(ctx.heap, "length");
-
+    // Array's exotic "length" is not a regular own property — it lives in the
+    // dedicated array_len_ptr() slot (ES6 §9.4.2.1 ArraySetLength / [[DefineOwnProperty]]
+    // "length" is {writable:true, enumerable:false, configurable:false}, and this
+    // engine's array exotic implementation never materialises it as a table entry).
+    // Using put_prop() here would wrongly create an enumerable own property that
+    // shows up in for-in / JSON.stringify / Object.keys.
     if (ctx.argc == 0) {
         // No args: empty array with length 0
-        TVal len_val;
-        len_val.set_fastint(0);
-        arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+        *arr.array_len_ptr() = 0;
         ctx.result.set_object(arr);
         return;
     }
@@ -532,14 +534,10 @@ fn void builtin_array(BuiltinContext* ctx) {
                 ctx.result.set_object(arr);
                 return;
             }
-            TVal len_val;
-            len_val.set_fastint((long)n);
-            arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+            *arr.array_len_ptr() = n;
         } else {
             // Single non-numeric arg: array with one element
-            TVal len_val;
-            len_val.set_fastint(1);
-            arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+            *arr.array_len_ptr() = 1;
 
             // Set element at index 0
             HString* zero_key = builtin_intern_string(ctx.heap, "0");
@@ -550,9 +548,7 @@ fn void builtin_array(BuiltinContext* ctx) {
     }
 
     // Multiple args: create array with given elements
-    TVal len_val;
-    len_val.set_fastint((long)ctx.argc);
-    arr.put_prop(len_key, len_val, hobject::PROP_FLAGS_WEC);
+    *arr.array_len_ptr() = (uint)ctx.argc;
 
     // Set each element
     for (ushort i = 0; i < ctx.argc; i++) {

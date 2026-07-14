@@ -1191,7 +1191,11 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         uint snap_count = 0;
         for (uint i = 0; i < obj.prop_count && snap_count < 64; i++) {
             HString* k = (HString*)obj.prop_key_at(i);
-            if (k != null) {
+            // Skip non-enumerable properties (ES5 §15.12.3 step 4.b: only
+            // enumerable own properties are serialized) and Symbol keys
+            // (ES §24.5.2.1 SerializeJSONObject step 5: EnumerableOwnPropertyNames
+            // implicitly excludes Symbols — [[OwnPropertyKeys]] string filter).
+            if (k != null && !k.is_symbol() && obj.get_prop_flags(i).enumerable) {
                 snap_keys[snap_count] = k;
                 snap_value_idx[snap_count] = i;
                 snap_count++;

@@ -167,12 +167,21 @@ fn void builtin_function(BuiltinContext* ctx) {
     func_obj.prototype = ctx.heap.function_proto;
     HObject*? proto_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (try proto = proto_raw) {
+        proto.prototype = ctx.heap.object_proto;
+        // ES5 §13.2.2 step 17: .constructor is {writable:true, enumerable:false, configurable:true}
+        HString* constr_key = builtin_intern_string(ctx.heap, "constructor");
+        TVal constr_tv;
+        constr_tv.set_object(func_obj);
+        proto.put_prop(constr_key, constr_tv, hobject::PROP_FLAGS_WC);
+
         HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
         TVal proto_tv;
         proto_tv.set_object(proto);
         // ES5 §15.3.2.1 step 12: .prototype is {writable:true, enumerable:false, configurable:false}
         func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WENC);
     }
+    func_obj.flags.callable = true;
+    func_obj.flags.constructable = true;
 
     // Set function length from the compiled function's formal parameter count.
     // The compiler correctly counts comma-separated params (e.g. "a,b,c" → 3).
@@ -180,6 +189,13 @@ fn void builtin_function(BuiltinContext* ctx) {
     TVal len_tv;
     len_tv.set_fastint((long)func.num_formals);
     func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+
+    // ES2019 §19.2.1.1.1 CreateDynamicFunction step 29: SetFunctionName(F, "anonymous").
+    // {writable:false, enumerable:false, configurable:true}
+    HString* name_key = builtin_intern_string(ctx.heap, "name");
+    TVal name_tv;
+    name_tv.set_string(builtin_intern_string(ctx.heap, "anonymous"));
+    func_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
 
     // Return the function object
     ctx.result.set_object(func_obj);
@@ -1351,6 +1367,10 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
     proto.prototype = null;  // Will be Object.prototype
+    // ES5 §15.3.4: Function.prototype accepts any arguments and returns
+    // undefined when called as a function, and has no [[Construct]] —
+    // `new Function.prototype` must throw TypeError.
+    proto.flags.constructable = false;
     heap.function_proto = proto;
 
     // Add .call method
@@ -1423,6 +1443,14 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     TVal proto_len_tv;
     proto_len_tv.set_fastint(0);
     proto.put_prop(proto_len_key, proto_len_tv, hobject::PROP_FLAGS_NWC);
+
+    // ES6 §19.2.3: Function.prototype.name is "" — must be defined immediately
+    // after .length (property insertion order matters for property-order.js).
+    // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }
+    HString* proto_name_key = (HString*)heap.strs[heap::BuiltinStr.NAME];
+    TVal proto_name_tv;
+    proto_name_tv.set_string((HString*)heap.strs[heap::BuiltinStr.EMPTY]);
+    proto.put_prop(proto_name_key, proto_name_tv, hobject::PROP_FLAGS_NWC);
 
     // Set Function.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
