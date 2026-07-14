@@ -350,42 +350,11 @@ fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal down
         return;
     }
 
-    // Per Promise Resolution Procedure (§27.2.1.3.2): if the handler returned a
-    // value that is itself a Promise/thenable, the downstream promise ADOPTS
-    // its state rather than fulfilling with the promise object as a value.
-    //
-    // A native Promise: promise_coerce_thenable deliberately returns null for
-    // native promises, so handle adoption here — otherwise a returned
-    // `Promise.reject(e)` would (wrongly) FULFILL the downstream with the
-    // promise object. This is the fix for `.then(() => Promise.reject(e))`
-    // (and `await` of such a chain) never settling as rejected.
-    if (result.is_object() && result.get_heapptr() != null) {
-        HObject* rprom = (HObject*)result.get_heapptr();
-        if (rprom.flags.obj_class == hobject::ObjClass.PROMISE) {
-            promise_adopt_native(heap, vm, rprom, ds);
-            return;
-        }
-    }
-
-    // If the result is a (non-native) thenable, follow it via the Promise
-    // Resolution Procedure.  The thenable will drive the downstream promise.
-    // promise_coerce_thenable never faults; it returns null (a plain, non-error
-    // HObject* value) to mean "not a thenable" — so we must check for null
-    // directly rather than `catch`, which only fires on an actual fault.
-    HObject*? coerced = promise_coerce_thenable(heap, result, vm);
-    if (catch err_c = coerced) {
-        // Unexpected fault — settle normally below.
-    } else {
-        if (coerced != null) {
-            // The thenable owns the downstream now; don't settle it directly.
-            return;
-        }
-        // Not a thenable — fall through to settle normally below.
-    }
-
-    // Non-thenable result — settle the downstream promise directly.
-    promise_settle(ds, PROMISE_FULFILLED, &result, heap);
-    promise_trigger_reactions(ds, heap, vm);
+    // Per Promise Resolution Procedure (ES6 §25.4.1.3.2 steps 6-13, invoked
+    // via FulfillPromise-equivalent handling of a handler's return value):
+    // self-resolution check, native-Promise/thenable adoption, and plain
+    // fulfillment are all handled uniformly by promise_resolve_with_value.
+    promise_resolve_with_value(ds, result, heap, vm);
 }
 
 /// Resolve or reject a capability's downstream promise.
@@ -413,6 +382,77 @@ fn void call_capability(TVal resolve, TVal reject, TVal* val, Heap* heap, bool i
             }
         }
     }
+}
+
+/// Resolve `promise` with `value` per the Promise Resolve Function's
+/// [[Resolve]] procedure — ES6 §25.4.1.3.2 steps 7-13:
+///   7. If SameValue(resolution, promise) → reject with a self-resolution
+///      TypeError.
+///   8. If Type(resolution) is not Object → fulfill with resolution.
+///   9-12. Look up resolution.then; if that throw, reject with the error.
+///   10. If not callable → fulfill with resolution.
+///   12. Otherwise enqueue a resolve-thenable job that calls
+///       then.call(resolution, resolve, reject).
+/// Per spec, even a native Promise `resolution` goes through the generic
+/// `.then` lookup (its `.then` may have been overridden by user code) rather
+/// than being fast-path adopted.
+fn void promise_resolve_with_value(HObject* promise, TVal value, Heap* heap, void* vm) {
+    if (promise == null) return;
+    // Guard: this reads/writes the HObjectExtra.promise union member, which is
+    // only valid for ObjClass.PROMISE objects. Combinators call this with the
+    // "outer" object from NewPromiseCapability(C), which for a custom C is
+    // whatever C's constructor returned (this) — an ordinary OBJECT, not a
+    // native Promise. In that case settlement happens exclusively via the
+    // capability's [[Resolve]]/[[Reject]] functions (capability_invoke), and
+    // this call must be a no-op rather than aliasing into unrelated fields.
+    if (promise.flags.obj_class != hobject::ObjClass.PROMISE) return;
+    if (promise_get_state(promise, PROMISE_PENDING) != PROMISE_PENDING) return;
+
+    // Step 7: self-resolution error.
+    if (value.is_object() && value.get_heapptr() == (void*)promise) {
+        species_throw_typeerror(heap, "Chaining cycle detected for promise");
+        TVal err = heap.error_value;
+        heap.has_error = false;
+        promise_settle(promise, PROMISE_REJECTED, &err, heap);
+        promise_trigger_reactions(promise, heap, vm);
+        return;
+    }
+
+    // Step 8: non-object resolution — fulfill directly.
+    if (!value.is_object() || value.get_heapptr() == null) {
+        promise_settle(promise, PROMISE_FULFILLED, &value, heap);
+        promise_trigger_reactions(promise, heap, vm);
+        return;
+    }
+
+    // Steps 9-12: resolve.then lookup, callable check, and (if thenable)
+    // wrapper-promise creation + then(resolve, reject) invocation are all
+    // handled by promise_coerce_thenable. It signals a poisoned `.then`
+    // getter or a throwing then() call via heap.has_error; distinguish that
+    // from "not a thenable" (returns null with no error).
+    HObject*? wrapper_raw = promise_coerce_thenable(heap, value, vm);
+    if (heap.has_error) {
+        TVal err = heap.error_value;
+        heap.has_error = false;
+        promise_settle(promise, PROMISE_REJECTED, &err, heap);
+        promise_trigger_reactions(promise, heap, vm);
+        return;
+    }
+    if (catch err_c = wrapper_raw) {
+        // Unexpected fault treated as non-thenable fulfillment.
+        promise_settle(promise, PROMISE_FULFILLED, &value, heap);
+        promise_trigger_reactions(promise, heap, vm);
+        return;
+    }
+    if (wrapper_raw == null) {
+        // Step 10: not callable (or not an object) — fulfill with resolution.
+        promise_settle(promise, PROMISE_FULFILLED, &value, heap);
+        promise_trigger_reactions(promise, heap, vm);
+        return;
+    }
+    // Step 12: the wrapper adopts the thenable's eventual settlement; chain
+    // that into `promise`.
+    promise_adopt_native(heap, vm, wrapper_raw, promise);
 }
 
 fn void builtin_promise_resolve_callback(BuiltinContext* ctx) {
@@ -445,15 +485,11 @@ fn void builtin_promise_resolve_callback(BuiltinContext* ctx) {
     if (promise_already_called(cell, heap)) { ctx.result.set_undefined(); return; }
     promise_mark_already_called(cell, heap);
 
-    uint state = promise_get_state(promise, PROMISE_PENDING);
-    if (state != PROMISE_PENDING) { ctx.result.set_undefined(); return; }
-
     TVal value;
     value.set_undefined();
     if (ctx.argc >= 1) value = ctx.regs[ctx.base_reg];
 
-    promise_settle(promise, PROMISE_FULFILLED, &value, heap);
-    promise_trigger_reactions(promise, heap, ctx.vm);
+    promise_resolve_with_value(promise, value, heap, ctx.vm);
     // Per ES6 §25.4.1.3.2: Promise resolve functions return undefined.
     ctx.result.set_undefined();
 }
@@ -989,18 +1025,16 @@ fn void species_throw_typeerror(Heap* heap, char[] msg) {
 /// On normal fallback-to-default, returns fallback_ctor without error.
 fn HObject*? species_constructor(Heap* heap, void* vm, TVal o, HObject* fallback_ctor, HObject* fallback_proto) {
     // 1. Assert: Type(O) is Object.
-    // 2. Let C = O.[[Get]]("constructor").
+    // 2. Let C = O.[[Get]]("constructor") — full Get semantics: an accessor
+    //    "constructor" property (e.g. via Object.defineProperty) must have
+    //    its getter invoked, and a throwing getter must propagate as an
+    //    abrupt completion here, not be silently misread as a data property.
     HString* ctor_key = builtin_intern_string(heap, "constructor");
     if (ctor_key == null) return fallback_ctor;
     HObject* obj = (HObject*)o.get_heapptr();
     if (obj == null) return fallback_ctor;
-    TVal? ctor_raw = obj.get_prop_proto(ctor_key);
-    TVal ctor_val;
-    if (catch err_c = ctor_raw) {
-        // get_prop threw — propagate as abrupt completion (heap.has_error may be set).
-        return null;
-    }
-    ctor_val = ctor_raw;
+    TVal ctor_val = promise_get_prop_thru_accessor(heap, vm, obj, ctor_key);
+    if (heap.has_error) return null;
     // 3. ReturnIfAbrupt(C).
     // 4. If C is undefined, return defaultConstructor.
     if (ctor_val.is_undefined()) {
@@ -1341,23 +1375,293 @@ fn void builtin_promise_proto_catch(BuiltinContext* ctx) {
 // Promise.prototype.finally(onFinally) — ES2018 §25.4.5.3
 // ============================================================================
 
+/// Build a ThenFinally or CatchFinally wrapper function (ES2018 §27.2.5.3
+/// steps 4.a/4.b). Stores onFinally and the SpeciesConstructor C as hidden
+/// props so the wrapper handler can call onFinally() and, once its result
+/// settles, pass the original fulfillment value / rejection reason through.
+fn HObject*? promise_make_finally_wrapper(Heap* heap, uint builtin_index, TVal on_finally, HObject* ctor) {
+    HObject*? wrap_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = wrap_raw) return null;
+    HObject* wrap_fn = wrap_raw;
+    wrap_fn.flags.callable = true;
+    wrap_fn.flags.constructable = false;
+    wrap_fn.prototype = heap.function_proto;
+    (*wrap_fn.extra_ptr()).func.builtin_fn_index = (int)builtin_index;
+    HString* len_key = builtin_intern_string(heap, "length");
+    if (len_key != null) {
+        TVal len_tv; len_tv.set_fastint(1);
+        wrap_fn.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+    }
+    HString* of_key = builtin_intern_string(heap, "\xFFon_finally");
+    if (of_key != null) wrap_fn.put_prop(of_key, on_finally, hobject::PROP_FLAGS_WEC);
+    HString* ctor_key = builtin_intern_string(heap, "\xFFfinally_ctor");
+    if (ctor_key != null && ctor != null) {
+        TVal ctor_tv; ctor_tv.set_object(ctor);
+        wrap_fn.put_prop(ctor_key, ctor_tv, hobject::PROP_FLAGS_WEC);
+    }
+    return wrap_fn;
+}
+
+/// Shared body for ThenFinally/CatchFinally (ES2018 §27.2.5.3 steps 4.a.i-4.a.vii):
+/// call onFinally() with no args; if it throws, propagate that throw as the
+/// wrapper's own completion. Otherwise Promise.resolve(C, result), and
+/// .then() a passthrough handler that returns `passthrough_value` (for
+/// ThenFinally) or re-throws it (for CatchFinally, is_reject=true).
+fn void promise_finally_wrapper_body(BuiltinContext* ctx, bool is_reject) {
+    Heap* heap = ctx.heap;
+    ctx.result.set_undefined();
+    if (ctx.callee_obj == null) return;
+
+    TVal passthrough;
+    passthrough.set_undefined();
+    if (ctx.argc >= 1) passthrough = ctx.regs[ctx.base_reg];
+
+    HString* of_key = builtin_intern_string(heap, "\xFFon_finally");
+    TVal on_finally; on_finally.set_undefined();
+    if (of_key != null) {
+        if (try ov = ctx.callee_obj.get_prop(of_key)) on_finally = ov;
+    }
+    HString* ctor_key = builtin_intern_string(heap, "\xFFfinally_ctor");
+    HObject* ctor = heap.promise_ctor;
+    if (ctor_key != null) {
+        if (try cv = ctx.callee_obj.get_prop(ctor_key)) {
+            if (cv.is_object() && cv.get_heapptr() != null) ctor = (HObject*)cv.get_heapptr();
+        }
+    }
+
+    if (heap.call_fn == null || ctx.vm == null) return;
+    TVal undef; undef.set_undefined();
+    TVal result = heap.call_fn(ctx.vm, on_finally, null, 0, undef);
+    if (heap.has_error) {
+        // onFinally itself threw — propagate as this wrapper's own throw.
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        return;
+    }
+
+    // Promise.resolve(C, result) — call C.resolve(result) if available,
+    // else fall back to the builtin resolve procedure.
+    TVal resolved_promise;
+    resolved_promise.set_undefined();
+    HString* resolve_key = builtin_intern_string(heap, "resolve");
+    TVal resolve_fn; resolve_fn.set_undefined();
+    bool have_resolve_fn = false;
+    if (resolve_key != null && ctor != null) {
+        if (promise_object_get(heap, ctx.vm, ctor, resolve_key, &resolve_fn)) {
+            have_resolve_fn = resolve_fn.is_lightfunc() ||
+                (resolve_fn.is_object() && resolve_fn.get_heapptr() != null &&
+                 ((HObject*)resolve_fn.get_heapptr()).is_callable());
+        } else if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return;
+        }
+    }
+    if (have_resolve_fn) {
+        TVal ctor_tv; ctor_tv.set_object(ctor);
+        TVal[1] r_args; r_args[0] = result;
+        resolved_promise = heap.call_fn(ctx.vm, resolve_fn, &r_args[0], 1, ctor_tv);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return;
+        }
+    } else {
+        HObject*? prom_raw = promise_create(heap);
+        if (catch err = prom_raw) return;
+        HObject* prom = prom_raw;
+        promise_settle(prom, PROMISE_FULFILLED, &result, heap);
+        resolved_promise.set_object(prom);
+    }
+
+    // valueThunk / thrower passthrough handler: a tiny builtin closure
+    // carrying `passthrough` so .then(valueThunk) returns it unchanged (or,
+    // for CatchFinally, re-throws it).
+    HObject*? thunk_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = thunk_raw) return;
+    HObject* thunk = thunk_raw;
+    thunk.flags.callable = true;
+    thunk.flags.constructable = false;
+    thunk.prototype = heap.function_proto;
+    (*thunk.extra_ptr()).func.builtin_fn_index =
+        is_reject ? (int)BUILTIN_PROMISE_CATCH_FINALLY : (int)BUILTIN_PROMISE_THEN_FINALLY;
+    // Reuse \xFFon_finally as the storage slot for the passthrough value,
+    // and mark \xFFfinally_ctor absent so promise_finally_wrapper_body's
+    // caller (this same function, recursively) instead takes the "leaf"
+    // path below via a dedicated flag.
+    HString* pv_key = builtin_intern_string(heap, "\xFFfinally_passthrough");
+    if (pv_key != null) thunk.put_prop(pv_key, passthrough, hobject::PROP_FLAGS_WEC);
+    HString* leaf_key = builtin_intern_string(heap, "\xFFfinally_leaf");
+    TVal leaf_true; leaf_true.set_boolean(true);
+    if (leaf_key != null) thunk.put_prop(leaf_key, leaf_true, hobject::PROP_FLAGS_WEC);
+
+    // Invoke resolved_promise.then(thunk) [ThenFinally] or
+    // resolved_promise.then(thunk) used as onRejected via a second call
+    // shape [CatchFinally] — both cases just need `.then` invoked with the
+    // thunk in the correct slot; the thunk itself decides passthrough vs
+    // rethrow based on `is_reject` baked into its own builtin_fn_index.
+    TVal undef_fulfill; undef_fulfill.set_undefined();
+    TVal thunk_tv; thunk_tv.set_object(thunk);
+    TVal on_ful = is_reject ? undef_fulfill : thunk_tv;
+    TVal on_rej = is_reject ? thunk_tv : undef_fulfill;
+    if (!promise_invoke_then(heap, ctx.vm, resolved_promise, on_ful, on_rej)) {
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+        }
+        return;
+    }
+}
+
+fn void builtin_promise_then_finally(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    // Leaf thunk (passthrough value/reason holder) vs the outer wrapper
+    // (holds \xFFon_finally) are distinguished by \xFFfinally_leaf.
+    HString* leaf_key = builtin_intern_string(heap, "\xFFfinally_leaf");
+    bool is_leaf = false;
+    if (ctx.callee_obj != null && leaf_key != null) {
+        if (try lv = ctx.callee_obj.get_prop(leaf_key)) {
+            if (lv.is_boolean() && lv.get_boolean()) is_leaf = true;
+        }
+    }
+    if (is_leaf) {
+        HString* pv_key = builtin_intern_string(heap, "\xFFfinally_passthrough");
+        TVal pv; pv.set_undefined();
+        if (pv_key != null && ctx.callee_obj != null) {
+            if (try v = ctx.callee_obj.get_prop(pv_key)) pv = v;
+        }
+        *ctx.result = pv;
+        return;
+    }
+    promise_finally_wrapper_body(ctx, false);
+}
+
+fn void builtin_promise_catch_finally(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    HString* leaf_key = builtin_intern_string(heap, "\xFFfinally_leaf");
+    bool is_leaf = false;
+    if (ctx.callee_obj != null && leaf_key != null) {
+        if (try lv = ctx.callee_obj.get_prop(leaf_key)) {
+            if (lv.is_boolean() && lv.get_boolean()) is_leaf = true;
+        }
+    }
+    if (is_leaf) {
+        HString* pv_key = builtin_intern_string(heap, "\xFFfinally_passthrough");
+        TVal pv; pv.set_undefined();
+        if (pv_key != null && ctx.callee_obj != null) {
+            if (try v = ctx.callee_obj.get_prop(pv_key)) pv = v;
+        }
+        ctx.should_throw = true;
+        ctx.throw_value = pv;
+        return;
+    }
+    promise_finally_wrapper_body(ctx, true);
+}
+
 fn void builtin_promise_proto_finally(BuiltinContext* ctx) {
-    HObject* promise = check_promise(ctx);
-    if (promise == null) return;
+    // ES2018 §27.2.5.3: `this` is used directly (no IsPromise check) —
+    // finally() is generic like then()/catch(). Invoke(promise, "then", ...)
+    // per steps 5-6 handles poisoned/overridden `.then` and non-Promise
+    // `this` (e.g. custom thenables) correctly, since we never call our own
+    // PerformPromiseThen implementation directly.
+    Heap* heap = ctx.heap;
+    TVal promise_val = ctx.regs[ctx.base_reg - 1];
 
     TVal on_finally;
     on_finally.set_undefined();
     if (ctx.argc >= 1) on_finally = ctx.regs[ctx.base_reg];
 
-    if (!on_finally.is_object() || on_finally.get_heapptr() == null ||
-        !((HObject*)on_finally.get_heapptr()).is_callable()) {
-        ctx.regs[ctx.base_reg + 1] = on_finally;
-        builtin_promise_proto_then(ctx);
+    if (promise_val.is_null() || promise_val.is_undefined()) {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "Promise.prototype.finally called on null or undefined");
         return;
     }
 
-    ctx.regs[ctx.base_reg + 1] = on_finally;
-    builtin_promise_proto_then(ctx);
+    bool on_finally_callable = on_finally.is_lightfunc() ||
+        (on_finally.is_object() && on_finally.get_heapptr() != null &&
+         ((HObject*)on_finally.get_heapptr()).is_callable());
+
+    TVal then_fulfill = on_finally;
+    TVal then_reject = on_finally;
+
+    if (on_finally_callable) {
+        // Step 4: build the wrapper handlers. SpeciesConstructor uses
+        // %Promise% as the default and fallback_proto (only relevant when
+        // `this` actually is a Promise instance; for a non-Promise `this`
+        // species_constructor's Get("constructor") + @@species chain still
+        // applies per spec — it's not gated on IsPromise).
+        HObject* ctor = heap.promise_ctor;
+        if (promise_val.is_object() && promise_val.get_heapptr() != null) {
+            HObject*? sc_opt = species_constructor(heap, ctx.vm, promise_val, heap.promise_ctor, heap.promise_proto);
+            if (heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = heap.error_value;
+                heap.has_error = false;
+                return;
+            }
+            if (catch err_sc = sc_opt) {
+                ctor = heap.promise_ctor;
+            } else if (sc_opt != null) {
+                ctor = sc_opt;
+            }
+        }
+        HObject*? then_wrap_raw = promise_make_finally_wrapper(heap, (uint)BUILTIN_PROMISE_THEN_FINALLY, on_finally, ctor);
+        HObject*? catch_wrap_raw = promise_make_finally_wrapper(heap, (uint)BUILTIN_PROMISE_CATCH_FINALLY, on_finally, ctor);
+        if (catch err1 = then_wrap_raw) { ctx.result.set_undefined(); return; }
+        if (catch err2 = catch_wrap_raw) { ctx.result.set_undefined(); return; }
+        then_fulfill.set_object(then_wrap_raw);
+        then_reject.set_object(catch_wrap_raw);
+    }
+
+    // Step 5-6: Return ? Invoke(promise, "then", « thenFinally, catchFinally »).
+    HObject* promise_obj = null;
+    if (promise_val.is_object() && promise_val.get_heapptr() != null) {
+        promise_obj = (HObject*)promise_val.get_heapptr();
+    } else {
+        HObject* proto = null;
+        if (promise_val.is_boolean()) { proto = heap.bool_proto; }
+        else if (promise_val.is_number() || promise_val.is_fastint()) { proto = heap.number_proto; }
+        else if (promise_val.is_string()) {
+            HString* pstr = (HString*)promise_val.get_heapptr();
+            if (pstr != null && pstr.is_symbol()) { proto = heap.symbol_proto; }
+            else { proto = heap.string_proto; }
+        }
+        promise_obj = proto;
+        if (promise_obj == null) { ctx.result.set_undefined(); return; }
+    }
+    HString* then_key = builtin_intern_string(heap, "then");
+    if (then_key == null) { ctx.result.set_undefined(); return; }
+    TVal then_fn;
+    if (!promise_object_get(heap, ctx.vm, promise_obj, then_key, &then_fn)) {
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+        }
+        return;
+    }
+    bool then_callable = then_fn.is_lightfunc() ||
+        (then_fn.is_object() && then_fn.get_heapptr() != null &&
+         ((HObject*)then_fn.get_heapptr()).is_callable());
+    if (!then_callable) {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "then is not callable");
+        return;
+    }
+    if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+    TVal[2] call_args;
+    call_args[0] = then_fulfill;
+    call_args[1] = then_reject;
+    TVal ret = heap.call_fn(ctx.vm, then_fn, &call_args[0], 2, promise_val);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        return;
+    }
+    *ctx.result = ret;
 }
 
 // ============================================================================
@@ -1384,12 +1688,30 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
         if (try cap_hole = cap_hole_raw) {
             cap_hole.prototype = ctx.heap.object_proto;
             if (promise_new_capability_full(ctx.heap, ctx.vm, this_ctor_val, cap_hole)) {
-                // If x is already a Promise, return it unchanged (per step 2).
+                // Per ES6 §25.4.4.5 step 3: if x is already a Promise AND
+                // SameValue(x.constructor, C), return it unchanged. Reading
+                // x.constructor may run user code / throw (poisoned getter).
                 if (val.is_object() && val.get_heapptr() != null) {
                     HObject* obj = (HObject*)val.get_heapptr();
                     if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-                        *ctx.result = val;
-                        return;
+                        HString* ctor_key = builtin_intern_string(ctx.heap, "constructor");
+                        TVal xctor;
+                        xctor.set_undefined();
+                        if (ctor_key != null) {
+                            xctor = promise_get_prop_thru_accessor(ctx.heap, ctx.vm, obj, ctor_key);
+                            if (ctx.heap.has_error) {
+                                ctx.should_throw = true;
+                                ctx.throw_value = ctx.heap.error_value;
+                                ctx.heap.has_error = false;
+                                return;
+                            }
+                        }
+                        bool same_ctor = xctor.is_object() && xctor.get_heapptr() != null &&
+                            xctor.get_heapptr() == this_ctor_val.get_heapptr();
+                        if (same_ctor) {
+                            *ctx.result = val;
+                            return;
+                        }
                     }
                 }
                 // Per ES6 §27.2.4.5 step 4: Call(promiseCapability.[[Resolve]], undefined, « x »).
@@ -1420,31 +1742,45 @@ fn void builtin_promise_resolve(BuiltinContext* ctx) {
         }
     }
 
-    // If already a Promise, return it
+    // Per ES6 §25.4.4.5 step 3: if x is already a Promise AND
+    // SameValue(x.constructor, C) — here C is %Promise% — return it
+    // unchanged. A Promise whose "constructor" was overridden must still go
+    // through NewPromiseCapability + resolve.
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         if (obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-            *ctx.result = val;
-            return;
-        }
-        // Check for thenables (non-Promise objects with callable .then)
-        HObject*? coerced = promise_coerce_thenable(ctx.heap, val, ctx.vm);
-        if (catch err_c = coerced) {
-            // promise_coerce_thenable returns null for non-thenables — that's valid
-        } else if (coerced != null) {
-            // coerced is non-null → a real Promise wrapper was returned.
-            ctx.result.set_object(coerced);
-            return;
+            HString* ctor_key = builtin_intern_string(ctx.heap, "constructor");
+            TVal xctor;
+            xctor.set_undefined();
+            if (ctor_key != null) {
+                xctor = promise_get_prop_thru_accessor(ctx.heap, ctx.vm, obj, ctor_key);
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    return;
+                }
+            }
+            bool same_ctor = xctor.is_object() && xctor.get_heapptr() != null &&
+                (HObject*)xctor.get_heapptr() == ctx.heap.promise_ctor;
+            if (same_ctor) {
+                *ctx.result = val;
+                return;
+            }
         }
     }
 
+    // Otherwise: NewPromiseCapability(%Promise%) + Call(resolve, undefined, «x»).
+    // Reuse the full Promise Resolve Function procedure (self-resolution N/A
+    // here since `promise` is freshly created; thenable coercion/poisoned
+    // `.then` propagation are shared with the executor's resolve callback).
     HObject*? prom_raw = promise_create(ctx.heap);
     if (catch err = prom_raw) {
         ctx.result.set_undefined();
         return;
     }
     HObject* promise = prom_raw;
-    promise_settle(promise, PROMISE_FULFILLED, &val, ctx.heap);
+    promise_resolve_with_value(promise, val, ctx.heap, ctx.vm);
 
     ctx.result.set_object(promise);
 }
@@ -1517,25 +1853,44 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
 // Thenable coercion — ES6 Promise Resolution Procedure
 // ============================================================================
 
+/// Read `key` off `obj`, invoking an accessor getter (via heap.call_fn) if
+/// the property is one. Sets heap.has_error/heap.error_value and returns
+/// undefined if the getter throws — callers must check heap.has_error after
+/// calling this. Mirrors the pattern in object.c3's desc_get.
+fn TVal promise_get_prop_thru_accessor(Heap* heap, void* vm, HObject* obj, HString* key) {
+    TVal out;
+    out.set_undefined();
+    if (obj == null || key == null) return out;
+    hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(key, true);
+    if (res.kind == hobject::PropLookupKind.PROP_NOT_FOUND) return out;
+    if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+        return res.data_val;
+    }
+    // PROP_ACCESSOR
+    TVal getter = res.acc.accessor_fn;
+    if (getter.is_undefined() || getter.is_null()) return out;
+    if (heap.call_fn == null || vm == null) return out;
+    TVal this_tv;
+    this_tv.set_object(obj);
+    return heap.call_fn(vm, getter, null, 0, this_tv);
+}
+
 /// If `val` is a non-Promise object with a callable `.then` method, create a
 /// new Promise, call `thenable.then(resolve, reject)`, and return the wrapper
 /// Promise. Returns `null` for non-thenables, in which case the caller should
-/// await the original value as a non-thenable (no-op).
+/// await the original value as a non-thenable (no-op). If reading `.then`
+/// throws (poisoned accessor), heap.has_error is set and `null` is returned;
+/// callers must check heap.has_error to distinguish this from "not thenable".
 fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
     if (!val.is_object() || val.get_heapptr() == null) return null;
     HObject* obj = (HObject*)val.get_heapptr();
-    if (obj.flags.obj_class == hobject::ObjClass.PROMISE) return null;
 
-    // Get .then property
+    // Get .then property (through accessors — a poisoned `then` getter must
+    // propagate its throw, not be silently swallowed).
     HString* then_key = builtin_intern_string(heap, "then");
     if (then_key == null) return null;
-    TVal? then_opt = obj.get_prop(then_key);
-    TVal then_method;
-    if (try tm = then_opt) {
-        then_method = tm;
-    } else {
-        return null;
-    }
+    TVal then_method = promise_get_prop_thru_accessor(heap, vm, obj, then_key);
+    if (heap.has_error) return null;
 
     bool then_callable = then_method.is_lightfunc() ||
         (then_method.is_object() && then_method.get_heapptr() != null &&
@@ -1549,6 +1904,18 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
 
     // Hidden property key used by resolve/reject callbacks
     HString* promise_key = builtin_intern_string(heap, "\xFFpromise");
+    HString* cell_key = builtin_intern_string(heap, "\xFFcap_cell");
+
+    // Shared [[AlreadyResolved]] cell (ES6 §25.4.1.3 CreateResolvingFunctions
+    // step 2): must be marked true synchronously the moment EITHER resolve
+    // or reject is first called, even though resolving a thenable value
+    // defers the actual settlement to a queued job. Without this, a
+    // thenable.then() that calls resolve(anotherThenable) and then throws
+    // synchronously would incorrectly reject the wrapper via the throw,
+    // since the wrapper's promise state is still PENDING (the nested
+    // thenable's own job hasn't run yet) — see
+    // exception-after-resolve-in-thenable-job.js.
+    HObject* already_cell = promise_new_already_cell(heap);
 
     // Create resolve callback
     HObject*? resolve_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -1573,6 +1940,10 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
         TVal wrapper_tv; wrapper_tv.set_object(wrapper);
         resolve_fn.put_prop(promise_key, wrapper_tv, hobject::PROP_FLAGS_WEC);
     }
+    if (cell_key != null && already_cell != null) {
+        TVal cell_tv; cell_tv.set_object(already_cell);
+        resolve_fn.put_prop(cell_key, cell_tv, hobject::PROP_FLAGS_WEC);
+    }
     TVal resolve_tv; resolve_tv.set_object(resolve_fn);
 
     // Create reject callback
@@ -1595,14 +1966,86 @@ fn HObject*? promise_coerce_thenable(Heap* heap, TVal val, void* vm) {
         TVal wrapper_tv; wrapper_tv.set_object(wrapper);
         reject_fn.put_prop(promise_key, wrapper_tv, hobject::PROP_FLAGS_WEC);
     }
+    if (cell_key != null && already_cell != null) {
+        TVal cell_tv2; cell_tv2.set_object(already_cell);
+        reject_fn.put_prop(cell_key, cell_tv2, hobject::PROP_FLAGS_WEC);
+    }
     TVal reject_tv; reject_tv.set_object(reject_fn);
 
-    // Call thenable.then(resolve, reject). The thenable is responsible for
-    // calling one of these to settle the wrapper Promise.
-    TVal[2] arg_arr = { resolve_tv, reject_tv };
-    heap.call_fn(vm, then_method, &arg_arr, 2, val);
+    // Per ES6 §25.4.1.3.2 step 12 / §25.4.2.2 PromiseResolveThenableJob: the
+    // `then.call(resolution, resolve, reject)` call must run as a queued job,
+    // not synchronously inline with whatever code triggered the resolution
+    // (executor, resolve callback, etc.) — otherwise thenable.then() would
+    // observably run before the resolving call returns.
+    HObject*? job_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = job_raw) return null;
+    HObject* job = job_raw;
+    job.flags.callable = true;
+    job.flags.constructable = false;
+    job.prototype = heap.function_proto;
+    (*job.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROMISE_RESOLVE_THENABLE_JOB;
+    HString* then_hidden_key = builtin_intern_string(heap, "\xFFthen");
+    HString* resolution_key  = builtin_intern_string(heap, "\xFFresolution");
+    HString* resolve_key     = builtin_intern_string(heap, "\xFFjob_resolve");
+    HString* reject_hkey     = builtin_intern_string(heap, "\xFFjob_reject");
+    if (then_hidden_key != null) job.put_prop(then_hidden_key, then_method, hobject::PROP_FLAGS_WEC);
+    if (resolution_key != null)  job.put_prop(resolution_key, val, hobject::PROP_FLAGS_WEC);
+    if (resolve_key != null)     job.put_prop(resolve_key, resolve_tv, hobject::PROP_FLAGS_WEC);
+    if (reject_hkey != null)     job.put_prop(reject_hkey, reject_tv, hobject::PROP_FLAGS_WEC);
+
+    TVal job_tv; job_tv.set_object(job);
+    TVal undef_arg; undef_arg.set_undefined();
+    TVal undef_downstream; undef_downstream.set_undefined();
+    heap.enqueue_microtask(job_tv, undef_arg, undef_downstream);
 
     return wrapper;
+}
+
+/// Microtask handler for PromiseResolveThenableJob (ES6 §25.4.2.2). Reads
+/// the deferred then/resolution/resolve/reject off ctx.callee_obj's hidden
+/// slots and performs `then.call(resolution, resolve, reject)`. If that call
+/// throws, invokes `reject(error)` (per spec step, unless already settled —
+/// the resolve/reject callbacks themselves enforce [[AlreadyResolved]] via
+/// the target promise's PENDING check, since no capability cell is used
+/// here, so a direct settle-if-pending on the wrapper is sufficient).
+fn void builtin_promise_resolve_thenable_job(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    ctx.result.set_undefined();
+    if (ctx.callee_obj == null) return;
+
+    HString* then_hidden_key = builtin_intern_string(heap, "\xFFthen");
+    HString* resolution_key  = builtin_intern_string(heap, "\xFFresolution");
+    HString* resolve_key     = builtin_intern_string(heap, "\xFFjob_resolve");
+    HString* reject_hkey     = builtin_intern_string(heap, "\xFFjob_reject");
+
+    TVal then_method; then_method.set_undefined();
+    TVal resolution; resolution.set_undefined();
+    TVal resolve_tv; resolve_tv.set_undefined();
+    TVal reject_tv; reject_tv.set_undefined();
+    if (then_hidden_key != null) {
+        if (try tv = ctx.callee_obj.get_prop(then_hidden_key)) then_method = tv;
+    }
+    if (resolution_key != null) {
+        if (try rv = ctx.callee_obj.get_prop(resolution_key)) resolution = rv;
+    }
+    if (resolve_key != null) {
+        if (try rsv = ctx.callee_obj.get_prop(resolve_key)) resolve_tv = rsv;
+    }
+    if (reject_hkey != null) {
+        if (try rjv = ctx.callee_obj.get_prop(reject_hkey)) reject_tv = rjv;
+    }
+
+    if (heap.call_fn == null) return;
+    TVal[2] arg_arr = { resolve_tv, reject_tv };
+    heap.call_fn(ctx.vm, then_method, &arg_arr, 2, resolution);
+    if (heap.has_error) {
+        TVal err = heap.error_value;
+        heap.has_error = false;
+        TVal err_args = err;
+        TVal undef; undef.set_undefined();
+        heap.call_fn(ctx.vm, reject_tv, &err_args, 1, undef);
+        if (heap.has_error) heap.has_error = false;
+    }
 }
 
 // ============================================================================
@@ -1645,7 +2088,23 @@ fn void capability_invoke(Heap* heap, void* vm, HObject* state, TVal* val, bool 
         TVal[1] cap_args;
         cap_args[0] = *val;
         TVal cap_ret = heap.call_fn(vm, capr, &cap_args[0], 1, this_val);
-        if (heap.has_error) heap.has_error = false;
+        if (heap.has_error) {
+            TVal err_val = heap.error_value;
+            heap.has_error = false;
+            if (is_resolve) {
+                // Per IfAbruptRejectPromise (ES6 §25.4.1.1.1): a throw from
+                // Call(resultCapability.[[Resolve]], ...) must reject the
+                // capability's promise with the thrown value, not be
+                // silently swallowed.
+                HString* rj_key = builtin_intern_string(heap, "\xFFcap_reject");
+                if (rj_key != null) {
+                    TVal? rj_opt = state.get_prop(rj_key);
+                    TVal rejr; rejr.set_undefined();
+                    if (try rv = rj_opt) rejr = rv;
+                    promise_combinator_reject(heap, vm, rejr, &err_val);
+                }
+            }
+        }
     }
 }
 
@@ -1828,8 +2287,12 @@ fn void builtin_promise_all_resolve_element(BuiltinContext* ctx) {
                 } else {
                     arr_val.set_undefined();
                 }
-                promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
-                promise_trigger_reactions(outer, heap, ctx.vm);
+                // Settlement for the default path is handled by capability_invoke
+                // below (cap_resolve IS builtin_promise_resolve_callback for the
+                // default constructor, which internally runs the full Promise
+                // Resolve Function procedure). Calling promise_resolve_with_value
+                // here too would double-settle when C is a custom constructor
+                // whose resolve/reject are independent of `outer`.
                 capability_invoke(heap, ctx.vm, state, &arr_val, true, ctx.this_val);
                 if (!heap.microtask_draining) {
                     heap.drain_microtasks(ctx.vm);
@@ -1939,8 +2402,15 @@ fn void builtin_promise_race_resolve_element(BuiltinContext* ctx) {
             if (ov.is_object() && ov.get_heapptr() != null) outer = (HObject*)ov.get_heapptr();
         }
         if (outer != null) {
-            promise_settle(outer, PROMISE_FULFILLED, &value, heap);
-            promise_trigger_reactions(outer, heap, ctx.vm);
+            // Settlement is handled by capability_invoke below (cap_resolve
+            // IS builtin_promise_resolve_callback for the default constructor,
+            // which runs the full Promise Resolve Function procedure). Calling
+            // promise_resolve_with_value here too would double-settle when C
+            // is a custom constructor whose resolve/reject are independent of
+            // `outer` (e.g. the constructor explicitly returns a different
+            // Promise object) — the direct settle would race the custom
+            // resolve function and could pre-empt it (including swallowing
+            // its own throw, which must instead reject via the capability).
             capability_invoke(heap, ctx.vm, state, &value, true, ctx.this_val);
             if (!heap.microtask_draining) {
                 heap.drain_microtasks(ctx.vm);
@@ -2214,8 +2684,9 @@ fn void builtin_promise_allsettled_resolve_element(BuiltinContext* ctx) {
                 } else {
                     arr_val.set_undefined();
                 }
-                promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
-                promise_trigger_reactions(outer, heap, ctx.vm);
+                // Per spec: Call(resultCapability.[[Resolve]], «valuesArray»).
+                // Settlement is handled by capability_invoke below — see
+                // the detailed comment in builtin_promise_race_resolve_element.
                 capability_invoke(heap, ctx.vm, state, &arr_val, true, ctx.this_val);
                 // Drain microtasks inline so combinator-result checks
                 // (e.g. test262 "call-resolve-element") see the outer
@@ -2320,8 +2791,9 @@ fn void builtin_promise_allsettled_reject_element(BuiltinContext* ctx) {
                 } else {
                     arr_val.set_undefined();
                 }
-                promise_settle(outer, PROMISE_FULFILLED, &arr_val, heap);
-                promise_trigger_reactions(outer, heap, ctx.vm);
+                // Per spec: Call(resultCapability.[[Resolve]], «valuesArray»).
+                // Settlement is handled by capability_invoke below — see
+                // the detailed comment in builtin_promise_race_resolve_element.
                 capability_invoke(heap, ctx.vm, state, &arr_val, true, ctx.this_val);
                 if (!heap.microtask_draining) {
                     heap.drain_microtasks(ctx.vm);
@@ -2351,9 +2823,14 @@ fn void builtin_promise_any_resolve_element(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
     if (ctx.callee_obj == null) return;
 
+    // Per §27.2.4.3.1: unlike Promise.all/race, Promise.any's resolve
+    // element functions have NO [[AlreadyCalled]] guard — they forward
+    // directly to resultCapability.[[Resolve]] on every invocation. A
+    // thenable is free to call its resolver multiple times; each call
+    // re-invokes the (idempotent, since the promise settles once) outer
+    // resolve. See resolve-from-same-thenable.js.
     HString* state_key = builtin_intern_string(heap, "\xFFstate");
     HString* outer_key = builtin_intern_string(heap, "\xFFouter");
-    HString* rej_key = builtin_intern_string(heap, "\xFFrejected");
     if (state_key == null) return;
 
     TVal? state_opt = ctx.callee_obj.get_prop(state_key);
@@ -2362,22 +2839,6 @@ fn void builtin_promise_any_resolve_element(BuiltinContext* ctx) {
         if (sv.is_object() && sv.get_heapptr() != null) state = (HObject*)sv.get_heapptr();
     }
     if (state == null) return;
-
-    // Check if already settled
-    bool already_settled = false;
-    if (rej_key != null) {
-        TVal? rej_opt = state.get_prop(rej_key);
-        if (try rj = rej_opt) {
-            if (rj.is_boolean() && rj.get_boolean()) already_settled = true;
-        }
-    }
-    if (already_settled) return;
-
-    // Mark settled
-    if (rej_key != null) {
-        TVal rej_tv; rej_tv.set_boolean(true);
-        state.put_prop(rej_key, rej_tv, hobject::PROP_FLAGS_WEC);
-    }
 
     TVal value;
     value.set_undefined();
@@ -2390,8 +2851,15 @@ fn void builtin_promise_any_resolve_element(BuiltinContext* ctx) {
             if (ov.is_object() && ov.get_heapptr() != null) outer = (HObject*)ov.get_heapptr();
         }
         if (outer != null) {
-            promise_settle(outer, PROMISE_FULFILLED, &value, heap);
-            promise_trigger_reactions(outer, heap, ctx.vm);
+            // Settlement is handled by capability_invoke below (cap_resolve
+            // IS builtin_promise_resolve_callback for the default constructor,
+            // which runs the full Promise Resolve Function procedure). Calling
+            // promise_resolve_with_value here too would double-settle when C
+            // is a custom constructor whose resolve/reject are independent of
+            // `outer` (e.g. the constructor explicitly returns a different
+            // Promise object) — the direct settle would race the custom
+            // resolve function and could pre-empt it (including swallowing
+            // its own throw, which must instead reject via the capability).
             capability_invoke(heap, ctx.vm, state, &value, true, ctx.this_val);
             if (!heap.microtask_draining) {
                 heap.drain_microtasks(ctx.vm);
@@ -2577,29 +3045,66 @@ fn bool promise_object_get(Heap* heap, void* vm, HObject* obj, HString* key, TVa
 /// On success *out_iter is the iterator and the function returns true.
 /// On failure heap.has_error is set and the function returns false.
 fn bool promise_get_iterator(Heap* heap, void* vm, TVal iterable, TVal* out_iter) {
-    if (!iterable.is_object() || iterable.get_heapptr() == null) return false;
-    HObject* iterable_obj = (HObject*)iterable.get_heapptr();
-
     HString* iter_sym = ensure_iterator_symbol(heap);
     if (iter_sym == null) return false;
 
-    TVal? iter_method_opt = iterable_obj.get_prop_proto(iter_sym);
     TVal iter_method;
-    if (try im = iter_method_opt) {
-        iter_method = im;
-    } else {
+    iter_method.set_undefined();
+    bool found = false;
+    if (iterable.is_object() && iterable.get_heapptr() != null) {
+        HObject* iterable_obj = (HObject*)iterable.get_heapptr();
+        hobject::PropLookupResult res = iterable_obj.get_prop_or_accessor_proto(iter_sym, true);
+        if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+            iter_method = res.data_val;
+            found = true;
+        } else if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+            TVal getter = res.acc.accessor_fn;
+            if (!getter.is_undefined() && !getter.is_null()) {
+                if (heap.call_fn == null || vm == null) return false;
+                iter_method = heap.call_fn(vm, getter, null, 0, iterable);
+                if (heap.has_error) return false;
+                found = true;
+            }
+        }
+    } else if (iterable.is_string() && heap.string_proto != null) {
+        hobject::PropLookupResult res = heap.string_proto.get_prop_or_accessor_proto(iter_sym, true);
+        if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+            iter_method = res.data_val;
+            found = true;
+        } else if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+            TVal getter = res.acc.accessor_fn;
+            if (!getter.is_undefined() && !getter.is_null()) {
+                if (heap.call_fn == null || vm == null) return false;
+                iter_method = heap.call_fn(vm, getter, null, 0, iterable);
+                if (heap.has_error) return false;
+                found = true;
+            }
+        }
+    } else if (iterable.is_boolean() && heap.bool_proto != null) {
+        if (try bm = heap.bool_proto.get_prop(iter_sym)) { iter_method = bm; found = true; }
+    } else if ((iterable.is_number() || iterable.is_fastint()) && heap.number_proto != null) {
+        if (try nm = heap.number_proto.get_prop(iter_sym)) { iter_method = nm; found = true; }
+    }
+
+    bool iter_callable = found && (iter_method.is_lightfunc() ||
+        (iter_method.is_object() && iter_method.get_heapptr() != null &&
+         ((HObject*)iter_method.get_heapptr()).is_callable()));
+    if (!iter_callable) {
+        // ES2022 §7.4.2 GetIterator: if method is undefined/missing/not
+        // callable, throw a TypeError ("is not iterable") rather than
+        // silently signaling failure with no error value — callers reject
+        // the combinator's capability with heap.error_value on failure.
+        species_throw_typeerror(heap, "is not iterable");
         return false;
     }
-    if (iter_method.is_undefined() || iter_method.is_null()) return false;
-    bool iter_callable = iter_method.is_lightfunc() ||
-        (iter_method.is_object() && iter_method.get_heapptr() != null &&
-         ((HObject*)iter_method.get_heapptr()).is_callable());
-    if (!iter_callable) return false;
 
     if (heap.call_fn == null || vm == null) return false;
     TVal result = heap.call_fn(vm, iter_method, null, 0, iterable);
     if (heap.has_error) return false;
-    if (!result.is_object() || result.get_heapptr() == null) return false;
+    if (!result.is_object() || result.get_heapptr() == null) {
+        species_throw_typeerror(heap, "Result of the Symbol.iterator method is not an object");
+        return false;
+    }
     *out_iter = result;
     return true;
 }
@@ -2886,6 +3391,32 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         TVal fulfill_tv; fulfill_tv.set_object(fulfill_fn);
         TVal reject_tv;  reject_tv.set_object(reject_fn);
 
+        // Per ES2020 §27.2.4.1.1 PerformPromiseAll step 6.d.xi/xii: the
+        // remainingElementsCount increment happens BEFORE Invoke(nextPromise,
+        // "then", ...) — not after. A thenable whose .then() calls its
+        // onFulfilled synchronously (like a same-tick resolve) must observe
+        // the incremented count so its decrement doesn't race against this
+        // iteration's own bookkeeping.
+        //
+        // Read-modify-write `state`'s live copy directly (not a local
+        // counter written back at the end): a prior element's .then() may
+        // have already fired synchronously and decremented state's copy
+        // during an earlier iteration of this same loop, so a stale local
+        // increment-then-overwrite would clobber that decrement.
+        idx += 1;
+        if (remaining_key != null) {
+            long live_remaining = (long)remaining;
+            if (try rv3 = state.get_prop(remaining_key)) {
+                if (rv3.is_fastint()) live_remaining = rv3.get_fastint();
+            }
+            live_remaining += 1;
+            TVal rem_tv; rem_tv.set_fastint(live_remaining);
+            state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
+            remaining = (usz)live_remaining;
+        } else {
+            remaining += 1;
+        }
+
         // Invoke nextPromise.then(fulfill, cap_reject)
         if (!promise_invoke_then(heap, ctx.vm, next_promise, fulfill_tv, cap_reject_tv)) {
             TVal err_val; err_val.set_undefined();
@@ -2895,29 +3426,39 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
             return;
         }
-
-        remaining += 1;
-        idx += 1;
-        // Update state's remaining count to reflect actual number of elements
-        if (remaining_key != null) {
-            TVal rem_tv; rem_tv.set_fastint((long)remaining);
-            state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
-        }
     }
 
-    // Decrement the initial +1; if remaining reaches 0 here, iterable was empty.
-    remaining -= 1;
+    // Decrement the initial +1; if remaining reaches 0 here, iterable was empty
+    // OR every element already resolved synchronously during the loop above
+    // (each such resolution decremented state's live \xFFremaining via
+    // builtin_promise_all_resolve_element). Re-read the current value from
+    // `state` rather than using this function's local `remaining` — the local
+    // only tracks the loop's own increments and goes stale the moment any
+    // element callback fires synchronously and decrements state's copy.
     if (remaining_key != null) {
-        TVal rem_tv; rem_tv.set_fastint((long)remaining);
+        long live_remaining = (long)remaining;
+        if (try rv2 = state.get_prop(remaining_key)) {
+            if (rv2.is_fastint()) live_remaining = rv2.get_fastint();
+        }
+        live_remaining -= 1;
+        TVal rem_tv; rem_tv.set_fastint(live_remaining);
         state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
+        remaining = (usz)live_remaining;
+    } else {
+        remaining -= 1;
     }
     if (remaining == 0) {
-        // Settle with empty array
+        // Settle with empty array. Per ES6 §27.2.4.5 step 4 / PerformPromiseAll
+        // step 6.d.iii.2: this is a Call(resultCapability.[[Resolve]], «valuesArray»),
+        // i.e. the full Promise Resolve Function procedure — not a direct
+        // FulfillPromise. For the default (non-custom) constructor path,
+        // route through promise_resolve_with_value so self-resolution / a
+        // poisoned/overridden Array.prototype.then on the values array is
+        // honored, same as the custom-capability path already gets via
+        // capability_invoke below.
         TVal arr_tv; arr_tv.set_object(arr);
-        if (promise != null) {
-            promise_settle(promise, PROMISE_FULFILLED, &arr_tv, heap);
-            promise_trigger_reactions(promise, heap, ctx.vm);
-        }
+        // Settlement is handled by capability_invoke below — see the
+        // detailed comment in builtin_promise_race_resolve_element.
         capability_invoke(heap, ctx.vm, state, &arr_tv, true, ctx.this_val);
         if (!heap.microtask_draining) heap.drain_microtasks(ctx.vm);
     }
@@ -3074,6 +3615,24 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
         TVal fulfill_tv; fulfill_tv.set_object(fulfill_fn);
         TVal reject_tv;  reject_tv.set_object(reject_fn);
 
+        // Increment before Invoke(nextPromise, "then", ...) — see the
+        // matching comment in builtin_promise_all. Read-modify-write state's
+        // live copy (not a stale local) since a prior element's .then() may
+        // have already fired synchronously during this same loop.
+        idx += 1;
+        if (remaining_key != null) {
+            long live_remaining = (long)remaining;
+            if (try rv3 = state.get_prop(remaining_key)) {
+                if (rv3.is_fastint()) live_remaining = rv3.get_fastint();
+            }
+            live_remaining += 1;
+            TVal rem_tv; rem_tv.set_fastint(live_remaining);
+            state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
+            remaining = (usz)live_remaining;
+        } else {
+            remaining += 1;
+        }
+
         if (!promise_invoke_then(heap, ctx.vm, next_promise, fulfill_tv, reject_tv)) {
             TVal err_val; err_val.set_undefined();
             if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
@@ -3081,26 +3640,31 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }
-
-        remaining += 1;
-        idx += 1;
-        if (remaining_key != null) {
-            TVal rem_tv; rem_tv.set_fastint((long)remaining);
-            state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
-        }
     }
 
-    remaining -= 1;
+    // Re-read the current value from `state` rather than trusting this
+    // function's local `remaining` — see the matching comment in
+    // builtin_promise_all for why (synchronous element resolutions during
+    // the loop decrement state's live copy, leaving the local stale).
     if (remaining_key != null) {
-        TVal rem_tv; rem_tv.set_fastint((long)remaining);
+        long live_remaining = (long)remaining;
+        if (try rv2 = state.get_prop(remaining_key)) {
+            if (rv2.is_fastint()) live_remaining = rv2.get_fastint();
+        }
+        live_remaining -= 1;
+        TVal rem_tv; rem_tv.set_fastint(live_remaining);
         state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
+        remaining = (usz)live_remaining;
+    } else {
+        remaining -= 1;
     }
     if (remaining == 0) {
+        // See the matching comment in builtin_promise_all — this is a
+        // Call(resultCapability.[[Resolve]], «valuesArray»), so route through
+        // the full Promise Resolve Function procedure for the default path.
         TVal arr_tv; arr_tv.set_object(arr);
-        if (promise != null) {
-            promise_settle(promise, PROMISE_FULFILLED, &arr_tv, heap);
-            promise_trigger_reactions(promise, heap, ctx.vm);
-        }
+        // Settlement is handled by capability_invoke below — see the
+        // detailed comment in builtin_promise_race_resolve_element.
         capability_invoke(heap, ctx.vm, state, &arr_tv, true, ctx.this_val);
         if (!heap.microtask_draining) heap.drain_microtasks(ctx.vm);
     }
@@ -3288,6 +3852,24 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         TVal fulfill_tv; fulfill_tv.set_object(fulfill_fn);
         TVal reject_tv2;  reject_tv2.set_object(reject_fn);
 
+        // Increment before Invoke(nextPromise, "then", ...) — see the
+        // matching comment in builtin_promise_all. Read-modify-write state's
+        // live copy (not a stale local) since a prior element's .then() may
+        // have already fired synchronously during this same loop.
+        idx += 1;
+        if (remaining_key != null) {
+            long live_remaining = (long)remaining;
+            if (try rv3 = state.get_prop(remaining_key)) {
+                if (rv3.is_fastint()) live_remaining = rv3.get_fastint();
+            }
+            live_remaining += 1;
+            TVal rem_tv; rem_tv.set_fastint(live_remaining);
+            state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
+            remaining = (usz)live_remaining;
+        } else {
+            remaining += 1;
+        }
+
         if (!promise_invoke_then(heap, ctx.vm, next_promise, fulfill_tv, reject_tv2)) {
             TVal err_val; err_val.set_undefined();
             if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
@@ -3295,20 +3877,24 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }
-
-        remaining += 1;
-        idx += 1;
-        if (remaining_key != null) {
-            TVal rem_tv; rem_tv.set_fastint((long)remaining);
-            state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
-        }
     }
 
-    // Decrement the +1 sentinel
-    remaining -= 1;
+    // Decrement the +1 sentinel. Re-read the current value from `state`
+    // rather than trusting this function's local `remaining` — see the
+    // matching comment in builtin_promise_all (synchronous element
+    // rejections during the loop decrement state's live copy, leaving the
+    // local stale).
     if (remaining_key != null) {
-        TVal rem_tv; rem_tv.set_fastint((long)remaining);
+        long live_remaining = (long)remaining;
+        if (try rv2 = state.get_prop(remaining_key)) {
+            if (rv2.is_fastint()) live_remaining = rv2.get_fastint();
+        }
+        live_remaining -= 1;
+        TVal rem_tv; rem_tv.set_fastint(live_remaining);
         state.put_prop(remaining_key, rem_tv, hobject::PROP_FLAGS_WEC);
+        remaining = (usz)live_remaining;
+    } else {
+        remaining -= 1;
     }
 
     if (remaining == 0) {

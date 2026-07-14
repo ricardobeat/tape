@@ -326,7 +326,23 @@ const uint BUILTIN_REGEXP_SPECIES_GETTER       = 426;
 /// object + interned binding key) and returns the current value.
 const uint BUILTIN_MODULE_BINDING_GETTER       = 427;
 
-const uint BUILTIN_COUNT                       = 428;
+/// PromiseResolveThenableJob (ES6 §25.4.2.2) — microtask handler that
+/// performs the deferred `thenAction.call(resolution, resolve, reject)`
+/// call. Reads \xFFthen / \xFFresolution / \xFFresolve / \xFFreject off
+/// ctx.callee_obj. Enqueued (never called synchronously) so a thenable's
+/// `.then` runs as a proper job, not inline with the resolve/reject call.
+const uint BUILTIN_PROMISE_RESOLVE_THENABLE_JOB = 428;
+
+/// Promise.prototype.finally onFinally wrapper handlers (ES2018 §27.2.5.3
+/// steps 4-5, ThenFinally/CatchFinally Functions). Read \xFFon_finally and
+/// \xFFfinally_ctor off ctx.callee_obj: call onFinally() with no args, then
+/// (via Promise.resolve(C, result).then(...)) pass the original
+/// value/reason through once onFinally's own return value (or its
+/// thenable) settles — or propagate onFinally's own throw instead.
+const uint BUILTIN_PROMISE_THEN_FINALLY  = 429;
+const uint BUILTIN_PROMISE_CATCH_FINALLY = 430;
+
+const uint BUILTIN_COUNT                       = 431;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2859,6 +2875,9 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROMISE_ANY_RESOLVE_ELEMENT] = &builtin_promise_any_resolve_element,
     [BUILTIN_PROMISE_ANY_REJECT_ELEMENT] = &builtin_promise_any_reject_element,
     [BUILTIN_PROMISE_SYNTHETIC_EXECUTOR] = &builtin_promise_synthetic_executor,
+    [BUILTIN_PROMISE_RESOLVE_THENABLE_JOB] = &builtin_promise_resolve_thenable_job,
+    [BUILTIN_PROMISE_THEN_FINALLY] = &builtin_promise_then_finally,
+    [BUILTIN_PROMISE_CATCH_FINALLY] = &builtin_promise_catch_finally,
     [BUILTIN_PROMISE_PROTO_CATCH] = &builtin_promise_proto_catch,
     [BUILTIN_PROMISE_PROTO_FINALLY] = &builtin_promise_proto_finally,
     [BUILTIN_PROMISE_PROTO_THEN] = &builtin_promise_proto_then,

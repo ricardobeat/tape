@@ -533,6 +533,16 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 result = r;
             } else {
                 result = vm.return_val;
+                // An uncaught throw inside the nested run left vm.has_error set
+                // (alongside heap.has_error / heap.error_value, which is the
+                // documented contract for heap.call_fn callers). vm.has_error
+                // is meant as a same-frame VM opcode signal, not a flag that
+                // survives back across this call boundary into the caller's
+                // own execution — leaving it set here causes unrelated later
+                // checks (e.g. ITER_CLOSE's GetMethod-throw detection) in the
+                // *caller's* frame to spuriously fire on a stale flag once the
+                // caller has already consumed/cleared heap.has_error.
+                vm.has_error = false;
             }
 
             // Deregister the shadow frame now that the inner Vm.run() has returned.
@@ -830,6 +840,12 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
         result = r;
     } else {
         result = vm.return_val;
+        // See the matching fix/comment in vm_call_fn_impl: vm.has_error must
+        // not survive back across this construct-call boundary — it is a
+        // same-frame VM opcode signal, and heap.has_error/heap.error_value
+        // (set alongside it) is the documented contract for construct_fn
+        // callers.
+        vm.has_error = false;
     }
 
     // ES6 §12.3.5.2: if constructor returns an object, that's the new instance.
@@ -3278,12 +3294,7 @@ fn TVal? Vm.run(Vm* vm) {
                     }
 
                     // --- Slow path: full env_declare ---
-                    // Global-scope var/function declarations install a
-                    // non-configurable own property on the global object
-                    // (ES2015 §8.1.1.4.15/.17); non-global var-scope
-                    // bindings are unobservable as object properties, so
-                    // their configurability doesn't matter.
-                    env::env_declare_var(ds.act.var_env, key, *ra, ds.act.var_env == vm.global_env);
+                    env::env_declare(ds.act.var_env, key, *ra);
 
                     // Populate VarIC for next time
                     if (ds.var_ic_base != null) {
