@@ -2210,6 +2210,17 @@ fn PropLookupResult HObject.get_prop_or_accessor_proto(&self, void* key, bool wa
                 .owner = null
             };
         }
+        // ARRAY exotic: "length" lives in array_len_ptr, not props table.
+        if (cur.get_class() == ObjClass.ARRAY && _active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            if (key == (void*)h.strs[heap::BuiltinStr.LENGTH]) {
+                return {
+                    .kind = PropLookupKind.PROP_DATA,
+                    .data_val = types::make_fastint((long)*cur.array_len_ptr()),
+                    .owner = null
+                };
+            }
+        }
         cur = cur.prototype;
         depth++;
     }
@@ -2236,6 +2247,13 @@ fn bool HObject.has_prop_proto(&self, void* key) {
         }
         if (cur.find_prop_idx(key) >= 0) {
             return true;
+        }
+        // ARRAY exotic: "length" lives in array_len_ptr.
+        if (cur.get_class() == ObjClass.ARRAY && _active_heap != null) {
+            heap::Heap* h = (heap::Heap*)_active_heap;
+            if (key == (void*)h.strs[heap::BuiltinStr.LENGTH]) {
+                return true;
+            }
         }
         // ARRAY / ARGUMENTS exotic: string-index keys may live only in the
         // dense array part (see get_prop).
