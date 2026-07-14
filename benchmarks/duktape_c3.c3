@@ -198,14 +198,7 @@ $endif
         io::printn("--- Bytecode ---");
         dump_function(*func);
         for (uint i = 0; i < func.inner_count; i++) {
-            bytecode::CompiledFunction* inner = func.inner_funcs[i];
-            if (inner != null) {
-                io::printfn("\n--- Inner function %d ---", i);
-                dump_function(*inner);
-                if (dump_consts) {
-                    dump_constants_pool(*inner);
-                }
-            }
+            dump_inner_tree(func.inner_funcs[i], i, "", dump_consts);
         }
         if (dump_consts) {
             dump_constants_pool(*func);
@@ -254,6 +247,29 @@ $endif
 // ============================================================================
 // Text bytecode dump
 // ============================================================================
+
+/// Dump an inner function and recurse into its own inner functions, labelling
+/// each with its dotted path from the top level ("Inner function 1.0.2").
+fn void dump_inner_tree(bytecode::CompiledFunction* f, uint idx, String path, bool dump_consts) {
+    if (f == null) return;
+    char[128] label_buf;
+    int n;
+    if (path.len == 0) {
+        n = libc::snprintf(&label_buf[0], label_buf.len, "%d", idx);
+    } else {
+        n = libc::snprintf(&label_buf[0], label_buf.len, "%.*s.%d", (int)path.len, path.ptr, idx);
+    }
+    if (n < 0 || n >= label_buf.len) return;
+    String label = (String)label_buf[0:n];
+    io::printfn("\n--- Inner function %s ---", label);
+    dump_function(*f);
+    if (dump_consts) {
+        dump_constants_pool(*f);
+    }
+    for (uint i = 0; i < f.inner_count; i++) {
+        dump_inner_tree(f.inner_funcs[i], i, label, dump_consts);
+    }
+}
 
 fn void dump_function(bytecode::CompiledFunction f) {
 $if $feature(TRACE_VM):
