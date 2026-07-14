@@ -43,6 +43,18 @@ fn ushort? CompilerContext.expression(&self) {
     return result;
 }
 
+/// Save the raw text of a just-resolved identifier for later SetFunctionName
+/// inference (assignment_expr reads this when the LHS is a simple
+/// IdentifierReference). Truncates (clears) if the name doesn't fit.
+fn void CompilerContext.save_lhs_ident_name(&self, char[] name) {
+    if (name.len < 128) {
+        for (ushort i = 0; i < name.len; i++) self.last_lhs_name_buf[i] = name[i];
+        self.last_lhs_name_len = (ushort)name.len;
+    } else {
+        self.last_lhs_name_len = 0;
+    }
+}
+
 /// Parse an assignment expression.
 fn ushort? CompilerContext.assignment_expr(&self) {
     // Check for destructuring assignment: [a, b] = expr or {x, y} = expr
@@ -238,8 +250,13 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     bool lhs_was_member = self.last_was_member;
     ushort lhs_member_obj = self.last_member_obj_reg;
     ushort lhs_member_prop = self.last_member_prop_reg;
+    bool lhs_was_local_var = self.last_was_local_var;
     // super.x stores go through PUTPROP_SUPER (receiver = this, §13.15.2).
     Opcode member_store_op = self.last_member_is_super ? Opcode.PUTPROP_SUPER : Opcode.PUTPROP;
+    // Save the LHS identifier text for SetFunctionName (below) before it
+    // gets clobbered by RHS parsing.
+    char[128] lhs_ident_name_buf = self.last_lhs_name_buf;
+    ushort lhs_ident_name_len = self.last_lhs_name_len;
 
     // Peek for a literal-1 RHS: `<var> -= 1` → DEC.
     // The `+= 1` optimization (INC) was removed because it bypasses ADD's
@@ -396,6 +413,19 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         if (lhs_last.op == Opcode.GETPROP && (ushort)lhs_last.a == left
             && (ushort)lhs_last.b == lhs_member_obj && (ushort)lhs_last.c == lhs_member_prop) {
             self.code_count--;
+        }
+    }
+
+    // ES2015 §12.15.4 AssignmentExpression: `x = anonymousFn` — when the LHS
+    // is a simple IdentifierReference (not a member expression), pass the
+    // name through for NamedEvaluation of an anonymous function/class/arrow
+    // RHS. Member-expression LHS (`o.attr = fn`) must NOT be named.
+    if (is_assign && !lhs_was_member && (lhs_was_getvar || lhs_was_local_var)
+        && lhs_ident_name_len > 0) {
+        self.has_inferred_name = true;
+        self.inferred_name_len = lhs_ident_name_len;
+        for (ushort i = 0; i < lhs_ident_name_len; i++) {
+            self.inferred_name_buf[i] = lhs_ident_name_buf[i];
         }
     }
 
@@ -2096,6 +2126,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         self.last_was_getvar = false;
                         self.last_was_local_var = true;
                         self.last_local_var_reg = var_reg;
+                        self.save_lhs_ident_name(id_tok.str_value);
                         return var_reg;
                     }
                 }
@@ -2112,6 +2143,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
                 self.last_was_getvar = true;
                 self.last_getvar_name_idx = name_idx;
+                self.save_lhs_ident_name(id_tok.str_value);
                 return id_reg;
             }
 
@@ -2184,6 +2216,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     }
                 }
                 self.inside_parens = saved_inside_parens;
+                // A parenthesized identifier is not an IdentifierRef for
+                // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
+                // static IsIdentifierRef, which CoverParenthesizedExpression
+                // never satisfies): `(fn) = function(){}` must NOT name the
+                // function. Clear the saved LHS name so assignment_expr's
+                // SetFunctionName check (which also requires !lhs_was_member)
+                // doesn't fire for a grouped identifier.
+                self.last_lhs_name_len = 0;
                 return inner2;
             }
             // Check for arrow with params: (id) => or (id, id, ...) => ...
@@ -2297,6 +2337,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     }
                 }
                 self.inside_parens = saved_inside_parens;
+                // A parenthesized identifier is not an IdentifierRef for
+                // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
+                // static IsIdentifierRef, which CoverParenthesizedExpression
+                // never satisfies): `(fn) = function(){}` must NOT name the
+                // function. Clear the saved LHS name so assignment_expr's
+                // SetFunctionName check (which also requires !lhs_was_member)
+                // doesn't fire for a grouped identifier.
+                self.last_lhs_name_len = 0;
                 return inner2;
             }
             // Check for arrow with destructured params: ({a, b}) => or ([a, b]) =>
@@ -2339,6 +2387,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     }
                 }
                 self.inside_parens = saved_inside_parens;
+                // A parenthesized identifier is not an IdentifierRef for
+                // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
+                // static IsIdentifierRef, which CoverParenthesizedExpression
+                // never satisfies): `(fn) = function(){}` must NOT name the
+                // function. Clear the saved LHS name so assignment_expr's
+                // SetFunctionName check (which also requires !lhs_was_member)
+                // doesn't fire for a grouped identifier.
+                self.last_lhs_name_len = 0;
                 return inner2;
             } else {
                 // Not arrow: parse as grouping expression
@@ -2352,6 +2408,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     }
                 }
                 self.inside_parens = saved_inside_parens;
+                // A parenthesized identifier is not an IdentifierRef for
+                // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
+                // static IsIdentifierRef, which CoverParenthesizedExpression
+                // never satisfies): `(fn) = function(){}` must NOT name the
+                // function. Clear the saved LHS name so assignment_expr's
+                // SetFunctionName check (which also requires !lhs_was_member)
+                // doesn't fire for a grouped identifier.
+                self.last_lhs_name_len = 0;
                 return inner2;
             }
         }
@@ -2384,6 +2448,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         self.last_was_getvar = false;
                         self.last_was_local_var = true;
                         self.last_local_var_reg = var_reg;
+                        self.save_lhs_ident_name(id_tok.str_value);
                         return var_reg;
                     }
                 }
@@ -2395,6 +2460,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
                 self.last_was_getvar = true;
                 self.last_getvar_name_idx = name_idx;
+                self.save_lhs_ident_name(id_tok.str_value);
                 return id_reg;
             }
             self.advance()!;  // consume 'yield'
@@ -2470,6 +2536,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         self.last_was_getvar = false;
                         self.last_was_local_var = true;
                         self.last_local_var_reg = var_reg;
+                        self.save_lhs_ident_name(id_tok.str_value);
                         return var_reg;
                     }
                 }
@@ -2481,6 +2548,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)id_reg, name_idx));
                 self.last_was_getvar = true;
                 self.last_getvar_name_idx = name_idx;
+                self.save_lhs_ident_name(id_tok.str_value);
                 return id_reg;
             }
             self.advance()!;  // consume 'await'
@@ -2861,6 +2929,12 @@ fn ushort? CompilerContext.literal_keyword(&self) {
 
 /// Parse object literal: { key: value, ... }
 fn ushort? CompilerContext.object_literal(&self) {
+    // An object literal is not an AnonymousFunctionDefinition — any pending
+    // inferred name (e.g. from `var o = {...}`) does not apply here and
+    // must not leak into a later, unrelated anonymous function expression
+    // (ES2015 §12.15.4 NamedEvaluation only applies to the RHS itself).
+    self.has_inferred_name = false;
+    self.inferred_name_len = 0;
     self.expect(TokenType.LBRACE)!;
 
     // ES2015 §14.3.9: super.x in object literal methods resolves to
@@ -3221,6 +3295,11 @@ fn ushort? CompilerContext.object_literal(&self) {
 
 /// Parse array literal: [ expr, expr, ... ]
 fn ushort? CompilerContext.array_literal(&self) {
+    // Not an AnonymousFunctionDefinition — clear any pending inferred name
+    // so it doesn't leak into an unrelated later function expression.
+    // See the matching comment in object_literal.
+    self.has_inferred_name = false;
+    self.inferred_name_len = 0;
     self.expect(TokenType.LBRACKET)!;
 
     ushort arr_reg = self.alloc_reg();

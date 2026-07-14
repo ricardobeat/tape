@@ -233,6 +233,14 @@ struct CompilerContext {
     /// Set when the last primary_expr returned a live local variable register directly.
     bool last_was_local_var;
     ushort last_local_var_reg;
+    /// Raw text of the identifier last resolved by primary_expr (getvar or
+    /// local var alike). Used by assignment_expr for SetFunctionName
+    /// (ES2015 §12.15.4): `x = function(){}` names the RHS "x" when the LHS
+    /// is a simple IdentifierReference. Overwritten on every identifier
+    /// primary_expr; only meaningful immediately after parsing an
+    /// assignment LHS.
+    char[128] last_lhs_name_buf;
+    ushort last_lhs_name_len;
     /// LHS mode: when true, member_expr saves obj/key without emitting GETPROP
     bool lhs_mode;
     /// Delete mode: when true, member_expr saves obj/key for delete.
