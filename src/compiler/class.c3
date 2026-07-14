@@ -274,6 +274,14 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     ushort super_reg = self.declare_var(super_name, LET);
     uint super_name_idx = self.add_string_constant(super_name);
 
+    // __static_super__ = the class constructor itself. Static method bodies
+    // resolve `super.x` against this binding via GETPROTO (HomeObject = the
+    // constructor, per §13.3.7.1), independent of the extends clause: it is
+    // bound to ctor_reg once the constructor closure exists, below.
+    char[] static_super_name = "__static_super__";
+    ushort static_super_reg = self.declare_var(static_super_name, LET);
+    uint static_super_name_idx = self.add_string_constant(static_super_name);
+
     // Parse optional extends clause
     ushort base_reg = MAX_REGISTERS;
     if (self.match(TokenType.EXTENDS)) {
@@ -590,7 +598,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             }
         }
 
+        // Static methods' `super.x` resolves HomeObject = the constructor
+        // (__static_super__), not the prototype.
+        bool saved_super_is_static_method = self.super_is_static_method;
+        self.super_is_static_method = is_static;
         CompiledFunction* inner = self.compile_inner_function(method_name_buf[:method_name_len], false, class_elem_src_start, true)!;
+        self.super_is_static_method = saved_super_is_static_method;
 
         self.is_constructable = saved_constructable;
         self.is_generator = saved_is_generator;
@@ -681,6 +694,11 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     // Emit CLOSURE for the constructor
     ushort ctor_reg = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)ctor_reg, ctor_inner_idx));
+
+    // Bind __static_super__ = the constructor itself, for static methods'
+    // `super.x` (HomeObject = constructor, per §13.3.7.1).
+    self.emit_abc(Opcode.LDREG, (uint)static_super_reg, (uint)ctor_reg, 0);
+    self.emit_a_bc(Opcode.PUTLEX, (uint)static_super_reg, static_super_name_idx);
 
     // Set up prototype
     ushort proto_reg = self.alloc_reg();

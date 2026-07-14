@@ -405,29 +405,42 @@ fn ushort? CompilerContext.assignment_expr(&self) {
 
     // Plain member assignment must not evaluate the LHS property read —
     // only the object and key are evaluated (§13.15.2).  Drop the GETPROP
-    // emitted while parsing the target so getters / proxy [[Get]] traps
-    // don't run as a side effect.  Compound/logical assignments keep the
-    // read (they genuinely need the old value).
+    // (or GETPROP_SUPER) emitted while parsing the target so getters /
+    // proxy [[Get]] traps don't run as a side effect. For super targets,
+    // this also defers the HomeObject null-prototype TypeError: per spec
+    // MakeSuperPropertyReference computes [[Base]] eagerly (never throws —
+    // GetSuperBase just returns null), but the actual ToObject(base) check
+    // happens inside PutValue, AFTER the RHS has been evaluated (§6.2.5.6).
+    // Stripping the eager read here means PUTPROP_SUPER's own null-base
+    // check performs that throw at the correct point, after RHS runs.
+    // Compound/logical assignments keep the read (they genuinely need the
+    // old value).
     if (is_assign && lhs_was_member && self.code_count > 0) {
         Instruction lhs_last = self.code[self.code_count - 1];
         if (lhs_last.op == Opcode.GETPROP && (ushort)lhs_last.a == left
             && (ushort)lhs_last.b == lhs_member_obj && (ushort)lhs_last.c == lhs_member_prop) {
             self.code_count--;
-        } else if (self.last_member_is_super && lhs_last.op == Opcode.LDTHIS
-            && self.code_count > 1
-            && self.code[self.code_count - 2].op == Opcode.GETPROP_SUPER
-            && (ushort)self.code[self.code_count - 2].a == left
-            && (ushort)self.code[self.code_count - 2].b == lhs_member_obj
-            && (ushort)self.code[self.code_count - 2].c == lhs_member_prop) {
-            // super[key] = expr(): the LDTHIS (staged this-binding for a
-            // possible super method call) sits after GETPROP_SUPER in the
-            // instruction stream, but GETPROP_SUPER is a bare property read
-            // that must not run for plain assignment (§13.15.2) — its
-            // ToPropertyKey side effect would also fire before the RHS,
-            // which the spec requires to run first for super[computed] = v.
-            // Move LDTHIS down over the removed GETPROP_SUPER slot.
-            self.code[self.code_count - 2] = lhs_last;
-            self.code_count--;
+        } else if (self.last_member_is_super) {
+            // super.x / super[x] emits GETPROP_SUPER usually followed by an
+            // LDTHIS (staged this-binding for a possible super method call).
+            // Strip both so the null-proto check runs after RHS at PUTPROP_SUPER.
+            uint scan_idx = self.code_count - 1;
+            if (lhs_last.op == Opcode.LDTHIS && scan_idx > 0) {
+                Instruction maybe_getpropsuper = self.code[scan_idx - 1];
+                if (maybe_getpropsuper.op == Opcode.GETPROP_SUPER
+                    && (ushort)maybe_getpropsuper.a == left
+                    && (ushort)maybe_getpropsuper.b == lhs_member_obj
+                    && (ushort)maybe_getpropsuper.c == lhs_member_prop) {
+                    if (self.call_prop_obj_reg == (ushort)lhs_last.a) {
+                        self.free_reg(self.call_prop_obj_reg);
+                        self.call_prop_obj_reg = MAX_REGISTERS;
+                    }
+                    self.code_count -= 2;
+                }
+            } else if (lhs_last.op == Opcode.GETPROP_SUPER && (ushort)lhs_last.a == left
+                && (ushort)lhs_last.b == lhs_member_obj && (ushort)lhs_last.c == lhs_member_prop) {
+                self.code_count--;
+            }
         }
     }
 
@@ -2737,10 +2750,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 ushort super_key_reg;
                 if (self.match(TokenType.DOT)) {
                     // DOT: compute super base first, then emit constant key.
-                    uint super_name_idx = self.add_string_constant("__super__");
+                    // Static methods' HomeObject is the constructor itself
+                    // (__static_super__, always via GETPROTO) — see §13.3.7.1.
+                    uint super_name_idx = self.super_is_static_method
+                        ? self.add_string_constant("__static_super__")
+                        : self.add_string_constant("__super__");
                     ushort super_ctor_reg = self.alloc_reg();
                     self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)super_ctor_reg, super_name_idx));
-                    if (self.super_is_home_object) {
+                    if (self.super_is_static_method || self.super_is_home_object) {
                         super_proto_reg = self.alloc_reg();
                         self.emit_abc(Opcode.GETPROTO, (uint)super_proto_reg, (uint)super_ctor_reg, 0);
                         self.free_reg(super_ctor_reg);
@@ -2774,11 +2791,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     self.advance()!;  // consume '['
                     super_key_reg = self.expression()!;
                     self.expect(TokenType.RBRACKET)!;
-                    // Now compute super base.
-                    uint super_name_idx = self.add_string_constant("__super__");
+                    // Now compute super base. Static methods use __static_super__
+                    // (the constructor) always via GETPROTO — see the DOT branch above.
+                    uint super_name_idx = self.super_is_static_method
+                        ? self.add_string_constant("__static_super__")
+                        : self.add_string_constant("__super__");
                     ushort super_ctor_reg = self.alloc_reg();
                     self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)super_ctor_reg, super_name_idx));
-                    if (self.super_is_home_object) {
+                    if (self.super_is_static_method || self.super_is_home_object) {
                         super_proto_reg = self.alloc_reg();
                         self.emit_abc(Opcode.GETPROTO, (uint)super_proto_reg, (uint)super_ctor_reg, 0);
                         self.free_reg(super_ctor_reg);

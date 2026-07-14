@@ -310,6 +310,12 @@ struct CompilerContext {
     /// class compiler can retain method source text that excludes `static`.
     uint static_elem_src_start;
     bool has_super_binding;     // true when class has extends (super() available)
+    /// True while the body being compiled belongs to a static class method
+    /// (or a static getter/setter). Per §13.3.7.1 GetSuperBase, a static
+    /// method's HomeObject is the class constructor itself, not its
+    /// .prototype — so `super.x` there must resolve against __static_super__
+    /// (always via GETPROTO on the constructor) rather than __super__.
+    bool super_is_static_method;
 
     // Generator tracking
     bool is_generator;          // true when compiling a generator function (function*)
