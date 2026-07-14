@@ -678,6 +678,10 @@ fn void? CompilerContext.block(&self, bool check_directives) {
     }
 
     self.expect(TokenType.RBRACE)!;
+    // A `}` closing a BlockStatement is a statement boundary: per the
+    // ECMAScript lexical grammar, a following `/` starts a
+    // RegularExpressionLiteral, not division (see Lexer.note_block_close doc).
+    self.lexer.note_block_close();
 
     // Pop the lexical scope, removing any let/const bindings from this block
     if (has_lex) {
@@ -3418,6 +3422,7 @@ fn void? CompilerContext.switch_statement(&self) {
     self.force_lexical_fn_decl = saved_force_lexical_fn_decl;
 
     self.expect(TokenType.RBRACE)!;
+    self.lexer.note_block_close();
 
     // If default is not last, emit a redirect for the 'no match' path at the
     // end of all case checks. This is reached by the last case's skip_jump.
@@ -3694,6 +3699,9 @@ fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false)
                 if (already) {
                     // Skip the rest of the function body
                     self.skip_function_body();
+                    // The body's closing `}` is a statement/declaration
+                    // boundary — a following `/` starts a regexp literal.
+                    self.lexer.note_block_close();
                     return;
                 }
             }

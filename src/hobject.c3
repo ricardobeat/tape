@@ -268,6 +268,19 @@ const PropFlags PROP_FLAGS_EC = {
     .is_accessor  = false
 };
 
+/// Writable, enumerable, non-configurable data property.
+/// Used for global `var`/FunctionDeclaration bindings (ES2015
+/// §8.1.1.4.15 CreateGlobalVarBinding / §8.1.1.4.17
+/// CreateGlobalFunctionBinding): the global object's own property for a
+/// script-level var/function is non-configurable so it cannot be deleted,
+/// but remains writable and enumerable.
+const PropFlags PROP_FLAGS_WE = {
+    .writable     = true,
+    .enumerable   = true,
+    .configurable = false,
+    .is_accessor  = false
+};
+
 /// Convenience constant: non-configurable data property (writable, enumerable).
 /// Used for ES2015 class constructor .prototype property (ES6 §14.5.14
 /// step 25): writable=true, enumerable=false, configurable=false.

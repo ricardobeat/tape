@@ -413,6 +413,10 @@ struct Lexer {
     bool strict_mode;
     /// True if a line terminator was skipped between the previous and next token.
     bool seen_line_term;
+    /// Set by the parser after consuming a `}` that closes a Block/function/
+    /// class body in statement position; makes the next `/` a RegExp literal
+    /// (not division). Cleared by the next `next_token()`.
+    bool force_regex_after_brace;
     /// True when, since the start of source or the most recent real line
     /// terminator, only whitespace and/or comments have been produced (i.e.
     /// no real token has appeared yet on the current line). Persists across
@@ -491,6 +495,7 @@ fn void Lexer.reset(&self, char[] source) {
     self.token_start = 0;
     self.lookahead_token_start = 0;
     self.has_pushed_back = false;
+    self.force_regex_after_brace = false;
 }
 
 // ============================================================================
@@ -1836,6 +1841,14 @@ fn Token? Lexer.scan_template_after_expr(&self) {
     return LEX_ERROR~;
 }
 
+/// Called by the parser immediately after consuming a `}` that closes a
+/// BlockStatement, function body, or class body in statement position —
+/// contexts where a following `/` must be read as a RegularExpressionLiteral
+/// rather than division.
+fn void Lexer.note_block_close(&self) {
+    self.force_regex_after_brace = true;
+}
+
 /// Check if the previous token was an operand, meaning `/` should be
 /// treated as division rather than the start of a regexp literal.
 /// Follows the ECMAScript lexical grammar: after identifiers, literals,
@@ -1893,6 +1906,11 @@ fn Token? Lexer.next_token(&self) {
     // span after consumption (Function.prototype.toString retention).
     self.token_start = self.pos;
 
+    // Consume the block-close regex hint: it only affects the immediately
+    // following token's `/` disambiguation, so clear it now.
+    bool force_regex = self.force_regex_after_brace;
+    self.force_regex_after_brace = false;
+
     if (self.at_end()) {
         Token tok = make_token(TokenType.EOF_TOKEN, self.line, self.col);
         self.current = tok;
@@ -1933,7 +1951,7 @@ fn Token? Lexer.next_token(&self) {
     // Check for regexp literal vs division operator
     if (c == '/') {
         // /= is always division-assign, handle normally via scan_punctuator
-        if (self.peek_char_at(1) != '=' && !self.prev_was_operand()) {
+        if (self.peek_char_at(1) != '=' && (force_regex || !self.prev_was_operand())) {
             Token tok = self.scan_regexp()!;
             self.current = tok;
             return tok;

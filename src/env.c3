@@ -217,6 +217,21 @@ fn bool env_declare(EnvRecord* env, void* key, TVal val) @inline {
     return env.bindings.put_prop(key, val, hobject::PROP_FLAGS_WEC);
 }
 
+/// Declare a `var`/FunctionDeclaration binding in the given environment
+/// only (no chain walk), using non-configurable flags when `env` is the
+/// global environment record. Per ES2015 §8.1.1.4.15
+/// CreateGlobalVarBinding / §8.1.1.4.17 CreateGlobalFunctionBinding, a
+/// script-level var/function binding installed directly on the global
+/// object is { writable: true, enumerable: true, configurable: false } —
+/// distinct from ordinary assignment (`x = 1` with no declaration), which
+/// remains configurable. Bindings in non-global (function-scope) var
+/// environments are never directly observable as object properties, so
+/// their configurability is immaterial; they keep the ordinary WEC flags.
+fn bool env_declare_var(EnvRecord* env, void* key, TVal val, bool is_global) @inline {
+    hobject::PropFlags flags = is_global ? hobject::PROP_FLAGS_WE : hobject::PROP_FLAGS_WEC;
+    return env.bindings.put_prop(key, val, flags);
+}
+
 /// Declare a non-enumerable binding (for built-in globals per ES spec §17).
 /// Built-in properties must be { writable: true, enumerable: false, configurable: true }.
 fn bool env_declare_nonenum(EnvRecord* env, void* key, TVal val) @inline {

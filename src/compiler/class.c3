@@ -619,6 +619,9 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     }
 
     self.expect(TokenType.RBRACE)!;
+    // A `}` closing a ClassBody is a statement/declaration boundary: a
+    // following `/` starts a RegularExpressionLiteral, not division.
+    self.lexer.note_block_close();
     // Capture the end position of the class (after `}`) for source retention.
     uint class_src_end = self.lexer.pos;
 
