@@ -287,6 +287,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
 
     // Compile the source string as eval code
     Lexer lex = lexer::lexer_init(src_cstr[:src_len], ctx.heap);
+    lex.skip_hashbang();
     CompiledFunction*? cf = compiler::compile_eval(&lex, ctx.heap);
     CompiledFunction* func;
     if (try f = cf) {

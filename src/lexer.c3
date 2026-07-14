@@ -449,6 +449,35 @@ fn Lexer lexer_init(char[] source, void* heap) {
     return lex;
 }
 
+/// Skip a leading HashbangComment (`#!` up to but not including the first
+/// LineTerminator) per ECMAScript §12.5. Must be called, if at all, before
+/// any tokens are produced — it only matches when `pos == 0` and the first
+/// two bytes are the literal ASCII characters `#` and `!` (escape sequences
+/// like `#!` must NOT match, since they are not the literal source
+/// characters). Callers opt into this for Script, Module, and eval source
+/// text; it must never be applied to Function-constructor bodies or nested
+/// function/class bodies, which is why it is not folded into `lexer_init`.
+fn void Lexer.skip_hashbang(&self) {
+    if (self.pos != 0) return;
+    if (self.source.len < 2) return;
+    if (self.source[0] != '#' || self.source[1] != '!') return;
+    self.pos = 2;
+    self.col = 3;
+    while (!self.at_end()) {
+        char c = self.peek_char();
+        if (c == '\n' || c == '\r') break;
+        // U+2028 / U+2029 (UTF-8: E2 80 A8 / E2 80 A9) also terminate the
+        // hashbang comment, same as SingleLineComment.
+        if (c == (char)0xE2 && self.remaining() >= 3) {
+            char n1 = self.source[self.pos + 1];
+            char n2 = self.source[self.pos + 2];
+            if (n1 == (char)0x80 && (n2 == (char)0xA8 || n2 == (char)0xA9)) break;
+        }
+        self.pos++;
+        self.col++;
+    }
+}
+
 /// Reinitialize a lexer with new source text.
 fn void Lexer.reset(&self, char[] source) {
     self.source = source;

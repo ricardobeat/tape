@@ -607,6 +607,18 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     if (self.reg_overflow) {
         return self.fail("register limit exceeded")~;
     }
+    // A lex error surfaced through `peek_type()` (used by `is_at_end()`,
+    // `check()`, etc.) is swallowed there as a synthetic EOF_TOKEN so that
+    // ASI-adjacent lookahead logic doesn't have to thread an optional through
+    // every callsite; the error message/position was still recorded into
+    // `g_last_err_msg` at the point of failure. Without this check, a lex
+    // error occurring only during lookahead (never during an `advance()`)
+    // would let `compile()`'s statement loop see a clean EOF and return
+    // success. Catch that here, at the single choke point all compile entry
+    // points funnel through.
+    if (g_last_err_msg[0] != 0) {
+        return COMPILE_ERROR~;
+    }
     Heap* h = (Heap*)self.heap;
     // Allocate the CompiledFunction struct
     void* raw = h.alloc_func(h.heap_udata, CompiledFunction::size);

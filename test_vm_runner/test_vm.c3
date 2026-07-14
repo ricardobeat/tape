@@ -41,6 +41,7 @@ fn int main(String[] args) {
     defer vm::vm_destroy(v);
 
     Lexer lex = lexer::lexer_init(source, hp);
+    lex.skip_hashbang();
     CompiledFunction*? func = compiler::compile(&lex, hp);
     CompiledFunction* f;
     if (try ff = func) { f = ff; } else { io::eprintfn("Compile failed"); return 1; }
