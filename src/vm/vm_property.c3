@@ -121,6 +121,25 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
 
                 void* key = get_prop_key(vm, rc);
+                if (key == null && vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
+                // ToPropertyKey (§7.1.19) must be idempotent when a compound
+                // assignment reuses this same key register for the follow-up
+                // PUTPROP: `base[prop] *= expr()` may only call prop.toString()
+                // once. Write the resolved string key back into rc so that a
+                // later get_prop_key(vm, rc) on this register is a no-op
+                // (STRING tag short-circuits without re-invoking ToPrimitive).
+                if (key != null && !rc.is_string()) {
+                    TVal key_tv;
+                    key_tv.set_string(key);
+                    vm.heap.tval_copy_ref(rc, &key_tv);
+                    track_heap_store(ds.act, rc, (uint)insn.c);
+                }
 
                 // Integer-indexed exotic [[Get]] (ES2022 §9.4.5.4):
                 // For TypedArray objects, any canonical numeric index string must
@@ -2155,6 +2174,13 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
 
                 void* key = get_prop_key(vm, rb);
+                if (key == null && vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
                 if (key != null) {
                     // Save the value before ensure_valstack may reallocate
                     TVal put_val = *rc;
@@ -2437,7 +2463,15 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 return (TVal){};
             }
             void* skey = get_prop_key(vm, rb);
-            if (skey == null) { return (TVal){}; }
+            if (skey == null) {
+                if (vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                }
+                return (TVal){};
+            }
             HObject* super_base = (HObject*)ra.get_heapptr();
             bool sres;
             if (!builtins::js_set_with_receiver(vm, vm.heap, super_base, (HString*)skey, *rc, ds.act.this_binding, &sres)) {
@@ -2463,7 +2497,17 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 return (TVal){};
             }
             void* gkey = get_prop_key(vm, rc);
-            if (gkey == null) { ra.set_undefined(); return (TVal){}; }
+            if (gkey == null) {
+                if (vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
+                ra.set_undefined();
+                return (TVal){};
+            }
             HObject* super_base = (HObject*)rb.get_heapptr();
             hobject::PropLookupResult gres = super_base.get_prop_or_accessor_proto(gkey, true);
             if (gres.kind == hobject::PropLookupKind.PROP_ACCESSOR) {

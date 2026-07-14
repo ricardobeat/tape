@@ -413,6 +413,21 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         if (lhs_last.op == Opcode.GETPROP && (ushort)lhs_last.a == left
             && (ushort)lhs_last.b == lhs_member_obj && (ushort)lhs_last.c == lhs_member_prop) {
             self.code_count--;
+        } else if (self.last_member_is_super && lhs_last.op == Opcode.LDTHIS
+            && self.code_count > 1
+            && self.code[self.code_count - 2].op == Opcode.GETPROP_SUPER
+            && (ushort)self.code[self.code_count - 2].a == left
+            && (ushort)self.code[self.code_count - 2].b == lhs_member_obj
+            && (ushort)self.code[self.code_count - 2].c == lhs_member_prop) {
+            // super[key] = expr(): the LDTHIS (staged this-binding for a
+            // possible super method call) sits after GETPROP_SUPER in the
+            // instruction stream, but GETPROP_SUPER is a bare property read
+            // that must not run for plain assignment (§13.15.2) — its
+            // ToPropertyKey side effect would also fire before the RHS,
+            // which the spec requires to run first for super[computed] = v.
+            // Move LDTHIS down over the removed GETPROP_SUPER slot.
+            self.code[self.code_count - 2] = lhs_last;
+            self.code_count--;
         }
     }
 
