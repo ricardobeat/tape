@@ -84,6 +84,16 @@ struct DestructBind {
     // Heap-allocated (a Lexer embeds a 4KB ident_buf); null = not deferred.
     // Owned by the bind from collect until emit_deferred_target frees it.
     DeferredTarget* deferred_target;
+    // Deferred computed-key evaluation for OBJECT ASSIGNMENT patterns only
+    // (`{[expr]: target} = rhs`): per ES2022 §13.15.5.3 the computed key
+    // expression must evaluate AFTER the RHS (source object), not before it.
+    // collect_obj_assign_binds only parses past `[expr]` at collect time (code
+    // and registers discarded) and stores a lexer snapshot here;
+    // emit_destruct_bindings re-parses it at the point of use via
+    // emit_deferred_computed_key, landing the value in computed_key_reg.
+    // Heap-allocated; null = not deferred (param/declare paths still evaluate
+    // the key eagerly at collect time via computed_key_reg directly).
+    DeferredTarget* deferred_computed_key;
 }
 
 /// Lexer position captured by collect_assign_target for a deferred member
@@ -520,18 +530,21 @@ fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state,
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)state.callee_reg, 0);
 
-    // Extract .value
-    ushort val_key_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("value"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)dest_reg, (uint)result_reg, (uint)val_key_reg);
-
-    // If result.done, leave method_reg latched undefined.
+    // IteratorStep (§7.4.7) reads `.done` first and only reads `.value`
+    // (IteratorValue, §7.4.8) when not done — an observable ordering when
+    // `.done`/`.value` are accessor properties (a `.value` getter must not
+    // run when the iterator reports done:true).
+    ushort key_reg = self.alloc_reg();
     ushort done_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)val_key_reg, self.add_string_constant("done"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)val_key_reg);
+    self.emit_abc(Opcode.LDCONST, (uint)key_reg, self.add_string_constant("done"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)key_reg);
     uint mark_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+    // Not done: extract .value.
+    self.emit_abc(Opcode.LDCONST, (uint)key_reg, self.add_string_constant("value"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)dest_reg, (uint)result_reg, (uint)key_reg);
     self.free_reg(done_reg);
-    self.free_reg(val_key_reg);
+    self.free_reg(key_reg);
     self.free_reg(result_reg);
     // Successful not-done step: restore the live iterator for IteratorClose.
     self.emit_abc(Opcode.LDREG, (uint)state.method_reg, (uint)state.save_reg, 0);
@@ -541,7 +554,11 @@ fn void CompilerContext.emit_destruct_iter_next(&self, DestructIterState* state,
     // already undefined on this path — harmless).
     self.patch_jump(exhausted_jump);
     self.emit_abc(Opcode.LDUNDEF, (uint)dest_reg, 0, 0);
+    // Just-became-done: IteratorStep returns false without reading .value
+    // (§7.4.7), so bind undefined here too — dest_reg was never populated on
+    // this path since .value is now only read when not done.
     self.patch_jump(mark_jump);
+    self.emit_abc(Opcode.LDUNDEF, (uint)dest_reg, 0, 0);
     self.emit_abc(Opcode.LDUNDEF, (uint)state.method_reg, 0, 0);
     self.patch_jump(end_jump);
 }
@@ -678,6 +695,12 @@ fn void CompilerContext.emit_destruct_bindings(&self,
             binds[di].member_obj_reg  = self.alloc_persistent_reg();
             binds[di].member_prop_reg = self.alloc_persistent_reg();
         }
+        if (binds[di].deferred_computed_key != null) {
+            // Stable register for a deferred computed key's evaluated value:
+            // allocated below every callee window so it survives the GETPROP
+            // reads and any nested-pattern CALLs up to point of use.
+            binds[di].computed_key_reg = self.alloc_persistent_reg();
+        }
         if (!binds[di].is_object) has_array_binds = true;
     }
 
@@ -760,6 +783,9 @@ fn void CompilerContext.emit_destruct_bindings(&self,
             if (binds[di].is_object) {
                 // Object pattern: GETPROP via a constant or computed key.
                 if (binds[di].is_computed_key) {
+                    if (binds[di].deferred_computed_key != null) {
+                        self.emit_deferred_computed_key(&binds[di]);
+                    }
                     self.emit_abc(Opcode.GETPROP, (uint)group_reg, (uint)src_reg, (uint)binds[di].computed_key_reg);
                 } else {
                     ushort key_reg = self.alloc_reg();
@@ -884,8 +910,20 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                 self.emit_abc(Opcode.REQUIRE_OBJ, (uint)group_reg, 0, 0);
             }
         } else {
-            // Leaf binding — a real variable
+            // Leaf binding — a real variable.
+            // Member-expression assignment targets (ASSIGN_TARGET) pass 0xFFFF
+            // here rather than a pre-allocated register: the caller cannot know
+            // where the persistent member_obj_reg/member_prop_reg/computed_key_reg
+            // will land (allocated in the pre-scan above), and GETPROP's accessor
+            // getter call frame is placed AT the result register (reusing it and
+            // everything above), so bind_reg must be allocated *after* — i.e. at
+            // a higher register number than — any live persistent register or
+            // the getter call would clobber it. Allocate it fresh here instead.
             ushort bind_reg = binding_regs[di];
+            if (bind_reg == 0xFFFF) {
+                bind_reg = self.alloc_reg();
+                binding_regs[di] = bind_reg;
+            }
             uint ni = binds[di].name_idx;
 
             // Extract value from source into bind_reg
@@ -894,8 +932,25 @@ fn void CompilerContext.emit_destruct_bindings(&self,
                     // Object rest: `{...rest}` → Object.assign({}, src) minus siblings.
                     self.emit_object_rest(bind_reg, src_reg, binds, count, di);
                 } else if (binds[di].is_computed_key) {
+                    if (binds[di].deferred_computed_key != null) {
+                        self.emit_deferred_computed_key(&binds[di]);
+                    }
+                    // Per ES2022 §12.15.5.4 KeyedDestructuringAssignmentEvaluation:
+                    // the target lref (e.g. a member expression
+                    // `target()[targetKey()]`) is evaluated as part of
+                    // AssignmentElement BEFORE `v` (the property) is read from
+                    // the source (GetV(value, propertyName) is step 2, after
+                    // lref evaluation in step 1). PutValue's own ToPropertyKey
+                    // coercion of the target's key still runs naturally at
+                    // PUTPROP time, after this GETPROP.
+                    if (binds[di].deferred_target != null) {
+                        self.emit_deferred_target(&binds[di]);
+                    }
                     self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)binds[di].computed_key_reg);
                 } else {
+                    if (binds[di].deferred_target != null) {
+                        self.emit_deferred_target(&binds[di]);
+                    }
                     ushort key_reg = self.alloc_reg();
                     self.emit_a_bc(Opcode.LDCONST, (uint)key_reg, binds[di].key_idx);
                     self.emit_abc(Opcode.GETPROP, (uint)bind_reg, (uint)src_reg, (uint)key_reg);

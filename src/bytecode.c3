@@ -280,6 +280,17 @@ enum Opcode : char {
     /// Exit the finally block (may re-throw or continue).
     ENDFINALLY,
 
+    /// `A = ToPropertyKey(reg[A])`  — in-place coercion of a computed
+    /// property-name expression's value to a property key (string/symbol),
+    /// per ToPropertyKey (§7.1.19) / ComputedPropertyName evaluation
+    /// (§13.2.5.5). Used by object destructuring-assignment computed keys
+    /// (`{[expr]: target} = rhs`) to coerce the key at PropertyName-evaluation
+    /// time — before the (possibly deferred) AssignmentTarget is evaluated —
+    /// matching KeyedDestructuringAssignmentEvaluation's step ordering without
+    /// duplicating the later property read done by GETPROP/PUTPROP (which
+    /// idempotently no-ops on an already-string register).
+    TOPROPKEY,
+
     // ---- Miscellaneous ---------------------------------------------------
 
     /// No operation.

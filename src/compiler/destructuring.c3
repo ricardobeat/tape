@@ -450,6 +450,47 @@ fn void CompilerContext.emit_deferred_target(&self, DestructBind* bind)
     self.free_regs_to(pre_reg);
 }
 
+/// Re-parse and emit a computed property key deferred by
+/// collect_obj_assign_binds. Called by emit_destruct_bindings at the point of
+/// use (immediately before the GETPROP that reads the property), so a
+/// computed key such as `{[sourceKey()]: t}` evaluates after the RHS per
+/// ES2022 §13.15.5.3, not before it. The evaluated key value lands in the
+/// bind's pre-allocated persistent register (bind.computed_key_reg).
+fn void CompilerContext.emit_deferred_computed_key(&self, DestructBind* bind)
+{
+    DeferredTarget* snap = bind.deferred_computed_key;
+    Lexer saved = *self.lexer;
+    Token[4] saved_pb = self.pushback_stack;
+    uint saved_pbc = self.pushback_count;
+    *self.lexer = snap.lexer;
+    self.pushback_stack = snap.pushback;
+    self.pushback_count = snap.pushback_count;
+    defer {
+        *self.lexer = saved;
+        self.pushback_stack = saved_pb;
+        self.pushback_count = saved_pbc;
+        bind.deferred_computed_key = null;
+        libc::free(snap);
+    }
+
+    ushort pre_reg = self.next_reg;
+    ushort? key_expr_res = self.assignment_expr();
+    if (catch key_expr_res) {
+        // Unreachable: the same token stream parsed successfully at collection.
+        return;
+    }
+    ushort key_val_reg = key_expr_res;
+    self.emit_abc(Opcode.LDREG, (uint)bind.computed_key_reg, (uint)key_val_reg, 0);
+    // Per ES2022 §12.15.5.2 step 1, PropertyName evaluation (which includes
+    // ToPropertyKey for a ComputedPropertyName, §13.2.5.5) happens here — as
+    // its own step, before KeyedDestructuringAssignmentEvaluation evaluates
+    // the (possibly deferred) AssignmentTarget. Coerce now so `sourceKey`'s
+    // `.toString()`/`Symbol.toPrimitive` runs at this point rather than later
+    // when GETPROP reads the source property.
+    self.emit_abc(Opcode.TOPROPKEY, (uint)bind.computed_key_reg, 0, 0);
+    self.free_regs_to(pre_reg);
+}
+
 /// Parse array destructuring assignment: [a, b, ...rest] = rhs
 /// The '[' has already been consumed.
 /// Returns the RHS register (destructuring assignment evaluates to RHS value).
@@ -464,7 +505,7 @@ fn void CompilerContext.emit_deferred_target(&self, DestructBind* bind)
 /// elision holes). Consumes through the closing ']'. Shared by
 /// array_destructure_assign and the bare for-of loop.
 fn void? CompilerContext.collect_arr_assign_binds(&self,
-    DestructBind[] binds_arg, uint* count_ptr)
+    DestructBind[] binds_arg, uint* count_ptr, ushort parent_idx = 0xFFFF)
 {
     DestructBind[] binds = binds_arg;
     uint count = *count_ptr;
@@ -483,7 +524,7 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                 binds[count].index      = elem_idx;
                 binds[count].is_object  = false;
                 binds[count].arg_idx    = 0xFFFF;          // patched to rhs_reg later
-                binds[count].parent_idx = 0xFFFF;
+                binds[count].parent_idx = parent_idx;
                 binds[count].is_synthetic = true;
                 binds[count].is_hole    = true;
                 count++;
@@ -498,6 +539,9 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
 
             // Nested rest pattern: `...[a, b]` or `...{a}` — but only when
             // the `{`/`[` is not a MemberExpression primary like `...{}.x`.
+            // Delegates to the assign-bind collectors (not the param-only
+            // ones) so member-expression leaves are accepted and deferred at
+            // any nesting depth (ES2022 §13.15.5).
             if ((self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET))
                 && !self.primary_is_member_target()) {
                 bool is_obj = self.check(TokenType.LBRACE);
@@ -506,16 +550,16 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                     binds[count].index      = elem_idx;
                     binds[count].is_object  = false;
                     binds[count].arg_idx    = 0xFFFF;
-                    binds[count].parent_idx = 0xFFFF;
+                    binds[count].parent_idx = parent_idx;
                     binds[count].is_synthetic = true;
                     count++;
                 }
                 ushort synth_idx = (ushort)(count - 1);
                 self.advance()!;  // consume '{' or '['
                 if (is_obj) {
-                    self.collect_obj_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+                    self.collect_obj_assign_binds(binds[..], &count, synth_idx)!;
                 } else {
-                    self.collect_arr_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+                    self.collect_arr_assign_binds(binds[..], &count, synth_idx)!;
                 }
             } else {
                 // Leaf rest target: identifier or member expression (member
@@ -531,7 +575,7 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                     binds[count].index      = elem_idx;
                     binds[count].is_object  = false;
                     binds[count].arg_idx    = 0xFFFF;
-                    binds[count].parent_idx = 0xFFFF;
+                    binds[count].parent_idx = parent_idx;
                     binds[count].name_len   = 0;
                     count++;
                 }
@@ -545,6 +589,9 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
         // Nested pattern: `[pattern]` or `{pattern}` — but only when the
         // `{`/`[` is NOT the start of a MemberExpression primary such as
         // `{}.x` or `[1][0]`. Scan ahead to distinguish the two cases.
+        // Delegates to the assign-bind collectors so member-expression leaves
+        // nested at any depth (e.g. `[[x[yield]]] = v`) are accepted and
+        // deferred, not just identifiers.
         if ((self.check(TokenType.LBRACE) || self.check(TokenType.LBRACKET))
             && !self.primary_is_member_target()) {
             bool is_obj = self.check(TokenType.LBRACE);
@@ -553,16 +600,16 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                 binds[count].index      = elem_idx;
                 binds[count].is_object  = false;
                 binds[count].arg_idx    = 0xFFFF;
-                binds[count].parent_idx = 0xFFFF;
+                binds[count].parent_idx = parent_idx;
                 binds[count].is_synthetic = true;
                 count++;
             }
             ushort synth_idx = (ushort)(count - 1);
             self.advance()!;  // consume '{' or '['
             if (is_obj) {
-                self.collect_obj_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+                self.collect_obj_assign_binds(binds[..], &count, synth_idx)!;
             } else {
-                self.collect_arr_param_binds(binds[..], &count, 0xFFFF, synth_idx)!;
+                self.collect_arr_assign_binds(binds[..], &count, synth_idx)!;
             }
 
             // Default for the nested pattern: `[a] = default`
@@ -588,7 +635,7 @@ fn void? CompilerContext.collect_arr_assign_binds(&self,
                 binds[count].index             = elem_idx;
                 binds[count].is_object         = false;
                 binds[count].arg_idx           = 0xFFFF;
-                binds[count].parent_idx        = 0xFFFF;
+                binds[count].parent_idx        = parent_idx;
                 binds[count].name_len          = 0;
                 count++;
             }
@@ -652,8 +699,15 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
     for (uint i = 0; i < count; i++) {
         if (binds[i].is_synthetic) continue;
         if (binds[i].is_member_target) {
-            // Member target: always use a fresh temp (no local var to resolve).
-            binding_regs[i] = self.alloc_reg();
+            // Do NOT pre-allocate here: emit_destruct_bindings allocates a
+            // fresh bind_reg at emission time, after its pre-scan places any
+            // persistent member_obj_reg/member_prop_reg for this bind — an
+            // accessor-getter call triggered while extracting the iterator
+            // result (`.next()`/`.done`/`.value`) lands its call frame AT the
+            // result register (reusing it and everything above), so bind_reg
+            // must be the highest live register at that point, not
+            // pre-allocated below the persistent ones. See emit_destruct_bindings.
+            binding_regs[i] = 0xFFFF;
             continue;
         }
         // Build a char[] slice into name_buf for resolve_var.
@@ -728,7 +782,7 @@ fn ushort? CompilerContext.array_destructure_assign(&self) {
 /// the full LeftHandSideExpression grammar at the top level and in rest.
 /// The '{' has already been consumed; this consumes its own '}'.
 fn void? CompilerContext.collect_obj_assign_binds(&self,
-    DestructBind[] binds, uint* count)
+    DestructBind[] binds, uint* count, ushort parent_idx = 0xFFFF)
 {
     if (self.check(TokenType.RBRACE)) { self.advance()!; return; }
 
@@ -750,7 +804,7 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
                 binds[*count].key_idx          = 0xFFFF;   // object-rest sentinel
                 binds[*count].is_object        = true;
                 binds[*count].arg_idx          = 0xFFFF;
-                binds[*count].parent_idx       = 0xFFFF;
+                binds[*count].parent_idx       = parent_idx;
                 binds[*count].is_member_target = is_member;
                 binds[*count].member_obj_reg   = tgt_obj;
                 binds[*count].member_prop_reg  = tgt_key;
@@ -761,12 +815,32 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
         }
 
         // Property key: computed `[expr]`, or a literal/identifier key.
+        // Per ES2022 §13.15.5.3 ObjectAssignmentPattern's computed key
+        // expression evaluates AFTER the RHS (source object) is evaluated,
+        // not at pattern-parse time. Defer via lexer snapshot + re-parse at
+        // emission (see collect_assign_target / emit_deferred_computed_key) —
+        // collection here only advances the lexer past `[expr]`, discarding
+        // its code and registers.
         bool is_computed = false;
         ushort computed_key_reg = 0xFFFF;
         uint key_idx = 0xFFFFFFFF;
+        DeferredTarget* deferred_key = null;
         if (self.check(TokenType.LBRACKET)) {
             self.advance()!; // consume '['
-            computed_key_reg = self.assignment_expr()!;
+            DeferredTarget* snap = (DeferredTarget*)libc::malloc(DeferredTarget::size);
+            snap.lexer = *self.lexer;
+            snap.pushback = self.pushback_stack;
+            snap.pushback_count = self.pushback_count;
+            uint pre_code = self.code_count;
+            ushort pre_reg = self.next_reg;
+            ushort? key_expr_res = self.assignment_expr();
+            if (catch err = key_expr_res) {
+                libc::free(snap);
+                return err~;
+            }
+            self.code_count = pre_code;
+            self.free_regs_to(pre_reg);
+            deferred_key = snap;
             self.expect(TokenType.RBRACKET)!;
             self.expect(TokenType.COLON)!;
             is_computed = true;
@@ -790,7 +864,7 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
                 binds[*count].key_idx     = key_idx;
                 binds[*count].is_object   = true;
                 binds[*count].arg_idx     = 0xFFFF;
-                binds[*count].parent_idx  = 0xFFFF;
+                binds[*count].parent_idx  = parent_idx;
                 binds[*count].name_len    = 0;
                 (*count)++;
             }
@@ -805,7 +879,9 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
                    && !self.primary_is_member_target()) {
             // Nested pattern target: `key: [..]` / `key: {..}`. Emit a synthetic
             // group whose value is source[key]; delegate the sub-pattern to the
-            // param collectors (identifier leaves only, like array assign).
+            // assign-bind collectors so member-expression leaves nested at any
+            // depth (e.g. `{k: [x[yield]]}`) are accepted and deferred, not
+            // just identifiers.
             bool nested_is_obj = self.check(TokenType.LBRACE);
             uint synth = *count;
             if (*count < binds.len) {
@@ -813,16 +889,19 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
                 binds[*count].is_object   = true;
                 binds[*count].is_computed_key = is_computed;
                 binds[*count].computed_key_reg = computed_key_reg;
+                binds[*count].deferred_computed_key = deferred_key;
                 binds[*count].arg_idx     = 0xFFFF;
-                binds[*count].parent_idx  = 0xFFFF;
+                binds[*count].parent_idx  = parent_idx;
                 binds[*count].is_synthetic = true;
                 (*count)++;
+            } else if (deferred_key != null) {
+                libc::free(deferred_key);
             }
             self.advance()!; // consume '[' or '{'
             if (nested_is_obj) {
-                self.collect_obj_param_binds(binds, count, 0xFFFF, (ushort)synth)!;
+                self.collect_obj_assign_binds(binds, count, (ushort)synth)!;
             } else {
-                self.collect_arr_param_binds(binds, count, 0xFFFF, (ushort)synth)!;
+                self.collect_arr_assign_binds(binds, count, (ushort)synth)!;
             }
             if (self.match(TokenType.ASSIGN)) {
                 binds[synth].has_default = true;
@@ -831,13 +910,26 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
             }
         } else {
             // `key: target` — target is an identifier or member expression.
-            ushort tgt_obj  = 0xFFFF;
-            ushort tgt_key  = 0xFFFF;
-            uint   tgt_name = 0xFFFFFFFF;
-            bool is_member = self.parse_assign_target_lhs(&tgt_obj, &tgt_key, &tgt_name)!;
+            // Member-expression targets are deferred (collect_assign_target):
+            // per ES2022 §13.15.5.3 the target lref evaluates after `p` is
+            // read from the source, so a side-effecting target such as
+            // `{key: target()[targetKey()]}` must not run before the source
+            // read (or the RHS, since collect happens before the RHS is
+            // parsed at all — deferral makes it re-evaluate at emission time,
+            // after both the RHS and the source property read).
+            DestructBind tgt_bind;
+            if (catch err = self.collect_assign_target(&tgt_bind)) {
+                if (deferred_key != null) libc::free(deferred_key);
+                return err~;
+            }
+            bool is_member = tgt_bind.is_member_target;
+            uint tgt_name = tgt_bind.name_idx;
             if (!is_member) {
                 HString* hs = (HString*)self.constants[tgt_name].get_heapptr();
-                if (is_restricted_name(hs.get_data())) return COMPILE_ERROR~;
+                if (is_restricted_name(hs.get_data())) {
+                    if (deferred_key != null) libc::free(deferred_key);
+                    return COMPILE_ERROR~;
+                }
             }
             if (*count < binds.len) {
                 binds[*count].name_idx         = tgt_name;
@@ -845,13 +937,18 @@ fn void? CompilerContext.collect_obj_assign_binds(&self,
                 binds[*count].is_object        = true;
                 binds[*count].is_computed_key  = is_computed;
                 binds[*count].computed_key_reg = computed_key_reg;
+                binds[*count].deferred_computed_key = deferred_key;
                 binds[*count].arg_idx          = 0xFFFF;
-                binds[*count].parent_idx       = 0xFFFF;
+                binds[*count].parent_idx       = parent_idx;
                 binds[*count].is_member_target = is_member;
-                binds[*count].member_obj_reg   = tgt_obj;
-                binds[*count].member_prop_reg  = tgt_key;
+                binds[*count].member_obj_reg   = tgt_bind.member_obj_reg;
+                binds[*count].member_prop_reg  = tgt_bind.member_prop_reg;
+                binds[*count].deferred_target  = tgt_bind.deferred_target;
                 binds[*count].name_len         = 0;
                 (*count)++;
+            } else {
+                if (deferred_key != null) libc::free(deferred_key);
+                if (tgt_bind.deferred_target != null) libc::free(tgt_bind.deferred_target);
             }
             if (self.match(TokenType.ASSIGN)) {
                 binds[*count - 1].has_default = true;
@@ -888,7 +985,17 @@ fn ushort? CompilerContext.object_destructure_assign(&self) {
     // identifiers get a fresh temp; resolvable locals reuse their slot.
     for (uint i = 0; i < count; i++) {
         if (binds[i].is_synthetic) continue;
-        if (binds[i].is_member_target) { binding_regs[i] = self.alloc_reg(); continue; }
+        if (binds[i].is_member_target) {
+            // Do NOT pre-allocate here: emit_destruct_bindings allocates a
+            // fresh bind_reg at emission time, after its pre-scan places any
+            // persistent member_obj_reg/member_prop_reg/computed_key_reg for
+            // this bind — GETPROP's accessor-getter call frame lands at the
+            // GETPROP result register (and reuses everything above it), so
+            // bind_reg must be the highest live register at that point, not
+            // pre-allocated below the persistent ones. See emit_destruct_bindings.
+            binding_regs[i] = 0xFFFF;
+            continue;
+        }
         HString* hs = (HString*)self.constants[binds[i].name_idx].get_heapptr();
         char[] name = hs.get_data();
         if (!self.is_global) {

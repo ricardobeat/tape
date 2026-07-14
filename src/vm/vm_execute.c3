@@ -2338,6 +2338,29 @@ fn TVal? Vm.run(Vm* vm) {
             if (catch err = dispatch_property(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
 
+        case Opcode.TOPROPKEY: {
+            // In-place ToPropertyKey coercion (see bytecode.c3 doc comment).
+            // Mirrors dispatch_property's GETPROP key-coercion cache-back so a
+            // later GETPROP/PUTPROP on this same register is a no-op re-coercion.
+            if (!ra.is_string()) {
+                void* key = get_prop_key(vm, ra);
+                if (key == null && vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    continue;
+                }
+                if (key != null) {
+                    TVal key_tv;
+                    key_tv.set_string(key);
+                    vm.heap.tval_copy_ref(ra, &key_tv);
+                    track_heap_store(ds.act, ra, (uint)insn.a);
+                }
+            }
+            continue;
+        }
+
         // === OBJECT / ARRAY CREATION ===
         case Opcode.NEWOBJ:
         case Opcode.NEWARR:
