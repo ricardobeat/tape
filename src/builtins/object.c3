@@ -111,7 +111,11 @@ fn void builtin_object(BuiltinContext* ctx) {
             return;
         }
         HObject* obj = obj_raw;
-        obj.prototype = ctx.heap.object_proto;
+        // ES2015 §9.2.2 [[Construct]] step 5/2.a: base constructor must use
+        // OrdinaryCreateFromConstructor(newTarget, "%Object.prototype%") — so
+        // a `class Sub extends Object {}` constructor returns an object whose
+        // [[Prototype]] is Sub.prototype, not Object.prototype.
+        obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.object_proto);
         ctx.result.set_object(obj);
         return;
     }
@@ -127,7 +131,7 @@ fn void builtin_object(BuiltinContext* ctx) {
             return;
         }
         HObject* obj = obj_raw;
-        obj.prototype = ctx.heap.object_proto;
+        obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.object_proto);
         ctx.result.set_object(obj);
         return;
     }
@@ -207,7 +211,7 @@ fn void builtin_object(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = obj_raw;
-    obj.prototype = ctx.heap.object_proto;
+    obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.object_proto);
     ctx.result.set_object(obj);
 }
 

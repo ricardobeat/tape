@@ -164,7 +164,11 @@ fn void builtin_function(BuiltinContext* ctx) {
 
     // Set the function's .prototype property (standard for JS functions)
     // and its internal [[Prototype]] to Function.prototype
-    func_obj.prototype = ctx.heap.function_proto;
+    // ES2015 §9.2.2 [[Construct]] step 5/2.a: a base constructor used as super
+    // must use OrdinaryCreateFromConstructor(newTarget, "%Function.prototype%"),
+    // so `class Sub extends Function {}` produces a function whose [[Prototype]]
+    // is Sub.prototype, not Function.prototype.
+    func_obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.function_proto);
     HObject*? proto_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (try proto = proto_raw) {
         proto.prototype = ctx.heap.object_proto;
