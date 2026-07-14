@@ -2684,7 +2684,18 @@ fn TVal? Vm.run(Vm* vm) {
                 // The result of super() is in callee_result (already written
                 // above). The immediate caller may be an arrow or a method the
                 // arrow was invoked through — walk up to the derived ctor.
-                super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                if (env::is_tdz_sentinel(&vm.activations[vm.activation_count - 1].this_binding)) {
+                    super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                } else {
+                    // §8.1.1.3.1 BindThisValue step 3: this_binding is already
+                    // initialized (a prior super() call already bound it) —
+                    // a second super() call throws ReferenceError.
+                    if (!vm_throw_error(vm, vm.heap.ref_err_proto,
+                            "Super constructor may only be called once",
+                            ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                }
             }
 
             // ES2015 §9.2.2 step 13.c: now in the caller's context, throw TypeError.
@@ -2789,7 +2800,16 @@ fn TVal? Vm.run(Vm* vm) {
             if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
                     && vm.activation_count > 0
                     && callee_result != null && callee_result.is_object()) {
-                super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                if (env::is_tdz_sentinel(&vm.activations[vm.activation_count - 1].this_binding)) {
+                    super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                } else {
+                    // §8.1.1.3.1 BindThisValue step 3: already initialized.
+                    if (!vm_throw_error(vm, vm.heap.ref_err_proto,
+                            "Super constructor may only be called once",
+                            ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                }
             }
             continue;
         }

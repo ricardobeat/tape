@@ -2677,8 +2677,17 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     result = self.alloc_reg();
                     self.emit_abc(Opcode.GETPROP_SUPER, (uint)result, (uint)super_proto_reg, (uint)super_key_reg);
                 } else {
-                    // LBRACKET: evaluate key expression FIRST (spec §13.5.3 step 1-3),
-                    // THEN compute the super base (step 4 MakeSuperPropertyReference).
+                    // LBRACKET: §13.3.7.1 step 2 requires GetThisBinding() BEFORE
+                    // evaluating the key expression — in a derived constructor
+                    // `this` is TDZ-sentinel until super() returns, so
+                    // `super[super()]` must throw ReferenceError from the *outer*
+                    // super's this-check, not from evaluating the key. Emit a
+                    // throwaway LDTHIS purely for its TDZ side effect.
+                    ushort this_check_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDTHIS, (uint)this_check_reg, 0, 0);
+                    self.free_reg(this_check_reg);
+                    // Evaluate key expression (spec §13.5.3 step 3-4), THEN
+                    // compute the super base (step 4 MakeSuperPropertyReference).
                     self.advance()!;  // consume '['
                     super_key_reg = self.expression()!;
                     self.expect(TokenType.RBRACKET)!;
@@ -3016,6 +3025,13 @@ fn ushort? CompilerContext.object_literal(&self) {
                     self.is_generator = false;
                     self.is_async = false;
                     if (!super_bound) {
+                        // Give this object literal's `__super__` binding its own
+                        // lexical environment record (PUSH_LEX) instead of
+                        // re-declaring `let __super__` directly in the enclosing
+                        // scope — otherwise a sibling object literal later in the
+                        // same block clobbers the first literal's binding and
+                        // corrupts already-created closures that captured it.
+                        self.emit_simple(Opcode.PUSH_LEX);
                         ushort sup_reg = self.declare_var("__super__", LET);
                         uint sup_name_idx = self.add_string_constant("__super__");
                         self.emit_abc(Opcode.LDREG, (uint)sup_reg, (uint)obj_reg, 0);
@@ -3127,6 +3143,10 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // Pass key_src_start so the retained source span starts at the
                 // key token (or `*`, or first computed-key bracket).
                 if (!super_bound) {
+                    // See the getter/setter branch above: an isolated PUSH_LEX
+                    // scope keeps this literal's `__super__` binding from being
+                    // clobbered by a sibling object literal later in the block.
+                    self.emit_simple(Opcode.PUSH_LEX);
                     ushort sup_reg = self.declare_var("__super__", LET);
                     uint sup_name_idx = self.add_string_constant("__super__");
                     self.emit_abc(Opcode.LDREG, (uint)sup_reg, (uint)obj_reg, 0);
@@ -3190,6 +3210,10 @@ fn ushort? CompilerContext.object_literal(&self) {
     }
 
     self.expect(TokenType.RBRACE)!;
+    if (super_bound) {
+        // Close the isolated __super__ lexical scope opened above.
+        self.emit_simple(Opcode.POP_LEX);
+    }
     self.has_super_binding = saved_has_super;
     self.super_is_home_object = saved_super_is_home;
     return obj_reg;

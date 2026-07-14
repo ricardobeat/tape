@@ -169,9 +169,13 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         return (TVal){};
                     }
                     // ES5 strict mode: function.caller and function.arguments throw TypeError
+                    // — but only the poison-pill accessor (no own property with this
+                    // key), so a user-defined method literally named "caller"/
+                    // "arguments" (e.g. class methods) remains accessible.
                     if (hobj.is_callable() && hobj_cls == hobject::ObjClass.FUNCTION) {
                         HString* key_hstr = (HString*)key;
-                        if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                        if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))
+                            && hobj.find_prop_idx(key) < 0) {
                             if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -543,8 +547,12 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             return (TVal){};
                         }
                         // ES5 strict mode: function.caller and function.arguments throw TypeError
+                        // — but only the poison-pill accessor (no own property with
+                        // this key), so a user-defined method literally named
+                        // "caller"/"arguments" (e.g. class methods) remains accessible.
                         if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION
-                            && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                            && (key_hstr.equals("caller") || key_hstr.equals("arguments"))
+                            && hobj.find_prop_idx(key) < 0) {
                             if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -2404,9 +2412,25 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
                 return (TVal){};
             }
-            void* skey = get_prop_key(vm, rb);
-            if (skey == null) { return (TVal){}; }
+            // Capture super_base BEFORE ToPropertyKey (get_prop_key may invoke
+            // user JS via toString()/valueOf(), which can reallocate the
+            // register file and invalidate the `ra` pointer).
             HObject* super_base = (HObject*)ra.get_heapptr();
+            void* skey = get_prop_key(vm, rb);
+            // get_prop_key may have invoked user JS (toString()/valueOf()),
+            // reallocating the register file — re-derive `rc` before reading
+            // the value to store.
+            rc = ds.regs_base + (uint)insn.c;
+            if (skey == null) {
+                // ToPropertyKey abrupt completion: propagate as a real throw.
+                if (vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                }
+                return (TVal){};
+            }
             bool sres;
             if (!builtins::js_set_with_receiver(vm, vm.heap, super_base, (HString*)skey, *rc, ds.act.this_binding, &sres)) {
                 return vm_proxy_rethrow(vm, ds);
@@ -2430,9 +2454,27 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 }
                 return (TVal){};
             }
-            void* gkey = get_prop_key(vm, rc);
-            if (gkey == null) { ra.set_undefined(); return (TVal){}; }
+            // Capture super_base BEFORE ToPropertyKey (get_prop_key may invoke
+            // user JS via toString()/valueOf(), which can reallocate the
+            // register file and invalidate the `ra`/`rb` pointers — read the
+            // heap pointer out of `rb` first, then re-derive `ra` from
+            // ds.regs_base afterwards before writing the result.
             HObject* super_base = (HObject*)rb.get_heapptr();
+            void* gkey = get_prop_key(vm, rc);
+            ra = ds.regs_base + (uint)insn.a;
+            if (gkey == null) {
+                // ToPropertyKey abrupt completion (e.g. key.toString() threw):
+                // propagate as a real throw instead of silently returning undefined.
+                if (vm.throw_pending) {
+                    vm.throw_pending = false;
+                    if (!vm_throw_value(vm, vm.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
+                ra.set_undefined();
+                return (TVal){};
+            }
             hobject::PropLookupResult gres = super_base.get_prop_or_accessor_proto(gkey, true);
             if (gres.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
                 // Use this_binding as receiver for the getter call.

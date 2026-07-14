@@ -628,7 +628,18 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     TVal* initget_props = hobj.prop_values();
-                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
+                    if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable) {
+                        // Non-configurable: DefinePropertyOrThrow throws TypeError
+                        // (e.g. redefining the class constructor's non-configurable
+                        // .prototype via `static get ['prototype']() {}`).
+                        HString* key_hstr = (HString*)key;
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,
+                            "Cannot redefine non-configurable property '%s'", key_hstr.get_cstr(),
+                            ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return (TVal){};
+                    } else if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's getter
                         hobject::hobject_set_access_getter(initget_props[idx], getter_val, vm.heap);
                     } else {
@@ -668,7 +679,18 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     TVal* initset_props = hobj.prop_values();
-                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
+                    if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable) {
+                        // Non-configurable: DefinePropertyOrThrow throws TypeError
+                        // (e.g. redefining the class constructor's non-configurable
+                        // .prototype via `static set ['prototype'](_) {}`).
+                        HString* key_hstr = (HString*)key;
+                        if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,
+                            "Cannot redefine non-configurable property '%s'", key_hstr.get_cstr(),
+                            ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return (TVal){};
+                    } else if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
                         // Update existing accessor's setter
                         hobject::hobject_set_access_setter(initset_props[idx], setter_val, vm.heap);
                     } else {
