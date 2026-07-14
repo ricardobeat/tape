@@ -219,6 +219,12 @@ bitstruct ObjFlags : uint {
     /// True for async/await resume/reject builtin functions, whose var_env
     /// stores a GeneratorState* that must be kept alive by GC.
     bool is_async_state    : 24;
+    /// True for ARRAY objects whose exotic "length" property is writable.
+    /// The ARRAY exotic stores length in array_len_ptr (not the prop table),
+    /// so when no named "length" property exists this flag is the source of
+    /// truth for [[Writable]] of length (ES6 §9.4.2.1 / §10.4.2.1). Set
+    /// false by Object.freeze and Object.defineProperty(arr,"length",{writable:false}).
+    bool array_len_writable : 25;
 }
 
 // ============================================================================
@@ -833,6 +839,13 @@ fn void HObject.freeze(&self) {
             f.writable = false;
             self.set_prop_flags(i, f);
         }
+    }
+    // ARRAY exotic: the "length" property lives in array_len_ptr, not the
+    // property table, so the per-property loop above does not touch it.
+    // ES5 §15.4.5.1 / §10.4.2.1 require the exotic "length" to become
+    // non-writable on freeze so that Set(O, "length", _, true) throws.
+    if (self.flags.exotic_array) {
+        self.flags.array_len_writable = false;
     }
 }
 
@@ -1690,6 +1703,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
         (*obj.extra_ptr()).func.builtin_fn_index = -1;
     } else if (cls == ObjClass.ARRAY) {
         obj.flags.exotic_array = true;
+        obj.flags.array_len_writable = true;
         obj.array_len_ptr()[0] = 0;
     } else if (cls == ObjClass.ARGUMENTS) {
         obj.flags.exotic_arguments = true;

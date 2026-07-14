@@ -1882,7 +1882,12 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     if (is_array_length) {
         // Determine the current length and its writable flag.
         uint old_len = array_get_length(obj, ctx.heap);
+        // ARRAY exotic stores length in array_len_ptr; when the prop table
+        // has no "length" entry, the array_len_writable flag is authoritative.
         bool len_is_writable = true;
+        if (obj.flags.exotic_array) {
+            len_is_writable = obj.flags.array_len_writable;
+        }
         HString* len_key_intern = builtin_intern_string(ctx.heap, "length");
         if (len_key_intern != null) {
             int len_prop_idx = obj.find_prop_idx(len_key_intern);
@@ -1988,6 +1993,15 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         // (The spec says to set writable last so that the length can be modified
         // during element deletion even when the descriptor requests non-writable.)
         if (has_wrt && !desc_flags.writable) {
+            // ARRAY exotic: also update the array_len_writable flag so the
+            // pop/shift/push/etc. length-write check works when no named
+            // "length" property exists in the prop table (e.g. arrays from
+            // new Array(n)). For arrays that DO have a prop-table "length"
+            // entry (e.g. array literals), update its flags too so legacy
+            // and synthesised readers stay in sync.
+            if (obj.flags.exotic_array) {
+                obj.flags.array_len_writable = false;
+            }
             if (len_key_intern != null) {
                 int len_prop_idx = obj.find_prop_idx(len_key_intern);
                 if (len_prop_idx >= 0) {
