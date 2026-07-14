@@ -1695,7 +1695,14 @@ fn TVal? Vm.run(Vm* vm) {
             if (ds.needs_restart) break;
             double exp_c = vm_to_number(vm,rc);
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-            ra.set_number(math::pow(exp_b, exp_c));
+            // ES2016 §12.6.4: abs(base) == 1 && exp is ±Infinity → NaN (C99 pow returns 1)
+            double exp_r;
+            if (math::abs(exp_b) == 1.0 && !math::is_finite(exp_c) && !math::is_nan(exp_c)) {
+                exp_r = double::nan;
+            } else {
+                exp_r = math::pow(exp_b, exp_c);
+            }
+            ra.set_number(exp_r);
             continue;
         }
 
@@ -1904,81 +1911,45 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
         }
 
-        case Opcode.LT: {
-            bool result;
-            if (types::both_fastint(rb, rc)) {
-                result = rb.get_fastint() < rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
-            } else {
-                double lt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double lt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                result = lt_b < lt_c;
-            }
-            ra.set_boolean(result);
-            continue;
-        }
-
-        case Opcode.LE: {
-            bool result;
-            if (types::both_fastint(rb, rc)) {
-                result = rb.get_fastint() <= rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
-            } else {
-                double le_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double le_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                result = le_b <= le_c;
-            }
-            ra.set_boolean(result);
-            continue;
-        }
-
-        case Opcode.GT: {
-            bool result;
-            if (types::both_fastint(rb, rc)) {
-                result = rb.get_fastint() > rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
-            } else {
-                double gt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double gt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                result = gt_b > gt_c;
-            }
-            ra.set_boolean(result);
-            continue;
-        }
-
+        case Opcode.LT:
+        case Opcode.LE:
+        case Opcode.GT:
         case Opcode.GE: {
             bool result;
             if (types::both_fastint(rb, rc)) {
-                result = rb.get_fastint() >= rc.get_fastint();
+                long lb = rb.get_fastint();
+                long lc = rc.get_fastint();
+                switch (op) {
+                    case Opcode.LT: result = lb <  lc;
+                    case Opcode.LE: result = lb <= lc;
+                    case Opcode.GT: result = lb >  lc;
+                    default:        result = lb >= lc;
+                }
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
+                double db = tval_numeric_to_double(rb);
+                double dc = tval_numeric_to_double(rc);
+                switch (op) {
+                    case Opcode.LT: result = db <  dc;
+                    case Opcode.LE: result = db <= dc;
+                    case Opcode.GT: result = db >  dc;
+                    default:        result = db >= dc;
+                }
             } else {
-                double ge_b = vm_to_number(vm,rb);
+                bool is_undef;
+                int cmp = vm_relational_compare(vm, rb, rc, &is_undef);
                 if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
-                double ge_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                result = ge_b >= ge_c;
+                if (is_undef) {
+                    // NaN comparisons all yield false
+                    result = false;
+                } else {
+                    switch (op) {
+                        case Opcode.LT: result = cmp <  0;
+                        case Opcode.LE: result = cmp <= 0;
+                        case Opcode.GT: result = cmp >  0;
+                        default:        result = cmp >= 0;
+                    }
+                }
             }
             ra.set_boolean(result);
             continue;
@@ -1992,163 +1963,54 @@ fn TVal? Vm.run(Vm* vm) {
         // NaN: !(NaN op x) is always true, so the branch IS taken — correct because
         // we negate the same compare result that IF_FALSE would have tested.
 
-        case Opcode.JMP_NLT: {
-            bool jmp_result;
-            if (types::both_fastint(rb, rc)) {
-                jmp_result = rb.get_fastint() < rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
-            } else {
-                double jnlt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double jnlt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jnlt_b < jnlt_c;
-            }
-            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
-            continue;
-        }
-
-        case Opcode.JMP_NLE: {
-            bool jmp_result;
-            if (types::both_fastint(rb, rc)) {
-                jmp_result = rb.get_fastint() <= rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
-            } else {
-                double jnle_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double jnle_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jnle_b <= jnle_c;
-            }
-            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
-            continue;
-        }
-
-        case Opcode.JMP_NGT: {
-            bool jmp_result;
-            if (types::both_fastint(rb, rc)) {
-                jmp_result = rb.get_fastint() > rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
-            } else {
-                double jngt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double jngt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jngt_b > jngt_c;
-            }
-            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
-            continue;
-        }
-
-        case Opcode.JMP_NGE: {
-            bool jmp_result;
-            if (types::both_fastint(rb, rc)) {
-                jmp_result = rb.get_fastint() >= rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
-            } else {
-                double jnge_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double jnge_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jnge_b >= jnge_c;
-            }
-            if (!jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
-            continue;
-        }
-
-        case Opcode.JMP_LT: {
-            bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
-                jmp_result = rb.get_fastint() < rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) < tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) < 0;
-            } else {
-                double jlt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double jlt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jlt_b < jlt_c;
-            }
-            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
-            continue;
-        }
-
-        case Opcode.JMP_LE: {
-            bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
-                jmp_result = rb.get_fastint() <= rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) <= tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) <= 0;
-            } else {
-                double jle_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double jle_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jle_b <= jle_c;
-            }
-            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
-            continue;
-        }
-
-        case Opcode.JMP_GT: {
-            bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
-                jmp_result = rb.get_fastint() > rc.get_fastint();
-            } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) > tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) > 0;
-            } else {
-                double jgt_b = vm_to_number(vm,rb);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                if (ds.needs_restart) break;
-                double jgt_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jgt_b > jgt_c;
-            }
-            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
-            continue;
-        }
-
+        case Opcode.JMP_NLT:
+        case Opcode.JMP_NLE:
+        case Opcode.JMP_NGT:
+        case Opcode.JMP_NGE:
+        case Opcode.JMP_LT:
+        case Opcode.JMP_LE:
+        case Opcode.JMP_GT:
         case Opcode.JMP_GE: {
-            bool jmp_result;
-            if (rb.is_fastint() && rc.is_fastint()) {
-                jmp_result = rb.get_fastint() >= rc.get_fastint();
+            bool cmp_lt;   // was b < c ?
+            bool cmp_le;   // was b <= c ?
+            bool cmp_undef = false;
+            if (types::both_fastint(rb, rc)) {
+                long lb = rb.get_fastint();
+                long lc = rc.get_fastint();
+                cmp_lt = lb <  lc;
+                cmp_le = lb <= lc;
             } else if ((rb.is_fastint() || rb.is_number()) && (rc.is_fastint() || rc.is_number())) {
-                jmp_result = tval_numeric_to_double(rb) >= tval_numeric_to_double(rc);
-            } else if (rb.is_string() && rc.is_string()) {
-                jmp_result = hstring::hstring_compare((HString*)rb.get_heapptr(), (HString*)rc.get_heapptr()) >= 0;
+                double db = tval_numeric_to_double(rb);
+                double dc = tval_numeric_to_double(rc);
+                cmp_lt = db <  dc;
+                cmp_le = db <= dc;
             } else {
-                double jge_b = vm_to_number(vm,rb);
+                int cmp = vm_relational_compare(vm, rb, rc, &cmp_undef);
                 if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 if (ds.needs_restart) break;
-                double jge_c = vm_to_number(vm,rc);
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
-                jmp_result = jge_b >= jge_c;
+                cmp_lt = cmp <  0;
+                cmp_le = cmp <= 0;
             }
-            if (jmp_result) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
+            // Map opcode to compare result and branch polarity.
+            //   JMP_N* branches when the compare is FALSE (used by if/while exits)
+            //   JMP_*  branches when the compare is TRUE  (used by loop back-edges)
+            bool cmp_result;
+            bool branch_on;
+            switch (op) {
+                case Opcode.JMP_NLT: cmp_result = cmp_lt;  branch_on = false;
+                case Opcode.JMP_NLE: cmp_result = cmp_le;  branch_on = false;
+                case Opcode.JMP_NGT: cmp_result = !cmp_le; branch_on = false;
+                case Opcode.JMP_NGE: cmp_result = !cmp_lt; branch_on = false;
+                case Opcode.JMP_LT:  cmp_result = cmp_lt;  branch_on = true;
+                case Opcode.JMP_LE:  cmp_result = cmp_le;  branch_on = true;
+                case Opcode.JMP_GT:  cmp_result = !cmp_le; branch_on = true;
+                default:             cmp_result = !cmp_lt; branch_on = true;   // JMP_GE
+            }
+            // NaN comparisons all yield false; equivalent to !cmp_lt && !cmp_le
+            // when cmp_undef is set (both cmp_lt/cmp_le are false above), so
+            // JMP_NGT / JMP_NGE would wrongly branch. Force to false here.
+            if (cmp_undef) cmp_result = false;
+            if (cmp_result == branch_on) { if ((ichar)insn.a < 0) { if (--vm.heap.bwd_gc_budget == 0) { if (vm.heap.gc_pending) { vm.heap.safepoint_gc(); } vm.heap.bwd_gc_budget = heap::BWD_GC_INTERVAL; } } ds.curr_pc += (int)(ichar)insn.a; }
             continue;
         }
 

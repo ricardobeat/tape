@@ -51,18 +51,56 @@ fn double vm_to_number(Vm* vm, TVal* val) {
 
 /// ECMAScript ToInt32 — ES5 §9.5
 /// Converts a double to int32 using modular arithmetic (mod 2^32).
-/// Handles NaN → 0, Infinity → 0, and large values via fmod.
+/// Handles NaN → 0, Infinity → 0, and large values via floor-then-mod.
 fn int toint32(double d) @inline {
     // Fast path: value already fits in int32
     int i = (int)d;
     if ((double)i == d) return i;
-    // Slow path: ES5 §9.5 ToInt32 via floor-mod
-    double q = d * (1.0 / 4294967296.0);  // d / 2^32
-    q = math::floor(q);                     // floor(d / 2^32)
-    double r = d - q * 4294967296.0;        // d mod 2^32 (always [0, 2^32))
-    // Values [0, 2^31) stay as-is, [2^31, 2^32) wrap to signed
+    // NaN / ±Infinity → 0
+    if (math::is_nan(d) || !math::is_finite(d)) return 0;
+    // Spec: posInt = sign(d) * floor(abs(d)); int32bit = posInt mod 2^32
+    double abs_d = math::abs(d);
+    double pos_int = math::floor(abs_d);
+    if (d < 0.0) pos_int = -pos_int;
+    double q = pos_int * (1.0 / 4294967296.0);
+    q = math::floor(q);
+    double r = pos_int - q * 4294967296.0;   // r in [0, 2^32)
     if (r >= 2147483648.0) r -= 4294967296.0;
     return (int)r;
+}
+
+/// Abstract Relational Comparison (ES2015 §7.2.11).
+/// Returns tri-state: -1 = px < py, +1 = px > py, 0 = equal, and *is_undef=true
+/// if either operand is NaN (undefined per spec). Coerces objects via
+/// ToPrimitive("number") and, if both results are strings, uses lex compare.
+/// Sets vm.throw_pending on ToPrimitive failure (caller must check + break).
+fn int vm_relational_compare(Vm* vm, TVal* x, TVal* y, bool* is_undef) {
+    *is_undef = false;
+    TVal px = *x;
+    TVal py = *y;
+    if (px.get_tag() == OBJECT) {
+        px = to_primitive_value(vm, x, 2);  // hint: number
+        if (vm.throw_pending) return 0;
+    }
+    if (py.get_tag() == OBJECT) {
+        py = to_primitive_value(vm, y, 2);
+        if (vm.throw_pending) return 0;
+    }
+    // Both primitives now. If both strings → lex compare, else numeric.
+    if (px.is_string() && py.is_string()) {
+        HString* sx = (HString*)px.get_heapptr();
+        HString* sy = (HString*)py.get_heapptr();
+        int c = hstring::hstring_compare(sx, sy);
+        return c < 0 ? -1 : (c > 0 ? 1 : 0);
+    }
+    double dx = vm_to_number(vm, &px);
+    if (vm.throw_pending) return 0;
+    double dy = vm_to_number(vm, &py);
+    if (vm.throw_pending) return 0;
+    if (math::is_nan(dx) || math::is_nan(dy)) { *is_undef = true; return 0; }
+    if (dx < dy) return -1;
+    if (dx > dy) return 1;
+    return 0;
 }
 
 /// ECMAScript truthiness.
