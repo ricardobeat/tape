@@ -3294,7 +3294,10 @@ fn TVal? Vm.run(Vm* vm) {
                     }
 
                     // --- Slow path: full env_declare ---
-                    env::env_declare(ds.act.var_env, key, *ra);
+                    // Global-scope var/function declarations install a
+                    // non-configurable own property on the global object
+                    // (ES2015 §8.1.1.4.15/.17).
+                    env::env_declare_var(ds.act.var_env, key, *ra, ds.act.var_env == vm.global_env);
 
                     // Populate VarIC for next time
                     if (ds.var_ic_base != null) {

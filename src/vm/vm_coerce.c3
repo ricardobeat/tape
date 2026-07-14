@@ -595,7 +595,10 @@ fn void vm_set_type_error(Vm* vm, char[] msg) {
 /// the outer opcode handler can properly propagate it.
 /// Returns true if an error was detected (caller should return early).
 fn bool vm_check_call_fn_error(Vm* vm) @inline {
-    if (vm.has_error) {
+    // vm.has_error is cleared at the call_fn/construct_fn boundary (to keep
+    // it from leaking across into the caller's own VM opcode dispatch);
+    // heap.has_error is the persistent flag callers should observe.
+    if (vm.has_error || vm.heap.has_error) {
         vm.heap.tval_copy_ref(&vm.throw_value, &vm.return_val);
         vm.throw_pending = true;
         vm.has_error = false;
