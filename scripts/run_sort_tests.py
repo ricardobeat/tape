@@ -5,7 +5,7 @@ from collections import defaultdict
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
-VM_BINARY = os.path.join(PROJECT_DIR, 'out/batch_test_vm')
+VM_BINARY = os.path.join(PROJECT_DIR, 'out/test262_runner')
 
 # Find all sort test files
 sort_dir = os.path.join(PROJECT_DIR, 'test262/test/built-ins/Array/prototype/sort')

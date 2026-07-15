@@ -2,7 +2,7 @@
 """
 Worker-mode test262 runner.
 
-Spawns N parallel batch_test_vm --worker processes, feeds tests via stdin,
+Spawns N parallel test262_runner --worker processes, feeds tests via stdin,
 collects PASS/FAIL results, enforces per-test timeouts via SIGKILL+restart,
 and kills any worker whose RSS exceeds MEM_LIMIT_KB (2 GB) — runaway-
 allocation tests otherwise drive the machine to tens of GB of memory
@@ -43,7 +43,7 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 TEST262_DIR = os.path.join(PROJECT_DIR, "test262", "test")
-VM_BINARY = os.path.join(PROJECT_DIR, "out", "batch_test_vm")
+VM_BINARY = os.path.join(PROJECT_DIR, "out", "test262_runner")
 
 # Default timeout per test (seconds)
 TEST_TIMEOUT = 10
@@ -62,7 +62,7 @@ RETRY_FAILS = [True]
 # without --shuffle and diffing the logs reveals order-dependent reset bugs.
 SHUFFLE = [False]
 
-# Fresh-process-per-test mode: spawn a new batch_test_vm --worker for each
+# Fresh-process-per-test mode: spawn a new test262_runner --worker for each
 # test. Slow, but immune to all cross-test contamination. For final
 # confirmation runs before merging.
 FRESH_PROCESS = [False]
@@ -532,7 +532,7 @@ def categorize_ce(path):
 # Worker management
 # ---------------------------------------------------------------------------
 class Worker:
-    """Manages a single batch_test_vm --worker subprocess."""
+    """Manages a single test262_runner --worker subprocess."""
 
     def __init__(self, binary, worker_id):
         self.worker_id = worker_id
@@ -693,7 +693,7 @@ def rerun_serial(tests, test_timeout):
 
 
 def run_fresh_process(tests, test_timeout):
-    """Run each test in a fresh batch_test_vm --worker process.
+    """Run each test in a fresh test262_runner --worker process.
 
     Spawns a new worker per test, reads one result, kills the worker.
     Slow (~10-20x slower than batch mode), but completely immune to
@@ -939,7 +939,7 @@ def main():
     parser.add_argument(
         "--fresh-process",
         action="store_true",
-        help="Spawn a fresh batch_test_vm per test (slow, immune to reset bugs)",
+        help="Spawn a fresh test262_runner per test (slow, immune to reset bugs)",
     )
     args = parser.parse_args()
 
@@ -963,7 +963,7 @@ def main():
     # Always rebuild — a missing-only check silently runs a stale binary
     # Ensure the binary exists
     if not os.path.isfile(VM_BINARY):
-        print(f"ERROR: {VM_BINARY} not found. Build it first with: c3c build batch_test_vm", file=sys.stderr)
+        print(f"ERROR: {VM_BINARY} not found. Build it first with: c3c build test262_runner", file=sys.stderr)
         sys.exit(1)
 
     phases = [resolve_phase_num(args.phase)] if args.phase is not None else range(len(PHASES))

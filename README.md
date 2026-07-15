@@ -38,7 +38,7 @@ c3c build run_js
 ./out/run_js test/simple.js
 
 # Test262 batch runner
-c3c build batch_test_vm
+c3c build test262_runner
 python3 scripts/run_test262.py
 
 # Benchmark CLI
@@ -82,8 +82,7 @@ duktape-c3/
 │   └── re_bindings.c3    # RegExp bindings
 ├── benchmarks/       # Performance and memory benchmarks
 ├── test/             # Unit tests and JS test scripts
-├── test262_runner/   # test262 harness and scripts
-├── test_vm_runner/   # VM test harness
+├── test_vm_runner/   # CLI runners: run_js (plain JS) + test262_runner (test262 harness)
 ├── scripts/          # Automation scripts
 ├── plans/            # Design and optimization plans
 ├── progress.md       # test262 conformance tracker

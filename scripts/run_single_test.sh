@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Run a single test262 test through the canonical batch_test_vm --worker path.
+# Run a single test262 test through the canonical test262_runner --worker path.
 #
 # Usage:
 #   run_single_test.sh <test_file_path>           # canonical batch verifier
 #   run_single_test.sh <test_file_path> --debug   # concat harness + duktape_c3 (for lldb)
 #   run_single_test.sh <test_file_path> --keep     # --debug mode, prints combined file path
 #
-# Default mode pipes the absolute path to batch_test_vm --worker — the same
+# Default mode pipes the absolute path to test262_runner --worker — the same
 # binary and harness path the suite measures.  --debug concatenates assert.js,
 # sta.js, and includes into a single file and runs under duktape_c3 (the old
 # behaviour); --keep prints the temp file path instead of deleting it (useful
@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR/.."
 test_file="$1"
 mode="${2:-}"
-batch_bin="$PROJECT_DIR/out/batch_test_vm"
+batch_bin="$PROJECT_DIR/out/test262_runner"
 debug_bin="$PROJECT_DIR/out/duktape_c3"
 
 # Resolve a path relative to test262/test/ if the file doesn't exist as given.
@@ -65,9 +65,9 @@ if [ "$mode" = "--debug" ] || [ "$mode" = "--keep" ]; then
   exit 0
 fi
 
-# ── Default mode: canonical batch_test_vm --worker path ──────────────────────
+# ── Default mode: canonical test262_runner --worker path ──────────────────────
 if [ ! -f "$batch_bin" ]; then
-  echo "ERROR: $batch_bin not found. Build with: make out/batch_test_vm" >&2
+  echo "ERROR: $batch_bin not found. Build with: make out/test262_runner" >&2
   exit 2
 fi
 

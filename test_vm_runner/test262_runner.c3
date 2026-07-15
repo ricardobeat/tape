@@ -21,7 +21,7 @@
 ///
 /// Usage: ./out/batch_test_vm <manifest_file>
 ///        ./out/batch_test_vm --worker   (stdin-driven worker mode)
-module batch_test_vm;
+module test262_runner;
 
 import duktape::compiler;
 import duktape::esm;

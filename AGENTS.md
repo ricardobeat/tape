@@ -28,7 +28,7 @@ All common tasks are `just` recipes (`just list` to see them all). The fast debu
 | Task | Command |
 |------|---------|
 | Run one JS file | `just run <file>` (rebuilds `run_js`, runs `./out/run_js <file>`) |
-| Build a target | `just build <target>` (e.g. `run_js`, `duktape_c3`, `batch_test_vm`) |
+| Build a target | `just build <target>` (e.g. `run_js`, `duktape_c3`, `test262_runner`) |
 | Build everything | `just all` |
 | Debug build (`-O0`) | `just build-debug <target>` |
 | Rosetta suite | `just rosetta` (22+ language features; the go-to regression check) |
@@ -37,7 +37,7 @@ All common tasks are `just` recipes (`just list` to see them all). The fast debu
 
 **Validate changes with `just rosetta`, `just run` on a local repro, or a single `just test262-phase <n>` — not a full `just test262` run, which is slow and noisy.** Test fixtures live in `test/`; test262 lives under `test262/`.
 
-For test262 work: `python3 scripts/run_test262.py --phase <n> --log <file>` writes per-test `RESULT<TAB>path` lines for failure clustering, and `bash test262_runner/run_single_test.sh <path-under-test262/test>` reproduces one test with harness includes and real error output (`--keep` emits the combined file for `just lldb`). The runner kills workers exceeding 2 GB RSS (`MEMKILL`) — see `plans/040-test262-100-percent.md` §A5.
+For test262 work: `python3 scripts/run_test262.py --phase <n> --log <file>` writes per-test `RESULT<TAB>path` lines for failure clustering, and `bash scripts/run_single_test.sh <path-under-test262/test>` reproduces one test with harness includes and real error output (`--keep` emits the combined file for `just lldb`). The runner kills workers exceeding 2 GB RSS (`MEMKILL`) — see `plans/040-test262-100-percent.md` §A5.
 
 Typical debug loop: minimize a failure to a single-line `.js` repro → `just run` it → if it fails to compile the bug is in the compiler; if it runs but gives a wrong value / `VM_ERROR` it's in the VM → trace with the flags below.
 

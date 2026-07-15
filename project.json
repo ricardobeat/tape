@@ -70,20 +70,20 @@
       "opt": "O2",
       "single-module": true
     },
-    "batch_test_vm": {
+    "test262_runner": {
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/batch_test_vm.c3"
+        "test_vm_runner/test262_runner.c3"
       ],
       "opt": "O2",
       "single-module": true
     },
-    "batch_test_vm_asan": {
+    "test262_runner_asan": {
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/batch_test_vm.c3"
+        "test_vm_runner/test262_runner.c3"
       ],
       "opt": "O0",
       "single-module": true,

@@ -16,7 +16,7 @@ build-vm:
 
 # Build the batch test262 runner (skips c3c if nothing changed — see Makefile)
 build-batch:
-    @make out/batch_test_vm
+    @make out/test262_runner
 
 # Build the C3 Duktape CLI (skips c3c if nothing changed — see Makefile)
 build-bench:
@@ -107,7 +107,7 @@ rosetta engine="duktape_c3":
 # ── Test262 ──────────────────────────────────────────────────────────────────
 
 # Run full test262 suite
-# Run the full test262 suite (builds batch_test_vm first)
+# Run the full test262 suite (builds test262_runner first)
 test262: build-batch
     python3 scripts/run_test262.py
 

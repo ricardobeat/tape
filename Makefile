@@ -12,13 +12,13 @@ target_sources = $(shell jq -r '.["c-sources"][]' project.json) \
                      if [ -d "$$s" ]; then find "$$s" -name '*.c3'; else echo "$$s"; fi; \
                  done)
 
-.PHONY: all lib run_js batch_test_vm duktape_c3 clean
+.PHONY: all lib run_js test262_runner duktape_c3 clean
 
-all: lib run_js batch_test_vm duktape_c3
+all: lib run_js test262_runner duktape_c3
 
 lib: out/lib.a
 run_js: out/run_js
-batch_test_vm: out/batch_test_vm
+test262_runner: out/test262_runner
 duktape_c3: out/duktape_c3
 
 out/lib.a: project.json $(call target_sources,lib)
@@ -27,8 +27,8 @@ out/lib.a: project.json $(call target_sources,lib)
 out/run_js: project.json $(call target_sources,run_js)
 	c3c build run_js
 
-out/batch_test_vm: project.json $(call target_sources,batch_test_vm)
-	c3c build batch_test_vm
+out/test262_runner: project.json $(call target_sources,test262_runner)
+	c3c build test262_runner
 
 out/duktape_c3: project.json $(call target_sources,duktape_c3)
 	c3c build duktape_c3
