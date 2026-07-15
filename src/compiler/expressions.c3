@@ -405,19 +405,23 @@ fn ushort? CompilerContext.assignment_expr(&self) {
 
     // Plain member assignment must not evaluate the LHS property read —
     // only the object and key are evaluated (§13.15.2).  Drop the GETPROP
-    // (or GETPROP_SUPER) emitted while parsing the target so getters /
-    // proxy [[Get]] traps don't run as a side effect. For super targets,
-    // this also defers the HomeObject null-prototype TypeError: per spec
-    // MakeSuperPropertyReference computes [[Base]] eagerly (never throws —
-    // GetSuperBase just returns null), but the actual ToObject(base) check
-    // happens inside PutValue, AFTER the RHS has been evaluated (§6.2.5.6).
-    // Stripping the eager read here means PUTPROP_SUPER's own null-base
-    // check performs that throw at the correct point, after RHS runs.
-    // Compound/logical assignments keep the read (they genuinely need the
-    // old value).
+    // (or GETPROP_CACHE / GETPROP_SUPER) emitted while parsing the target so
+    // getters / proxy [[Get]] traps don't run as a side effect, and so any
+    // GETPROP_CACHE key-coercion writeback doesn't run before RHS either
+    // (`base[prop] = expr()` must ToPropertyKey(prop) AFTER expr()). For
+    // super targets, this also defers the HomeObject null-prototype
+    // TypeError: per spec MakeSuperPropertyReference computes [[Base]]
+    // eagerly (never throws — GetSuperBase just returns null), but the
+    // actual ToObject(base) check happens inside PutValue, AFTER the RHS has
+    // been evaluated (§6.2.5.6). Stripping the eager read here means
+    // PUTPROP_SUPER's own null-base check performs that throw at the
+    // correct point, after RHS runs. Compound/logical assignments keep the
+    // read (they genuinely need the old value, and rely on GETPROP_CACHE's
+    // writeback for the follow-up PUTPROP to be idempotent).
     if (is_assign && lhs_was_member && self.code_count > 0) {
         Instruction lhs_last = self.code[self.code_count - 1];
-        if (lhs_last.op == Opcode.GETPROP && (ushort)lhs_last.a == left
+        if ((lhs_last.op == Opcode.GETPROP || lhs_last.op == Opcode.GETPROP_CACHE)
+            && (ushort)lhs_last.a == left
             && (ushort)lhs_last.b == lhs_member_obj && (ushort)lhs_last.c == lhs_member_prop) {
             self.code_count--;
         } else if (self.last_member_is_super) {
@@ -876,13 +880,16 @@ fn ushort? CompilerContext.unary_expr(&self) {
                     self.emit(bytecode::make_a_bc(Opcode.THROW_REF, (uint)err_reg, msg_idx));
                     return err_reg;
                 }
-                // Patch the last emitted instruction from GETPROP to DELPROP.
-                // Both have identical register layout: A = result, B = obj, C = key.
+                // Patch the last emitted instruction from GETPROP (or
+                // GETPROP_CACHE — computed keys always emit the _CACHE
+                // variant from member_expr, see its LBRACKET branch) to
+                // DELPROP. All three have identical register layout:
+                // A = result, B = obj, C = key.
                 uint last_idx = self.code_count;
                 if (last_idx > 0) {
                     last_idx--;
                     Instruction last_insn = self.code[last_idx];
-                    if (last_insn.op == Opcode.GETPROP) {
+                    if (last_insn.op == Opcode.GETPROP || last_insn.op == Opcode.GETPROP_CACHE) {
                         self.code[last_idx] = bytecode::make_abc(
                             Opcode.DELPROP,
                             last_insn.a, last_insn.b, last_insn.c);
@@ -1217,13 +1224,19 @@ fn ushort? CompilerContext.call_expr(&self) {
             ushort idx_reg = self.expression()!;
             self.expect(TokenType.RBRACKET)!;
 
-            // GETPROP writes the ToPropertyKey-coerced string back into its
-            // key register so a follow-up PUTPROP is idempotent. Shield a
-            // live-local key from that mutation.
+            // This access may be reused as a compound/logical-assign or
+            // postfix/prefix-increment target (`f()[k] += v`, `f()[k]++`),
+            // which needs the ToPropertyKey-coerced key cached for an
+            // idempotent follow-up PUTPROP (§7.1.19). Plain assignment
+            // (`f()[k] = v`) strips this GETPROP before it ever executes
+            // (see assignment_expr), so the writeback never fires for that
+            // case — ordering is unaffected. GETPROP_CACHE writes the
+            // coerced key back into idx_reg; shield a live-local key from
+            // that mutation first.
             idx_reg = self.shield_computed_key(idx_reg);
 
             ushort result = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)idx_reg);
+            self.emit_abc(Opcode.GETPROP_CACHE, (uint)result, (uint)callee, (uint)idx_reg);
 
             // Computed member on a call result — also a valid target
             // (`f()[k] = v`). See the DOT branch above.
@@ -1269,11 +1282,11 @@ fn ushort? CompilerContext.call_expr(&self) {
                 self.last_was_member = false;
                 self.last_was_getvar = false;
             } else if (self.match(TokenType.LBRACKET)) {
-                // a?.[expr] — result is never a referenceable member
+                // a?.[expr] — result is never a referenceable member/target
+                // (optional chains can't be assignment targets per spec), so
+                // plain GETPROP suffices — no coerced-key cache needed.
                 ushort idx_reg = self.expression()!;
                 self.expect(TokenType.RBRACKET)!;
-
-                idx_reg = self.shield_computed_key(idx_reg);
 
                 ushort result = self.alloc_reg();
                 self.emit_abc(Opcode.GETPROP, (uint)result, (uint)callee, (uint)idx_reg);
@@ -1835,9 +1848,12 @@ fn ushort? CompilerContext.new_expr(&self) {
             ushort idx_reg = self.expression()!;
             self.call_prop_obj_reg = saved_prop_obj;
             self.expect(TokenType.RBRACKET)!;
+            // May be reused as a compound/logical-assign or postfix/prefix
+            // target (`new X()[k] += v`) — see call_expr's LBRACKET branch
+            // for why GETPROP_CACHE + shield is needed here.
             idx_reg = self.shield_computed_key(idx_reg);
             ushort result = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);
+            self.emit_abc(Opcode.GETPROP_CACHE, (uint)result, (uint)ctor_reg, (uint)idx_reg);
             // Check if this is a method call: new X()[idx](args)
             if (self.check(TokenType.LPAREN)) {
                 self.last_was_member = false;
@@ -1982,10 +1998,19 @@ fn ushort? CompilerContext.member_expr(&self) {
             self.lhs_mode = saved_lhs;
             self.expect(TokenType.RBRACKET)!;
 
+            // This access may be reused as a compound/logical-assign or
+            // postfix/prefix-increment target (`obj[k] += v`, `obj[k]++`),
+            // which needs the ToPropertyKey-coerced key cached in idx_reg for
+            // an idempotent follow-up PUTPROP (§7.1.19). Plain assignment
+            // (`obj[k] = v`) strips this GETPROP before it ever executes
+            // (see assignment_expr's plain-assign path), so the writeback
+            // never fires for that case and evaluation order (ToPropertyKey
+            // after RHS) is unaffected. Shield a live-local key from the
+            // writeback mutation.
             idx_reg = self.shield_computed_key(idx_reg);
 
             ushort result = self.alloc_reg();
-            self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)idx_reg);
+            self.emit_abc(Opcode.GETPROP_CACHE, (uint)result, (uint)obj, (uint)idx_reg);
 
             // See DOT branch above for why we always track the member.
             self.last_was_member = true;

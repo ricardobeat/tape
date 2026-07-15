@@ -2329,6 +2329,7 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
         }
         case Opcode.GETPROP:
+        case Opcode.GETPROP_CACHE:
         case Opcode.GETPROPC:
         case Opcode.GETPROPC2:
         case Opcode.PUTPROP:
