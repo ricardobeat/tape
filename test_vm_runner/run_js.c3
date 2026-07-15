@@ -1,4 +1,9 @@
-module test_vm;
+/// Plain JavaScript runner: compile a source file and execute it.
+///
+/// NOT a test262 harness — no assert/Test262Error/includes handling.
+/// For running test262 tests, use `test262_runner --worker` or
+/// `test262_runner/run_single_test.sh`.
+module run_js;
 
 import duktape::compiler;
 import duktape::vm;

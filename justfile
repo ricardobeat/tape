@@ -10,9 +10,9 @@ all: build-lib build-vm build-batch build-bench build-orig-duktape
 build-lib:
     @make out/lib.a
 
-# Build the single-file test runner (skips c3c if nothing changed — see Makefile)
+# Build the plain JS runner (skips c3c if nothing changed — see Makefile)
 build-vm:
-    @make out/test_vm
+    @make out/run_js
 
 # Build the batch test262 runner (skips c3c if nothing changed — see Makefile)
 build-batch:
@@ -34,10 +34,10 @@ build-quickjs:
     @rm -f out/bench_cache_qjs.txt
 
 # Build with shape pointer cache disabled (`-D NOSHAPECACHE`)
-build-noshape t="test_vm":
+build-noshape t="run_js":
     c3c -D NOSHAPECACHE build "{{t}}"
 
-# Build a specific target: `just build <target>`  (e.g. just build test_vm)
+# Build a specific target: `just build <target>`  (e.g. just build run_js)
 build t="duktape_c3":
     c3c build "{{t}}"
 
@@ -52,13 +52,13 @@ build-trace:
     c3c build duktape_c3_debug
 
 # Build with heap verification enabled (`-D HEAP_VERIFY`) — validates GC roots at yield/resume
-build-verify t="test_vm":
+build-verify t="run_js":
     c3c -D HEAP_VERIFY -O0 build "{{t}}"
 
-# Build test_vm with heap verification and run a JS file
+# Build run_js with heap verification and run a JS file
 run-verify file="test/simple.js":
-    c3c -D HEAP_VERIFY -O0 build test_vm
-    ./out/test_vm {{file}}
+    c3c -D HEAP_VERIFY -O0 build run_js
+    ./out/run_js {{file}}
 
 # ── Debugging ─────────────────────────────────────────────────────────────────
 
@@ -69,13 +69,13 @@ lldb file="test/simple.js":
     lldb ./out/duktape_c3 -b -o "run {{file}}" -o "bt"
 
 # Build with NaN-boxing disabled (`-D NONANBOX`)
-build-nonanbox t="test_vm":
+build-nonanbox t="run_js":
     c3c -D NONANBOX build "{{t}}"
 
-# Build test_vm with NaN-boxing disabled and run a smoke test
+# Build run_js with NaN-boxing disabled and run a smoke test
 test-nonanbox file="test/simple.js":
-    c3c -D NONANBOX build test_vm
-    ./out/test_vm {{file}}
+    c3c -D NONANBOX build run_js
+    ./out/run_js {{file}}
 
 # Clean build artifacts
 clean:
@@ -85,8 +85,8 @@ clean:
 
 # Run a single JS file through the VM test runner (skips c3c if nothing changed)
 run file="test/simple.js":
-    @make out/test_vm
-    ./out/test_vm {{file}}
+    @make out/run_js
+    ./out/run_js {{file}}
 
 # Run a JS file as an ESM module (import/export) (skips c3c if nothing changed)
 run-module file="test/mod_main.js":

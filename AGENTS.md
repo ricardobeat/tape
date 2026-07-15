@@ -27,8 +27,8 @@ All common tasks are `just` recipes (`just list` to see them all). The fast debu
 
 | Task | Command |
 |------|---------|
-| Run one JS file | `just run <file>` (rebuilds `test_vm`, runs `./out/test_vm <file>`) |
-| Build a target | `just build <target>` (e.g. `test_vm`, `duktape_c3`, `batch_test_vm`) |
+| Run one JS file | `just run <file>` (rebuilds `run_js`, runs `./out/run_js <file>`) |
+| Build a target | `just build <target>` (e.g. `run_js`, `duktape_c3`, `batch_test_vm`) |
 | Build everything | `just all` |
 | Debug build (`-O0`) | `just build-debug <target>` |
 | Rosetta suite | `just rosetta` (22+ language features; the go-to regression check) |

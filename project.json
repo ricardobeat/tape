@@ -61,11 +61,11 @@
         "src"
       ]
     },
-    "test_vm": {
+    "run_js": {
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/test_vm.c3"
+        "test_vm_runner/run_js.c3"
       ],
       "opt": "O2",
       "single-module": true
@@ -105,11 +105,11 @@
       ],
       "opt": "O0"
     },
-    "test_vm_asan": {
+    "run_js_asan": {
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/test_vm.c3"
+        "test_vm_runner/run_js.c3"
       ],
       "opt": "O0",
       "single-module": true,

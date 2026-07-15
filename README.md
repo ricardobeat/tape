@@ -33,9 +33,9 @@ Requires [C3 v0.8.0+](https://c3-lang.org/).
 # Default build (NaN-boxing)
 c3c build
 
-# Test runner
-c3c build test_vm
-./out/test_vm test/simple.js
+# Plain JS runner
+c3c build run_js
+./out/run_js test/simple.js
 
 # Test262 batch runner
 c3c build batch_test_vm
