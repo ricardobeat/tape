@@ -24,7 +24,7 @@ build-bench:
 
 # Build original Duktape v2.7.0 for comparison benchmarks
 build-orig-duktape:
-    @cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.
+    @cc -O2 -o out/duktape_orig benchmarks/duktape_orig.c $(ls duktape/src-separate/*.c) -I.
     @rm -f out/bench_cache_duktape.txt
 
 # Build QuickJS CLI for comparison benchmarks
@@ -132,14 +132,14 @@ check-heap-drift:
 # Run all benchmarks without rebuilding (default: 3 iterations)
 bench n="3":
 	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; rm -f out/bench_cache_duktape.txt; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig benchmarks/duktape_orig.c $(ls duktape/src-separate/*.c) -I.; rm -f out/bench_cache_duktape.txt; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/ && rm -f out/bench_cache_qjs.txt; }
 	bash scripts/run_benchmarks.sh {{n}}
 
 # Rebuild duktape_c3 and run all benchmarks
 bench-rebuild n="3":
 	c3c build duktape_c3
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; rm -f out/bench_cache_duktape.txt; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig benchmarks/duktape_orig.c $(ls duktape/src-separate/*.c) -I.; rm -f out/bench_cache_duktape.txt; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/ && rm -f out/bench_cache_qjs.txt; }
 	bash scripts/run_benchmarks.sh {{n}}
 
@@ -155,7 +155,7 @@ bench-one file n="3":
 
 # Run a single benchmark on original Duktape
 bench-orig file:
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig benchmarks/duktape_orig.c $(ls duktape/src-separate/*.c) -I.; }
 	./out/duktape_orig {{file}}
 
 # ── Size & Memory Benchmarks ────────────────────────────────────────────────
@@ -164,21 +164,21 @@ bench-orig file:
 bench-sizes:
 	@echo "=== Engine Size & Memory Benchmark ==="
 	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig benchmarks/duktape_orig.c $(ls duktape/src-separate/*.c) -I.; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_sizes_bench.sh
 
 # Rebuild duktape_c3 and run size/memory benchmark
 bench-sizes-rebuild:
 	c3c build duktape_c3
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig benchmarks/duktape_orig.c $(ls duktape/src-separate/*.c) -I.; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_sizes_bench.sh
 
 # Measure peak RSS memory usage across engines
 bench-memory:
 	@test -f out/duktape_c3 || { echo "ERROR: out/duktape_c3 not found — run: c3c build duktape_c3"; exit 1; }
-	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig duktape_cmdline.c $(ls duktape/src-separate/*.c) -I.; }
+	@test -f out/duktape_orig || { echo "Building original Duktape..."; cc -O2 -o out/duktape_orig benchmarks/duktape_orig.c $(ls duktape/src-separate/*.c) -I.; }
 	@test -f out/qjs || { echo "Building QuickJS..."; make -C quickjs qjs && cp quickjs/qjs out/; }
 	bash scripts/run_memory_bench.sh
 
