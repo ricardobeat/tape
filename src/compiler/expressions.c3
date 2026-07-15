@@ -462,7 +462,12 @@ fn ushort? CompilerContext.assignment_expr(&self) {
 
     if (is_assign) {
         if (lhs_was_member) {
-            // Member expression assignment: obj.prop = right
+            // Member expression assignment: obj.prop = right.
+            // The GETPROP result reg (`left`) was allocated by member_expr but
+            // stripped above; free it before repurposing `left` as the returned
+            // value so tight compiles don't leak one temp per plain member
+            // assignment.
+            self.free_reg(left);
             self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
             self.free_reg(lhs_member_prop);
             self.free_reg(lhs_member_obj);
