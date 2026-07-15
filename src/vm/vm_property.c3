@@ -30,6 +30,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
     Vm* vm = ds.vm;
     switch (op) {
         case Opcode.GETPROP:
+        case Opcode.GETPROP_CACHE:
             if (rb.is_object()) {
                 HObject* hobj = (HObject*)rb.get_heapptr();
 
@@ -131,10 +132,14 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // ToPropertyKey (§7.1.19) must be idempotent when a compound
                 // assignment reuses this same key register for the follow-up
                 // PUTPROP: `base[prop] *= expr()` may only call prop.toString()
-                // once. Write the resolved string key back into rc so that a
-                // later get_prop_key(vm, rc) on this register is a no-op
-                // (STRING tag short-circuits without re-invoking ToPrimitive).
-                if (key != null && !rc.is_string()) {
+                // once. GETPROP_CACHE (opt-in — see bytecode.c3) writes the
+                // resolved string key back into rc so that a later
+                // get_prop_key(vm, rc) on this register is a no-op (STRING
+                // tag short-circuits without re-invoking ToPrimitive). Plain
+                // GETPROP never does this: rc may alias a live local-variable
+                // register (e.g. `arr[i]` where `i` is a parameter), and
+                // unconditional writeback would silently corrupt the local.
+                if (op == Opcode.GETPROP_CACHE && key != null && !rc.is_string()) {
                     TVal key_tv;
                     key_tv.set_string(key);
                     vm.heap.tval_copy_ref(rc, &key_tv);

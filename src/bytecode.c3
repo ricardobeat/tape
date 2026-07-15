@@ -178,11 +178,27 @@ enum Opcode : char {
 
     // ---- Property access -------------------------------------------------
 
-    /// `A = B[C]`  — get property.
+    /// `A = B[C]`  — get property. Coerces C to a property key internally
+    /// (ToPropertyKey, §7.1.19) to perform the lookup, but does NOT write
+    /// the coerced key back into register C — safe to use on any key
+    /// register, including one that aliases a live local variable.
     GETPROP,
     /// `A = B[K]`  — get property with constant pool key.  Fused LDCONST+GETPROP.
     /// Format ABC: A = dst reg, B = obj reg, C = constant-pool index of property key string.
     GETPROPC,
+    /// `A = B[C]`, and C = ToPropertyKey(C)  — identical to GETPROP, but ALSO
+    /// writes the ToPropertyKey-coerced string back into register C so a
+    /// follow-up PUTPROP/TOPROPKEY on the same register is idempotent (no
+    /// second toString()/Symbol.toPrimitive() invocation on the key), per
+    /// §7.1.19. Opt-in: emitted by member_expr for computed (`[expr]`) member
+    /// accesses that may later be reused as a compound/logical-assign or
+    /// postfix/prefix-increment target — see member_expr's LBRACKET branch
+    /// in expressions.c3. Plain assignment (`obj[k] = v`) strips this
+    /// instruction from the bytecode stream before it ever executes, so the
+    /// writeback never interferes with that path's evaluation order. C must
+    /// be a compiler-owned temp register (never a caller's local var) at
+    /// every such call site — see CompilerContext.shield_computed_key.
+    GETPROP_CACHE,
     /// `A[B] = C`  — put (set) property.
     PUTPROP,
     /// `A = delete B[C]`  — delete property.

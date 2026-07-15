@@ -153,6 +153,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.IF_TRUE.ordinal]     = "IF_TRUE",
     [Opcode.IF_FALSE.ordinal]    = "IF_FALSE",
     [Opcode.GETPROP.ordinal]     = "GETPROP",
+    [Opcode.GETPROP_CACHE.ordinal] = "GETPROP_CACHE",
     [Opcode.GETPROPC.ordinal]    = "GETPROPC",
     [Opcode.PUTPROP.ordinal]     = "PUTPROP",
     [Opcode.DELPROP.ordinal]     = "DELPROP",

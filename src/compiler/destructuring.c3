@@ -351,7 +351,7 @@ fn bool? CompilerContext.parse_assign_target_lhs(&self,
         // NOP the trailing GETPROP so we do not invoke a getter.
         if (self.code_count > 0) {
             uint last = self.code_count - 1;
-            if (self.code[last].op == Opcode.GETPROP) {
+            if (self.code[last].op == Opcode.GETPROP || self.code[last].op == Opcode.GETPROP_CACHE) {
                 self.code[last] = bytecode::make_abc(Opcode.NOP, 0, 0, 0);
             }
         }
