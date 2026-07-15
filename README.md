@@ -80,9 +80,9 @@ duktape-c3/
 │   ├── builtins/         # Built-in objects and functions
 │   ├── vm.c3             # Bytecode interpreter
 │   └── re_bindings.c3    # RegExp bindings
+├── cli/              # CLI frontends: run_js (plain JS) + test262_runner (test262 harness)
 ├── benchmarks/       # Performance and memory benchmarks
 ├── test/             # Unit tests and JS test scripts
-├── test_vm_runner/   # CLI runners: run_js (plain JS) + test262_runner (test262 harness)
 ├── scripts/          # Automation scripts
 ├── plans/            # Design and optimization plans
 ├── progress.md       # test262 conformance tracker

@@ -65,7 +65,7 @@
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/run_js.c3"
+        "cli/run_js.c3"
       ],
       "opt": "O2",
       "single-module": true
@@ -74,7 +74,7 @@
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/test262_runner.c3"
+        "cli/test262_runner.c3"
       ],
       "opt": "O2",
       "single-module": true
@@ -83,7 +83,7 @@
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/test262_runner.c3"
+        "cli/test262_runner.c3"
       ],
       "opt": "O0",
       "single-module": true,
@@ -109,7 +109,7 @@
       "type": "executable",
       "sources": [
         "src",
-        "test_vm_runner/run_js.c3"
+        "cli/run_js.c3"
       ],
       "opt": "O0",
       "single-module": true,
