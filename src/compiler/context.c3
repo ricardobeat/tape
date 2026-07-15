@@ -455,6 +455,8 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.call_prop_obj_reg = MAX_REGISTERS;
     self.pushback_count = 0;
     self.pending_async_arrow_src = 0xFFFFFFFF;
+    // Strict-only engine: all code is strict by default.
+    self.is_strict = true;
 
     // Allocate growable buffers
     Heap* h = (Heap*)heap;
