@@ -170,3 +170,16 @@ fn bool CompilerContext.is_local_var_reg(&self, ushort reg) {
     }
     return false;
 }
+
+/// Shield a computed-member key register from GETPROP's in-place
+/// ToPropertyKey writeback: if the caller passes a live-local reg,
+/// copy it to a fresh temp so GETPROP can safely mutate the temp
+/// instead of the local. Any callsite emitting `GETPROP _, obj, key`
+/// on a caller-owned key MUST route the key through this helper first.
+/// Returns either the original reg (safe) or the temp copy.
+fn ushort CompilerContext.shield_computed_key(&self, ushort key_reg) {
+    if (!self.is_local_var_reg(key_reg)) return key_reg;
+    ushort tmp = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)tmp, (uint)key_reg, 0);
+    return tmp;
+}
