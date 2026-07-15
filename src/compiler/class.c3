@@ -167,7 +167,7 @@ fn void? CompilerContext.class_declaration(&self) {
     // Parse extends clause and class body.  Methods CLOSURE here, capturing
     // classScope as their lex_env so the class name resolves to the
     // constructor from inside method bodies.
-    ushort ctor_reg = self.parse_class_tail_with_name(name_tok.str_value, class_decl_src_start)!;
+    ushort ctor_reg = self.parse_class_tail_with_name(name_tok.str_value, class_decl_src_start, false)!;
 
     // Initialize the classScope's immutable binding with the constructor value
     // (overwriting the TDZ placeholder).
@@ -239,7 +239,7 @@ fn ushort? CompilerContext.class_expression(&self) {
     // Parse extends clause and class body.
     // Anonymous class expression: pass empty name so default constructor
     // has empty .name (per ES2015 anonymous class expression).
-    ushort ctor_reg = self.parse_class_tail_with_name(name, class_expr_src_start)!;
+    ushort ctor_reg = self.parse_class_tail_with_name(name, class_expr_src_start, true)!;
 
     // For named class expressions, initialize the classScope's immutable
     // binding with the constructor, then pop classScope.  Methods retain it
@@ -257,7 +257,7 @@ fn ushort? CompilerContext.class_expression(&self) {
 /// Returns the register holding the constructor function.
 /// `class_name`: when non-empty, the default constructor inherits this name
 /// as its `.name` property (ES2015 §14.5.14 + SetFunctionName).
-fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, uint class_src_start = 0xFFFFFFFF) {
+fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, uint class_src_start = 0xFFFFFFFF, bool is_expr = false) {
     // Save state for restoration after class body
     bool saved_in_class_body = self.in_class_body;
     bool saved_has_super = self.has_super_binding;
@@ -632,9 +632,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     }
 
     self.expect(TokenType.RBRACE)!;
-    // A `}` closing a ClassBody is a statement/declaration boundary: a
-    // following `/` starts a RegularExpressionLiteral, not division.
-    self.lexer.note_block_close();
+    // A `}` closing a ClassBody is a statement/declaration boundary only for
+    // class declarations. Class expressions (`x = class {}/re/`) sit inside a
+    // larger expression, so a following `/` is division; suppress the hint.
+    if (!is_expr) {
+        self.lexer.note_block_close();
+    }
     // Capture the end position of the class (after `}`) for source retention.
     uint class_src_end = self.lexer.pos;
 
