@@ -1,5 +1,0 @@
-[container]
-entrypoint = "crush --yolo"     # command to run inside the container
-cpus = 4                  # number of CPUs (default: 2)
-memory = "8G"             # memory limit (default: 4G)
-volumes = ["/Users/rtomasi/.config/crush:/home/agt/.config/crush"]
