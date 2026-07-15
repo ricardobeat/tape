@@ -9,7 +9,7 @@ A C3-native, strict-only JavaScript engine. **Goal**: pass 100% of the targeted 
 - Uses Duktape v2.7.0 and QuickJS as architectural references; leverage C3's native features for memory safety and its stdlib. When a path is unclear, compare Duktape source against QuickJS. Check the stdlib reference for what is available when planning a new feature.
 - Focus on ES5/ES6 core; ignore *staging* features in the spec.
 - RegExp uses libregexp (from QuickJS).
-- **test262 skip list**: ~60% of test262 is irrelevant for a clean-slate engine targeting Node/Bun/browser compatibility (Annex B, ECMA-402, Stage 3 proposals, engine quirks). Rationale is in `test262_relevance_report.md`. All runners (`scripts/test262_skip.cfg`, `scripts/run_test262.py`, `test262_runner/run_real.sh`, `test262_runner/quick.sh`) share a skip list derived from that report — update it there when implementing new features.
+- **test262 skip list**: ~60% of test262 is irrelevant for a clean-slate engine targeting Node/Bun/browser compatibility (Annex B, ECMA-402, Stage 3 proposals, engine quirks). Rationale is in `test262_relevance_report.md`. The runner (`scripts/run_test262.py`) sources the shared skip list from `scripts/test262_skip.cfg` — update the .cfg when implementing new features.
 
 ## Strict-Only Mode
 

@@ -9,7 +9,7 @@
 - **Full suite / single phase**: `python3 scripts/run_test262.py [--phase N] --workers 4` (~6-8 min full, <1 min per phase). MEMKILL cap 2 GB RSS.
 - **Per-test results**: add `--log out/test262_results.tsv`; cluster with `awk -F'\t' '$1=="FAIL"{print $2}' … | xargs -n1 dirname | sort | uniq -c | sort -rn`.
 - **Single-test repro**: `bash test262_runner/run_single_test.sh <path>` (`--keep` for `just lldb` / `--trace-vm`).
-- **Quick smoke**: `bash test262_runner/quick.sh` · **Phase counts**: `bash scripts/count_test262_by_phase.sh` · **Delta**: `bash scripts/test262_delta.sh`.
+- **Phase counts**: `bash scripts/count_test262_by_phase.sh` · **Delta**: `bash scripts/test262_delta.sh`.
 - **Build**: `c3c build batch_test_vm` or `c3c build test_vm`.
 
 ## Session Log (last 10, oldest first)
