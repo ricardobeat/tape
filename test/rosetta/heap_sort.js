@@ -1,11 +1,6 @@
 // Rosetta Code: Sorting algorithms / Heap sort
 // https://rosettacode.org/wiki/Sorting_algorithms/Heapsort
 // In-place sort using a max-heap.
-//
-// KNOWN ISSUE: this engine has a bug that corrupts the
-// `var tmp = a[root]; a[root] = a[swap]; a[swap] = tmp;` swap chain
-// inside the siftDown loop. See test/rosetta/FAILURES.md and
-// test/test_bug_swap_chain_in_loop.js for a minimal repro.
 
 var pass = 0, fail = 0;
 function assert(c, m) { if (c) pass++; else { fail++; print("FAIL: " + m); } }

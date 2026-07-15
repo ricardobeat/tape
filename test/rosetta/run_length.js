@@ -25,9 +25,7 @@ function encode(s) {
 
 function isDigit(ch) {
     var c = ch.charCodeAt(0);
-    if (c < 48) return false;
-    if (c > 57) return false;
-    return true;
+    return c >= 48 && c <= 57;
 }
 
 function decode(s) {

@@ -16,12 +16,12 @@ function mergeSort(a) {
 function merge(a, b) {
     var out = [];
     var i = 0, j = 0;
-    while (true) {
-        if (i >= a.length) { for (var k = j; k < b.length; k++) out.push(b[k]); break; }
-        if (j >= b.length) { for (var k = i; k < a.length; k++) out.push(a[k]); break; }
-        if (a[i] <= b[j]) out.push(a[i++]);
-        else out.push(b[j++]);
+    while (i < a.length && j < b.length) {
+        if (a[i] <= b[j]) { out.push(a[i]); i++; }
+        else { out.push(b[j]); j++; }
     }
+    while (i < a.length) { out.push(a[i]); i++; }
+    while (j < b.length) { out.push(b[j]); j++; }
     return out;
 }
 

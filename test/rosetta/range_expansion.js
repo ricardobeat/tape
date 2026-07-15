@@ -1,14 +1,6 @@
 // Rosetta Code: Range expansion
 // https://rosettacode.org/wiki/Range_expansion
 // "1,3,5-9,12" -> [1,3,5,6,7,8,9,12]
-//
-// KNOWN ISSUE: `compressRange` hangs (rc 124, infinite loop) on this
-// engine — the nested `while (i+1 < nums.length && nums[i+1] === end + 1)`
-// body that re-reads `nums[i+1]` after `i++` triggers a real engine bug.
-// Calling the buggy function here would hang this whole test file rather
-// than failing it, which would block the suite run. The bug itself has a
-// dedicated, timeout-bounded minimal repro instead:
-// test/test_bug_nested_while_index_reread.js. See test/rosetta/FAILURES.md.
 
 var pass = 0, fail = 0;
 function assert(c, m) { if (c) pass++; else { fail++; print("FAIL: " + m); } }
@@ -31,6 +23,31 @@ function expandRange(s) {
     return out;
 }
 
+function compressRange(nums) {
+    if (nums.length === 0) return "";
+    var out = [];
+    var i = 0;
+    while (i < nums.length) {
+        var start = nums[i];
+        var end = start;
+        while (i + 1 < nums.length && nums[i + 1] === end + 1) {
+            i++;
+            end = nums[i];
+        }
+        var span = end - start;
+        if (span >= 2) {
+            out.push(start + "-" + end);
+        } else if (span === 1) {
+            out.push(String(start));
+            out.push(String(end));
+        } else {
+            out.push(String(start));
+        }
+        i++;
+    }
+    return out.join(",");
+}
+
 function arrayEq(a, b) {
     if (a.length !== b.length) return false;
     for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -43,6 +60,12 @@ assert(arrayEq(expandRange("7"), [7]), "single 7");
 assert(arrayEq(expandRange("3-3"), [3]), "single 3-3");
 assert(arrayEq(expandRange(""), []), "empty -> empty");
 
-print("rosetta/range_expansion: compressRange skipped — known engine hang, see test/test_bug_nested_while_index_reread.js");
+assert(compressRange([]) === "", "compress empty");
+assert(compressRange([7]) === "7", "compress single");
+assert(compressRange([0, 1, 2, 3, 4, 5]) === "0-5", "compress 0-5");
+assert(compressRange([1, 3, 5, 6, 7, 8, 9, 12]) === "1,3,5-9,12", "compress mixed");
+assert(compressRange([0, 1, 2, 4, 6, 7, 8]) === "0-2,4,6-8", "compress gaps");
+assert(compressRange([1, 2]) === "1,2", "compress two adjacent");
+
 print("rosetta/range_expansion: " + pass + " passed, " + fail + " failed");
 if (fail > 0) throw new Error("FAIL");

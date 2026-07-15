@@ -1,11 +1,6 @@
 // Rosetta Code: Sorting algorithms / Shell sort
 // https://rosettacode.org/wiki/Sorting_algorithms/Shell_sort
 // Gapped insertion sort with diminishing gap sequence.
-//
-// KNOWN ISSUE: this engine has a bug that corrupts in-place
-// `a[j] = a[j-gap]; a[j] = temp` sequences inside a while loop.
-// See test/rosetta/FAILURES.md and test/test_bug_swap_chain_in_loop.js
-// for a minimal repro.
 
 var pass = 0, fail = 0;
 function assert(c, m) { if (c) pass++; else { fail++; print("FAIL: " + m); } }

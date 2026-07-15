@@ -1,10 +1,6 @@
 // Rosetta Code: Caesar cipher
 // https://rosettacode.org/wiki/Caesar_cipher
 // Letter-shift cipher.
-//
-// KNOWN ISSUE: this engine has a bug where calling String.fromCharCode with a
-// computed expression corrupts the next read of `text[i]` for non-letters.
-// See test/rosetta/FAILURES.md.
 
 var pass = 0, fail = 0;
 function assert(c, m) { if (c) pass++; else { fail++; print("FAIL: " + m); } }
@@ -24,7 +20,6 @@ function caesar(text, shift) {
     return out;
 }
 
-// Pure-letter tests work; mixed punctuation fails on this engine.
 assert(caesar("HELLO", 3) === "KHOOR", "HELLO+3=KHOOR");
 assert(caesar("hello", 3) === "khoor", "hello+3=khoor");
 assert(caesar("ABC", 1) === "BCD", "ABC+1=BCD");
@@ -32,10 +27,7 @@ assert(caesar("XYZ", 3) === "ABC", "XYZ+3=ABC (wraps)");
 assert(caesar("abc", -1) === "zab", "abc-1=zab");
 assert(caesar(caesar("HELLO", 3), -3) === "HELLO", "round trip");
 assert(caesar("Hello", 26) === "Hello", "shift 26 = identity");
-
-// Punctuation test: known broken on this engine.
-assert(caesar("Hello, World!", 5) === "Mjqqt, Btwqi!",
-       "Hello World+5 (BROKEN: engine bug in register reuse across fromCharCode call)");
+assert(caesar("Hello, World!", 5) === "Mjqqt, Btwqi!", "Hello World+5");
 
 print("rosetta/caesar: " + pass + " passed, " + fail + " failed");
 if (fail > 0) throw new Error("FAIL");
