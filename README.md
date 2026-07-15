@@ -27,7 +27,14 @@ A port of the [Duktape JavaScript engine](https://duktape.org/) from C to [C3](h
 
 ### Build
 
-Requires [C3 v0.8.0+](https://c3-lang.org/).
+**Runtime:** [C3 v0.8.0+](https://c3-lang.org/) — the only requirement to build and run the engine itself.
+
+**Dev tooling** (only needed for the test262 conformance suite, benchmarks, and `just` recipes):
+- [`just`](https://github.com/casey/just) — task runner wrapping the commands below
+- Python 3.6+ — orchestrates `scripts/run_test262.py` (parallel workers, RSS sampling, skip list, retry passes); stdlib only, no `pip install`
+- `jq` — Makefile parses `project.json` for target sources
+- `bash` — shell recipes under `scripts/` and the `justfile`
+- `cc` — builds the vendored Duktape v2.7.0 CLI used for benchmark comparisons
 
 ```bash
 # Default build (NaN-boxing)
@@ -37,9 +44,10 @@ c3c build
 c3c build run_js
 ./out/run_js test/simple.js
 
-# Test262 batch runner
+# test262 conformance suite
 c3c build test262_runner
-python3 scripts/run_test262.py
+python3 scripts/run_test262.py                 # full suite
+python3 scripts/run_test262.py --phase 2       # single phase (~1 min)
 
 # Benchmark CLI
 c3c build duktape_c3
