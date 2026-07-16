@@ -1042,7 +1042,7 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
         args[1].set_fastint((long)new_byte_off);
         args[2].set_fastint((long)new_len);
         TVal species_tv; species_tv.set_object(species_ctor);
-        TVal result_tv = heap.construct_fn(ctx.vm, species_tv, &args[0], 3);
+        TVal result_tv = heap.construct_fn(ctx.vm, species_tv, &args[0], 3, species_tv);
         if (heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = heap.error_value;
@@ -1362,7 +1362,7 @@ fn HObject* ta_species_create(BuiltinContext* ctx, HObject* exemplar, uint count
 
     // Step 7: Call species constructor with count argument.
     TVal count_arg; count_arg.set_fastint((long)count);
-    TVal result_tv = heap.construct_fn(ctx.vm, species_val, &count_arg, 1);
+    TVal result_tv = heap.construct_fn(ctx.vm, species_val, &count_arg, 1, species_val);
     if (heap.has_error) {
         ctx.should_throw = true;
         ctx.throw_value = heap.error_value;
@@ -2638,7 +2638,7 @@ fn HObject* ta_typed_array_create(BuiltinContext* ctx, TVal* args, uint nargs) {
     // in a register that gets clobbered by the callee.
     TVal ctor_val = ctx.this_val;
     void* vm_ptr  = ctx.vm;
-    TVal result_tv = heap.construct_fn(vm_ptr, ctor_val, args, nargs);
+    TVal result_tv = heap.construct_fn(vm_ptr, ctor_val, args, nargs, ctor_val);
     if (heap.has_error) {
         ctx.should_throw = true;
         ctx.throw_value = heap.error_value;

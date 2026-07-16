@@ -731,29 +731,10 @@ fn void builtin_object_getOwnPropertySymbols(BuiltinContext* ctx) {
 /// Unlike Object.keys, does NOT filter by enumerable — returns ALL own keys.
 /// Order: integer indices ascending, then string keys in insertion order, then symbol keys.
 fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
-    if (ctx.argc < 1) {
-        ctx.result.set_undefined();
-        return;
-    }
-    TVal arg = ctx.regs[ctx.base_reg];
-    // ES6 §26.1.11: throw TypeError for null/undefined,
-    // use ToObject wrapper for primitives
-    if (arg.is_null() || arg.is_undefined()) {
-        builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.ownKeys called on non-object");
-        return;
-    }
-
-    HObject* obj;
-    if (arg.is_object()) {
-        obj = (HObject*)arg.get_heapptr();
-    } else {
-        // ToObject wrapper for primitives
-        if (!builtin_to_object(ctx, arg)) {
-            ctx.result.set_undefined();
-            return;
-        }
-        obj = (HObject*)ctx.result.get_heapptr();
-    }
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.ownKeys called on non-object");
+    if (obj == null) return;
 
     // Proxy exotic: [[OwnPropertyKeys]] verbatim.
     if (obj.flags.exotic_proxyobj) {
@@ -763,7 +744,7 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
         return;
     }
 
-    // Allocate result array
+    // Allocate result array.
     HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = arr_raw) {
         ctx.result.set_undefined();
@@ -771,100 +752,134 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
     }
     HObject* arr = arr_raw;
     arr.prototype = ctx.heap.array_proto;
-    uint idx = 0;
 
-    // STRING exotic: integer indices [0, clen) are own properties
+    // Collect keys into a temporary buffer, then write them into the result array.
+    uint max_keys = obj.prop_count + obj.array_size + 32;
+    HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
+    if (key_buf == null) { ctx.result.set_undefined(); return; }
+    uint key_count = 0;
+    defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
+
+    // STRING exotic: integer indices [0, clen) are own properties.
     if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null) {
             for (uint i = 0; i < prim.char_length(); i++) {
                 HString* k = ctx.heap.int_to_hstring((long)i);
                 if (k == null) { ctx.result.set_undefined(); return; }
-                TVal key_tv;
-                key_tv.set_string(k);
-                array_set_elem(arr, idx, key_tv, ctx.heap);
-                idx++;
+                key_buf[key_count++] = k;
             }
         }
     }
 
-    // Phase 1: integer-indexed named properties (sorted by numeric index)
+    // Phase 1: integer-indexed properties merged from named props + dense array, sorted.
     {
-        uint int_count = 0;
+        uint named_int_count = 0;
         for (uint i = 0; i < obj.prop_count; i++) {
-            if (obj.prop_key_at(i) != null) {
-                HString* key = (HString*)obj.prop_key_at(i);
-                if (key.is_arridx() && !key.is_symbol()) {
-                    int_count++;
+            if (obj.prop_key_at(i) != null && ((HString*)obj.prop_key_at(i)).is_arridx()) {
+                named_int_count++;
+            }
+        }
+        uint dense_int_count = 0;
+        if (obj.array_size > 0) {
+            for (uint i = 0; i < obj.array_size; i++) {
+                if (!obj.array_part()[i].is_undefined()) {
+                    HString* ki = ctx.heap.int_to_hstring((long)i);
+                    if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
+                    dense_int_count++;
                 }
             }
         }
-        if (int_count > 0) {
-            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(int_count * 2 * 4));
+        uint total_int = named_int_count + dense_int_count;
+        if (total_int > 0) {
+            usz sort_size = (usz)(total_int * 3 * 4);
+            uint* sort_buf = (uint*)ctx.heap.alloc_func(ctx.heap.heap_udata, sort_size);
             if (sort_buf != null) {
                 uint p = 0;
                 for (uint i = 0; i < obj.prop_count; i++) {
                     if (obj.prop_key_at(i) != null) {
                         HString* key = (HString*)obj.prop_key_at(i);
-                        if (key.is_arridx() && !key.is_symbol()) {
-                            sort_buf[p * 2] = key.array_index();
-                            sort_buf[p * 2 + 1] = i;
+                        if (key.is_arridx()) {
+                            sort_buf[p * 3] = key.array_index();
+                            sort_buf[p * 3 + 1] = i;
+                            sort_buf[p * 3 + 2] = 0;  // named prop
                             p++;
                         }
                     }
                 }
-                // Insertion sort by arridx
-                for (uint i = 1; i < int_count; i++) {
-                    uint t0 = sort_buf[i * 2];
-                    uint t1 = sort_buf[i * 2 + 1];
+                for (uint i = 0; i < obj.array_size; i++) {
+                    if (!obj.array_part()[i].is_undefined()) {
+                        HString* ki = ctx.heap.int_to_hstring((long)i);
+                        if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
+                        sort_buf[p * 3] = i;
+                        sort_buf[p * 3 + 1] = i;
+                        sort_buf[p * 3 + 2] = 1;  // dense array
+                        p++;
+                    }
+                }
+                total_int = p;
+                for (uint i = 1; i < total_int; i++) {
+                    uint t0 = sort_buf[i * 3];
+                    uint t1 = sort_buf[i * 3 + 1];
+                    uint t2 = sort_buf[i * 3 + 2];
                     uint j = i;
-                    while (j > 0 && sort_buf[(j - 1) * 2] > t0) {
-                        sort_buf[j * 2] = sort_buf[(j - 1) * 2];
-                        sort_buf[j * 2 + 1] = sort_buf[(j - 1) * 2 + 1];
+                    while (j > 0 && sort_buf[(j - 1) * 3] > t0) {
+                        sort_buf[j * 3] = sort_buf[(j - 1) * 3];
+                        sort_buf[j * 3 + 1] = sort_buf[(j - 1) * 3 + 1];
+                        sort_buf[j * 3 + 2] = sort_buf[(j - 1) * 3 + 2];
                         j--;
                     }
-                    sort_buf[j * 2] = t0;
-                    sort_buf[j * 2 + 1] = t1;
+                    sort_buf[j * 3] = t0;
+                    sort_buf[j * 3 + 1] = t1;
+                    sort_buf[j * 3 + 2] = t2;
                 }
-                for (uint i = 0; i < int_count; i++) {
-                    uint si = sort_buf[i * 2 + 1];
-                    HString* key = (HString*)obj.prop_key_at(si);
-                    TVal key_tv;
-                    key_tv.set_string(key);
-                    array_set_elem(arr, idx, key_tv, ctx.heap);
-                    idx++;
+                for (uint i = 0; i < total_int; i++) {
+                    uint src_type = sort_buf[i * 3 + 2];
+                    HString* key;
+                    if (src_type == 0) {
+                        key = (HString*)obj.prop_key_at(sort_buf[i * 3 + 1]);
+                        if (key.is_symbol()) continue;
+                    } else {
+                        key = ctx.heap.int_to_hstring((long)sort_buf[i * 3]);
+                        if (key == null) { ctx.result.set_undefined(); return; }
+                    }
+                    key_buf[key_count++] = key;
                 }
                 ctx.heap.free_func(ctx.heap.heap_udata, sort_buf);
             }
         }
     }
-    // Phase 2: non-index string properties (insertion order)
+
+    // Phase 2: non-index string properties (insertion order).
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_arridx() || key.is_symbol()) continue;
-            TVal key_tv;
-            key_tv.set_string(key);
-            array_set_elem(arr, idx, key_tv, ctx.heap);
-            idx++;
+            key_buf[key_count++] = key;
         }
     }
-    // Phase 3: symbol properties (insertion order)
+
+    // Phase 3: symbol properties (insertion order).
     for (uint i = 0; i < obj.prop_count; i++) {
         if (obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_symbol()) {
-                TVal key_tv;
-                key_tv.set_string(key);
-                array_set_elem(arr, idx, key_tv, ctx.heap);
-                idx++;
+                key_buf[key_count++] = key;
             }
         }
     }
 
-    // Set .length — Array.length is writable, non-enumerable, configurable (ES5 §15.4.5.1)
+    // Write collected keys into the result array.
+    for (uint i = 0; i < key_count; i++) {
+        HString* idx_key = ctx.heap.int_to_hstring((long)i);
+        if (idx_key == null) { ctx.result.set_undefined(); return; }
+        TVal val_tv;
+        val_tv.set_string(key_buf[i]);
+        arr.put_prop(idx_key, val_tv, hobject::PROP_FLAGS_WEC);
+    }
+
     TVal len_tv;
-    len_tv.set_fastint((long)idx);
+    len_tv.set_fastint((long)key_count);
     HString* length_key = builtin_intern_string(ctx.heap, "length");
     arr.put_prop(length_key, len_tv, hobject::PROP_FLAGS_WC);
     ctx.result.set_object(arr);
@@ -1087,8 +1102,9 @@ fn void builtin_reflect_setPrototypeOf(BuiltinContext* ctx) {
         return;
     }
     HObject* proto_obj = proto_tv.is_null() ? null : (HObject*)proto_tv.get_heapptr();
-    obj.prototype = proto_obj;
-    ctx.result.set_boolean(true);
+    bool ok = ordinary_set_proto(ctx, obj, proto_obj);
+    if (ctx.should_throw) return;
+    ctx.result.set_boolean(ok);
 }
 
 // ============================================================================
@@ -1124,6 +1140,149 @@ fn void builtin_reflect_preventExtensions(BuiltinContext* ctx) {
     }
     obj.flags.extensible = false;
     ctx.result.set_boolean(true);
+}
+
+// ============================================================================
+// Reflect.apply — ES6 §26.1.1
+// ============================================================================
+/// Calls `target` with `thisArgument` and the elements of `argumentsList`.
+fn void builtin_reflect_apply(BuiltinContext* ctx) {
+    TVal target; target.set_undefined();
+    if (ctx.argc > 0) target = ctx.regs[ctx.base_reg];
+
+    bool callable = false;
+    if (target.is_lightfunc()) {
+        callable = true;
+    } else if (target.is_object()) {
+        HObject* hobj = (HObject*)target.get_heapptr();
+        if (hobj != null) callable = hobj.is_callable();
+    }
+    if (!callable) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.apply called on non-callable");
+        return;
+    }
+
+    TVal this_arg; this_arg.set_undefined();
+    if (ctx.argc > 1) this_arg = ctx.regs[ctx.base_reg + 1];
+
+    TVal args_list; args_list.set_undefined();
+    if (ctx.argc > 2) args_list = ctx.regs[ctx.base_reg + 2];
+    if (!args_list.is_object()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.apply called with non-object arguments list");
+        return;
+    }
+
+    apply_call(ctx, target, this_arg, args_list);
+}
+
+// ============================================================================
+// Reflect.construct — ES6 §26.1.2
+// ============================================================================
+/// Constructs an instance of `target` using `argumentsList` and optional
+/// `newTarget` as the value of new.target.
+fn void builtin_reflect_construct(BuiltinContext* ctx) {
+    TVal target; target.set_undefined();
+    if (ctx.argc > 0) target = ctx.regs[ctx.base_reg];
+
+    if (!target.is_object() || target.get_heapptr() == null ||
+        !((HObject*)target.get_heapptr()).is_constructable()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.construct called on non-constructor");
+        return;
+    }
+
+    TVal args_list; args_list.set_undefined();
+    if (ctx.argc > 1) args_list = ctx.regs[ctx.base_reg + 1];
+    if (!args_list.is_object()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.construct called with non-object arguments list");
+        return;
+    }
+
+    TVal new_target = target;
+    if (ctx.argc > 2) {
+        new_target = ctx.regs[ctx.base_reg + 2];
+        if (!new_target.is_object() || new_target.get_heapptr() == null ||
+            !((HObject*)new_target.get_heapptr()).is_constructable()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.construct called with non-constructor newTarget");
+            return;
+        }
+    }
+
+    // Extract arguments from the array-like.
+    HObject* arr_obj = (HObject*)args_list.get_heapptr();
+    double raw_len = array_get_length_raw(arr_obj, ctx.heap, ctx);
+    if (ctx.should_throw) return;
+    if (math::is_nan(raw_len) || raw_len < 0) raw_len = 0;
+    if (raw_len > 4294967295.0) raw_len = 4294967295.0;
+    uint len = (uint)raw_len;
+    if (len > 65535) {
+        builtin_throw(ctx, ctx.heap.range_err_proto, "Reflect.construct: too many arguments");
+        return;
+    }
+
+    TVal* args = null;
+    if (len > 0) {
+        args = (TVal*)ctx.heap.alloc_func(ctx.heap.heap_udata, TVal::size * len);
+        if (args == null) { ctx.result.set_undefined(); return; }
+    }
+
+    bool is_plain_array = arr_obj.get_class() == hobject::ObjClass.ARRAY
+                          && arr_obj.array_part() != null
+                          && arr_obj.prop_count <= 1;
+    uint actual = 0;
+    for (uint i = 0; i < len; i++) {
+        TVal elem;
+        if (is_plain_array && i < arr_obj.array_size) {
+            TVal dv = arr_obj.array_part()[i];
+            if (!dv.is_undefined()) {
+                if (actual < len) args[actual++] = dv;
+                continue;
+            }
+        }
+        char[20] buf;
+        int n = libc::snprintf(&buf, 20, "%d", i);
+        if (n <= 0 || n >= 20) break;
+        HString* key = builtin_intern_string(ctx.heap, buf[:n]);
+        if (key == null) break;
+        int own_idx = arr_obj.find_prop_idx(key);
+        if (own_idx >= 0 && arr_obj.get_prop_flags((uint)own_idx).is_accessor) {
+            TVal getter = hobject::hobject_access_getter(arr_obj.prop_values()[own_idx]);
+            elem = arr_invoke_getter_ctx(arr_obj, getter, ctx.heap, ctx);
+            if (ctx.should_throw) {
+                if (args != null) ctx.heap.free_func(ctx.heap.heap_udata, args);
+                return;
+            }
+        } else if (own_idx >= 0) {
+            elem = arr_obj.prop_values()[own_idx];
+        } else if (!is_plain_array && arr_obj.get_class() == hobject::ObjClass.ARRAY && arr_obj.array_part() != null
+                   && i < arr_obj.array_size && !arr_obj.array_part()[i].is_undefined()) {
+            elem = arr_obj.array_part()[i];
+        } else {
+            hobject::PropLookupResult res = arr_obj.get_prop_or_accessor_proto(key, true);
+            if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                elem = arr_invoke_getter_ctx(arr_obj, res.acc.accessor_fn, ctx.heap, ctx);
+                if (ctx.should_throw) {
+                    if (args != null) ctx.heap.free_func(ctx.heap.heap_udata, args);
+                    return;
+                }
+            } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+                elem = res.data_val;
+            } else {
+                elem.set_undefined();
+            }
+        }
+        if (actual < len) args[actual++] = elem;
+    }
+
+    TVal result = ctx.heap.construct_fn(ctx.vm, target, args, actual, new_target);
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        if (args != null) ctx.heap.free_func(ctx.heap.heap_udata, args);
+        return;
+    }
+    if (args != null) ctx.heap.free_func(ctx.heap.heap_udata, args);
+    *ctx.result = result;
 }
 
 // ============================================================================
@@ -3932,6 +4091,42 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
 // ============================================================================
 // Object.setPrototypeOf — ES2015 §19.1.2.19
 // ============================================================================
+/// Shared ordinary-object prototype-set logic with extensible and cycle checks.
+/// Returns true if the prototype was set (or no change was needed), false if
+/// the operation was rejected (non-extensible object with different proto, or
+/// proto cycle). Throws TypeError for immutable-prototype exotic objects.
+fn bool ordinary_set_proto(BuiltinContext* ctx, HObject* obj, HObject* new_proto) {
+    // Immutable-prototype exotic object check (ES2022 §10.4.7.1):
+    // Object.prototype is an immutable-prototype exotic object — its [[Prototype]]
+    // can only be set to the SAME value (null). Any other value throws TypeError.
+    if (obj == ctx.heap.object_proto) {
+        if (new_proto != obj.prototype) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot set prototype of immutable prototype object");
+            return false;
+        }
+        return true;
+    }
+
+    // Same value — no change needed.
+    if (new_proto == obj.prototype) return true;
+
+    // Non-extensible object: cannot change prototype (ES2022 §10.1.2.1 step 3).
+    if (!obj.is_extensible()) return false;
+
+    // Prototype cycle check (ES2022 §9.1.2.1 step 8).
+    HObject* p = new_proto;
+    while (p != null) {
+        if (p == obj) return false;
+        // Non-ordinary objects stop the walk; their [[SetPrototypeOf]] must
+        // prevent cycles internally.
+        if (p.flags.exotic_proxyobj) break;
+        p = p.prototype;
+    }
+
+    obj.prototype = new_proto;
+    return true;
+}
+
 /// Object.setPrototypeOf(obj, proto) — sets the prototype of obj to proto.
 fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
     if (ctx.argc < 1) {
@@ -3974,35 +4169,11 @@ fn void builtin_object_setPrototypeOf(BuiltinContext* ctx) {
         return;
     }
 
-    // Immutable-prototype exotic object check (ES2022 §10.4.7.1):
-    // Object.prototype is an immutable-prototype exotic object — its [[Prototype]]
-    // can only be set to the SAME value (null). Any other value throws TypeError.
-    if (obj == ctx.heap.object_proto) {
-        HObject* new_proto = proto_val.is_null() ? null : (HObject*)proto_val.get_heapptr();
-        if (new_proto != obj.prototype) {
-            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot set prototype of immutable prototype object");
-            return;
-        }
-        // Same value — success
-        ctx.result.set_object(obj);
+    HObject* new_proto = proto_val.is_null() ? null : (HObject*)proto_val.get_heapptr();
+    if (!ordinary_set_proto(ctx, obj, new_proto)) {
+        if (ctx.should_throw) return;
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot set prototype: object is not extensible or would create a prototype cycle");
         return;
-    }
-
-    // Non-extensible object: cannot change prototype (ES2022 §10.1.2.1 step 3)
-    if (!obj.is_extensible()) {
-        HObject* new_proto = proto_val.is_null() ? null : (HObject*)proto_val.get_heapptr();
-        if (new_proto != obj.prototype) {
-            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot set prototype of non-extensible object");
-            return;
-        }
-        ctx.result.set_object(obj);
-        return;
-    }
-
-    if (proto_val.is_null()) {
-        obj.prototype = null;
-    } else {
-        obj.prototype = (HObject*)proto_val.get_heapptr();
     }
     ctx.result.set_object(obj);
 }

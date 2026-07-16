@@ -348,8 +348,10 @@ const uint BUILTIN_REFLECT_GET_PROTOTYPE_OF    = 439;
 const uint BUILTIN_REFLECT_SET_PROTOTYPE_OF    = 440;
 const uint BUILTIN_REFLECT_IS_EXTENSIBLE       = 441;
 const uint BUILTIN_REFLECT_PREVENT_EXTENSIONS  = 442;
+const uint BUILTIN_REFLECT_APPLY               = 443;
+const uint BUILTIN_REFLECT_CONSTRUCT           = 444;
 
-const uint BUILTIN_COUNT                       = 443;
+const uint BUILTIN_COUNT                       = 445;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2223,6 +2225,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 440: return { "setPrototypeOf", 2 };
         case 441: return { "isExtensible", 1 };
         case 442: return { "preventExtensions", 1 };
+        case 443: return { "apply", 3 };
+        case 444: return { "construct", 2 };
         default: return { "", -1 };
     }
 }
@@ -2252,6 +2256,7 @@ fn bool register_array_proto_method(HObject* proto, Heap* heap, char[] name, uin
     HObject* func_obj = func_raw;
     (*func_obj.extra_ptr()).func.builtin_fn_index = (int)fn_index;
     func_obj.flags.callable = true;
+    func_obj.flags.constructable = false;
     func_obj.prototype = heap.function_proto;
     // Set .length from builtin metadata (ES2015 §17: "length" before "name")
     builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
@@ -2300,6 +2305,7 @@ fn bool register_compiled_proto_method(HObject* proto, Heap* heap, EnvRecord* gl
     (*func_obj.extra_ptr()).func.lex_env = global_env;
     func_obj.prototype = heap.function_proto;
     func_obj.flags.callable = true;
+    func_obj.flags.constructable = false;
     HString* name_str = builtin_intern_string(heap, "name");
     if (name_str != null) {
         HString* fname = builtin_intern_string(heap, name);
@@ -2351,6 +2357,7 @@ fn bool register_string_proto_method(HObject* proto, Heap* heap, char[] name, ui
     HObject* func_obj = func_raw;
     (*func_obj.extra_ptr()).func.builtin_fn_index = (int)fn_index;
     func_obj.flags.callable = true;
+    func_obj.flags.constructable = false;
     func_obj.prototype = heap.function_proto;
     // Set .length from builtin metadata (ES2015 §17: "length" before "name")
     builtins::BuiltinMeta meta = builtins::builtin_get_metadata(fn_index);
@@ -3102,6 +3109,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REFLECT_SET_PROTOTYPE_OF]    = &builtin_reflect_setPrototypeOf,
     [BUILTIN_REFLECT_IS_EXTENSIBLE]       = &builtin_reflect_isExtensible,
     [BUILTIN_REFLECT_PREVENT_EXTENSIONS]  = &builtin_reflect_preventExtensions,
+    [BUILTIN_REFLECT_APPLY]               = &builtin_reflect_apply,
+    [BUILTIN_REFLECT_CONSTRUCT]           = &builtin_reflect_construct,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3295,10 +3304,21 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     {
         HObject*? reflect_raw = heap.alloc_object(hobject::ObjClass.REFLECT);
         if (catch err = reflect_raw) return false;
+        HObject* reflect = reflect_raw;
+        reflect.prototype = heap.object_proto;
+
+        // Set @@toStringTag on Reflect
+        HString* tag_key = ensure_tostringtag_symbol(heap);
+        if (tag_key != null) {
+            TVal tag_tv;
+            tag_tv.set_string(builtin_intern_string(heap, "Reflect"));
+            reflect.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
+        }
+
         TVal reflect_tv;
         reflect_tv.set_object(null);
         reflect_tv.set_fastint(0);
-        reflect_tv.set_object(reflect_raw);
+        reflect_tv.set_object(reflect);
         if (!register_named_value(global_env, heap, "Reflect", reflect_tv)) return false;
 
         // Register Reflect.ownKeys
@@ -3348,6 +3368,15 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         HString* prevent_key = builtin_intern_string(heap, "preventExtensions");
         TVal prevent_tv; prevent_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_PREVENT_EXTENSIONS);
         reflect_raw.put_prop(prevent_key, prevent_tv, hobject::PROP_FLAGS_WC);
+
+        // Register Reflect invocation methods
+        HString* apply_key = builtin_intern_string(heap, "apply");
+        TVal apply_tv; apply_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_APPLY);
+        reflect_raw.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_WC);
+
+        HString* construct_key = builtin_intern_string(heap, "construct");
+        TVal construct_tv; construct_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_CONSTRUCT);
+        reflect_raw.put_prop(construct_key, construct_tv, hobject::PROP_FLAGS_WC);
     }
 
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)

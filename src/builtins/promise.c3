@@ -720,7 +720,7 @@ fn bool promise_new_capability_full(Heap* heap, void* vm, TVal c_tv, HObject* ho
     if (catch err = exec_raw) return false;
     HObject* exec_obj = exec_raw;
     TVal exec_tv; exec_tv.set_object(exec_obj);
-    TVal result_tv = heap.construct_fn(vm, c_tv, &exec_tv, 1);
+    TVal result_tv = heap.construct_fn(vm, c_tv, &exec_tv, 1, c_tv);
     if (heap.has_error) {
         // The user's constructor threw — per ES6 §25.4.1.5 step 7
         // "ReturnIfAbrupt(promise)", the error must propagate, NOT be

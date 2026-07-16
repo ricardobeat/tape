@@ -418,67 +418,20 @@ fn void builtin_function_proto_call(BuiltinContext* ctx) {
     }
 }
 
-/// Function.prototype.apply(thisArg, argArray)
-///
-/// Calls `this` (the downstream function) with `thisArg` as `this` and the
-/// elements of `argArray` passed as individual arguments.
-///
-/// ES5 §15.3.4.3
-fn void builtin_function_proto_apply(BuiltinContext* ctx) {
-    TVal downstream = ctx.this_val;
-
-    // Validate downstream is callable (ES5 §15.3.4.3 step 2: throw TypeError)
-    bool callable = false;
-    if (downstream.is_lightfunc()) {
-        callable = true;
-    } else if (downstream.is_object()) {
-        HObject* hobj = (HObject*)downstream.get_heapptr();
-        if (hobj != null) {
-            callable = hobj.is_callable();
-        }
-    }
-
-    if (!callable) {
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (catch err_call = err_raw) { ctx.result.set_undefined(); return; }
-        HObject* err = err_raw;
-        err.prototype = ctx.heap.type_err_proto;
-        HString* msg_key = builtin_intern_string(ctx.heap, "message");
-        HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.apply called on non-callable");
-        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
-        TVal msg_tv;
-        msg_tv.set_string(msg_str);
-        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-        ctx.should_throw = true;
-        ctx.throw_value.set_object(err);
-        return;
-    }
-
-    // Get new this value, with ToObject boxing for primitives.
-    // ES5 §15.3.4.3 step 1: let thisArg be ToObject(thisArg).
-    // undefined/null → global object; primitives → wrapper object.
-    // Strict-only engine: thisArg passes through unchanged (see call above).
-    TVal new_this;
-    if (ctx.argc > 0) {
-        new_this = builtin_arg(ctx, 0);
-    } else {
-        new_this.set_undefined();
-    }
-
-    // If argArray is undefined or null, call with no args
-    TVal arg_array;
-    bool has_array = ctx.argc > 1;
-    if (has_array) {
-        arg_array = builtin_arg(ctx, 1);
-        if (arg_array.is_undefined() || arg_array.is_null()) {
-            has_array = false;
-        }
+/// Shared apply implementation for Function.prototype.apply and Reflect.apply.
+/// `target` must already be callable. `this_arg` and `arg_array` are the
+/// receiver and arguments-list values respectively.
+fn void apply_call(BuiltinContext* ctx, TVal target, TVal this_arg, TVal arg_array) {
+    // If argArray is undefined or null, call with no args.
+    bool has_array = true;
+    if (arg_array.is_undefined() || arg_array.is_null()) {
+        has_array = false;
     }
 
     if (!has_array) {
         // Call with no args
-        if (downstream.is_lightfunc()) {
-            uint fn_idx = (uint)(usz)downstream.get_heapptr();
+        if (target.is_lightfunc()) {
+            uint fn_idx = (uint)(usz)target.get_heapptr();
             builtins::BuiltinContext inner_ctx;
             inner_ctx.vm = ctx.vm;
             inner_ctx.regs = ctx.regs;
@@ -486,14 +439,14 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             inner_ctx.argc = 0;
             inner_ctx.result = ctx.result;
             inner_ctx.heap = ctx.heap;
-            inner_ctx.this_val = new_this;
+            inner_ctx.this_val = this_arg;
             inner_ctx.is_constructor = false;
             inner_ctx.needs_re_dispatch = false;
             inner_ctx.re_nargs = 0;
             inner_ctx.should_throw = false;
             // Lightfuncs read `this` from regs[base_reg - 1] just like builtins.
-            // Stamp new_this into that slot so the callee sees the correct receiver.
-            ctx.regs[ctx.base_reg - 1] = new_this;
+            // Stamp this_arg into that slot so the callee sees the correct receiver.
+            ctx.regs[ctx.base_reg - 1] = this_arg;
             builtins::dispatch_builtin(fn_idx, &inner_ctx);
             if (inner_ctx.should_throw) {
                 ctx.should_throw = true;
@@ -501,9 +454,9 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
             }
             return;
         }
-        if (downstream.is_object()) {
-            ctx.regs[ctx.base_reg - 2] = downstream;
-            ctx.regs[ctx.base_reg - 1] = new_this;
+        if (target.is_object()) {
+            ctx.regs[ctx.base_reg - 2] = target;
+            ctx.regs[ctx.base_reg - 1] = this_arg;
             ctx.needs_re_dispatch = true;
             ctx.re_nargs = 0;
         } else {
@@ -650,8 +603,8 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         if (extended_top > vm.valstack_top) { vm.valstack_top = extended_top; }
     }
 
-    if (downstream.is_lightfunc()) {
-        uint fn_idx = (uint)(usz)downstream.get_heapptr();
+    if (target.is_lightfunc()) {
+        uint fn_idx = (uint)(usz)target.get_heapptr();
         builtins::BuiltinContext inner_ctx;
         inner_ctx.vm = ctx.vm;
         inner_ctx.regs = ctx.regs;
@@ -659,16 +612,16 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         inner_ctx.argc = (ushort)actual_count;
         inner_ctx.result = ctx.result;
         inner_ctx.heap = ctx.heap;
-        inner_ctx.this_val = new_this;
+        inner_ctx.this_val = this_arg;
         inner_ctx.is_constructor = false;
         inner_ctx.needs_re_dispatch = false;
         inner_ctx.re_nargs = 0;
         inner_ctx.should_throw = false;
 
         // Write extracted args onto stack.
-        // Also stamp new_this into regs[base_reg - 1] so lightfunc callees
+        // Also stamp this_arg into regs[base_reg - 1] so lightfunc callees
         // that read their receiver from that slot see the correct value.
-        ctx.regs[ctx.base_reg - 1] = new_this;
+        ctx.regs[ctx.base_reg - 1] = this_arg;
         for (uint i = 0; i < actual_count; i++) {
             ctx.regs[ctx.base_reg + i] = extracted_args[i];
         }
@@ -682,9 +635,9 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         return;
     }
 
-    if (downstream.is_object()) {
-        ctx.regs[ctx.base_reg - 2] = downstream;
-        ctx.regs[ctx.base_reg - 1] = new_this;
+    if (target.is_object()) {
+        ctx.regs[ctx.base_reg - 2] = target;
+        ctx.regs[ctx.base_reg - 1] = this_arg;
         for (uint i = 0; i < actual_count; i++) {
             ctx.regs[ctx.base_reg + i] = extracted_args[i];
         }
@@ -695,6 +648,64 @@ fn void builtin_function_proto_apply(BuiltinContext* ctx) {
         if (extracted_args != null) ctx.heap.free_func(ctx.heap.heap_udata, extracted_args);
         ctx.result.set_undefined();
     }
+}
+
+/// Function.prototype.apply(thisArg, argArray)
+///
+/// Calls `this` (the downstream function) with `thisArg` as `this` and the
+/// elements of `argArray` passed as individual arguments.
+///
+/// ES5 §15.3.4.3
+fn void builtin_function_proto_apply(BuiltinContext* ctx) {
+    TVal downstream = ctx.this_val;
+
+    // Validate downstream is callable (ES5 §15.3.4.3 step 2: throw TypeError)
+    bool callable = false;
+    if (downstream.is_lightfunc()) {
+        callable = true;
+    } else if (downstream.is_object()) {
+        HObject* hobj = (HObject*)downstream.get_heapptr();
+        if (hobj != null) {
+            callable = hobj.is_callable();
+        }
+    }
+
+    if (!callable) {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (catch err_call = err_raw) { ctx.result.set_undefined(); return; }
+        HObject* err = err_raw;
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_key = builtin_intern_string(ctx.heap, "message");
+        HString* msg_str = builtin_intern_string(ctx.heap, "Function.prototype.apply called on non-callable");
+        if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
+        TVal msg_tv;
+        msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+        return;
+    }
+
+    // Get new this value, with ToObject boxing for primitives.
+    // ES5 §15.3.4.3 step 1: let thisArg be ToObject(thisArg).
+    // undefined/null → global object; primitives → wrapper object.
+    // Strict-only engine: thisArg passes through unchanged (see call above).
+    TVal new_this;
+    if (ctx.argc > 0) {
+        new_this = builtin_arg(ctx, 0);
+    } else {
+        new_this.set_undefined();
+    }
+
+    // If argArray is undefined or null, call with no args
+    TVal arg_array;
+    if (ctx.argc > 1) {
+        arg_array = builtin_arg(ctx, 1);
+    } else {
+        arg_array.set_undefined();
+    }
+
+    apply_call(ctx, downstream, new_this, arg_array);
 }
 
 /// Function.prototype.bind(thisArg, ...args)

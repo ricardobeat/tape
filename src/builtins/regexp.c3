@@ -1638,7 +1638,7 @@ fn void builtin_regexp_proto_symbol_split(BuiltinContext* ctx) {
         TVal[2] ctor_args;
         ctor_args[0] = rx_tv;
         ctor_args[1] = new_flags_tv;
-        TVal splitter_tv = heap.construct_fn(ctx.vm, species_ctor_tv, &ctor_args[0], 2);
+        TVal splitter_tv = heap.construct_fn(ctx.vm, species_ctor_tv, &ctor_args[0], 2, species_ctor_tv);
         if (heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = heap.error_value;
@@ -1978,7 +1978,7 @@ fn void builtin_regexp_proto_symbol_matchAll(BuiltinContext* ctx) {
         TVal[2] ctor_args;
         ctor_args[0] = rx_tv;
         ctor_args[1] = flags_tv;
-        TVal matcher_tv = heap.construct_fn(ctx.vm, species_ctor_tv, &ctor_args[0], 2);
+        TVal matcher_tv = heap.construct_fn(ctx.vm, species_ctor_tv, &ctor_args[0], 2, species_ctor_tv);
         if (heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = heap.error_value;

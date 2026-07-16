@@ -615,7 +615,7 @@ fn TVal vm_call_handler_fn_impl(void* vm_ptr, TVal handler, TVal* arg) {
 /// Allocates a fresh this, runs the constructor with ACT_FLAG_CONSTRUCT,
 /// and returns the resulting instance.  Used by Promise combinators for
 /// NewPromiseCapability(C).
-fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
+fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal new_target) {
     Vm* vm = (Vm*)vm_ptr;
     TVal undef;
     undef.set_undefined();
@@ -634,17 +634,24 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     HObject* ctor = (HObject*)func.get_heapptr();
     if (ctor == null || !ctor.flags.callable) return undef;
 
+    // Determine the new.target object. Reflect.construct may supply a different
+    // constructor; ordinary `new` calls pass the callee itself.
+    HObject* new_target_obj = ctor;
+    if (new_target.is_object() && new_target.get_heapptr() != null) {
+        new_target_obj = (HObject*)new_target.get_heapptr();
+    }
+
     // Allocate a fresh plain object as `this`.
-    // GetPrototypeFromConstructor(ctor, "%Object.prototype%") — ES2022
-    // §9.1.14: read ctor.prototype; if it isn't an object, fall back to the
-    // default intrinsic (heap.object_proto) rather than always using it.
+    // GetPrototypeFromConstructor(new_target, "%Object.prototype%") — ES2022
+    // §9.1.14: read new_target.prototype; if it isn't an object, fall back to
+    // the default intrinsic (heap.object_proto) rather than always using it.
     HObject*? new_this_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err_t = new_this_raw) return undef;
     HObject* new_this = new_this_raw;
     new_this.prototype = heap.object_proto;
     HString* ctor_proto_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
     if (ctor_proto_key != null) {
-        if (try proto_tv = ctor.get_prop_proto(ctor_proto_key)) {
+        if (try proto_tv = new_target_obj.get_prop_proto(ctor_proto_key)) {
             if (proto_tv.is_object() && proto_tv.get_heapptr() != null) {
                 new_this.prototype = (HObject*)proto_tv.get_heapptr();
             }
@@ -705,7 +712,7 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
             bctx.global_env = vm.global_env;
             bctx.should_throw = false;
             bctx.callee_obj = ctor;
-            bctx.new_target = ctor;
+            bctx.new_target = new_target_obj;
             builtins::dispatch_builtin((uint)builtin_idx, &bctx);
             if (bctx.should_throw) {
                 vm.has_error = true;
@@ -773,7 +780,7 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs) {
     act.max_heap_reg = 0;
     act.caller_valstack_top = frame + nregs;
     act.this_binding = this_tv;
-    act.new_target = ctor;
+    act.new_target = new_target_obj;
 
     for (uint i = 0; i < nregs; i++) {
         frame[i].set_undefined();

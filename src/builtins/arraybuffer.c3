@@ -281,7 +281,7 @@ fn void builtin_arraybuffer_proto_slice(BuiltinContext* ctx) {
     if (use_species && species_ctor != null) {
         TVal ctor_tv; ctor_tv.set_object(species_ctor);
         TVal len_arg; len_arg.set_fastint(new_len);
-        TVal result_tv = ctx.heap.construct_fn(ctx.vm, ctor_tv, &len_arg, 1);
+        TVal result_tv = ctx.heap.construct_fn(ctx.vm, ctor_tv, &len_arg, 1, ctor_tv);
         if (ctx.heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = ctx.heap.error_value;

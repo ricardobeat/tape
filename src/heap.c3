@@ -36,8 +36,9 @@ alias MicrotaskAfterFn = fn void(void* heap, void* vm, TVal result, TVal downstr
 alias VmCallFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs, TVal this_val);
 
 /// Function pointer type for `new` semantics: invoke a JS function as a
-/// constructor and return the resulting this.
-alias VmConstructFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs);
+/// constructor and return the resulting this. `new_target` is the value seen
+/// as `new.target` inside the constructor (the subclass for super() calls).
+alias VmConstructFn = fn TVal(void* vm, TVal func, TVal* args, uint nargs, TVal new_target);
 
 /// Proxy MOP bridges (set by vm_create) — allow the hobject prototype-chain
 /// walkers to route through Proxy traps without a module dependency on the

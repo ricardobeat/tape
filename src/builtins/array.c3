@@ -26,7 +26,7 @@ fn void builtin_array_of(BuiltinContext* ctx) {
         HObject* c_obj = (HObject*)c.get_heapptr();
         if (c_obj.is_callable() && ctx.heap.construct_fn != null && ctx.vm != null) {
             TVal len_arg; len_arg.set_fastint((long)len);
-            TVal result_tv = ctx.heap.construct_fn(ctx.vm, c, &len_arg, 1);
+            TVal result_tv = ctx.heap.construct_fn(ctx.vm, c, &len_arg, 1, c);
             if (ctx.heap.has_error) {
                 ctx.should_throw = true;
                 ctx.throw_value = ctx.heap.error_value;
@@ -2891,7 +2891,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
         // constructor must propagate without ever creating the iterator.
         HObject* arr = null;
         if (c_val.is_object() && c_val.get_heapptr() != null && arr_from_is_callable(c_val)) {
-            TVal ctor_result = heap.construct_fn(ctx.vm, c_val, null, 0);
+            TVal ctor_result = heap.construct_fn(ctx.vm, c_val, null, 0, c_val);
             if (ctx.heap.has_error) {
                 ctx.should_throw = true;
                 ctx.throw_value = ctx.heap.error_value;
@@ -3075,7 +3075,7 @@ fn void builtin_array_from(BuiltinContext* ctx) {
         } else {
             len_arg.set_number((double)len);
         }
-        TVal ctor_result = heap.construct_fn(ctx.vm, c_val, &len_arg, 1);
+        TVal ctor_result = heap.construct_fn(ctx.vm, c_val, &len_arg, 1, c_val);
         if (ctx.heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = ctx.heap.error_value;
@@ -3544,7 +3544,7 @@ fn HObject* array_species_create_result(BuiltinContext* ctx, HObject* original, 
         } else {
             len_arg.set_number((double)len);
         }
-        TVal result_tv = ctx.heap.construct_fn(ctx.vm, ctor_tv, &len_arg, 1);
+        TVal result_tv = ctx.heap.construct_fn(ctx.vm, ctor_tv, &len_arg, 1, ctor_tv);
         if (ctx.heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = ctx.heap.error_value;

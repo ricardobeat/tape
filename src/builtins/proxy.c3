@@ -1399,7 +1399,7 @@ fn void builtin_proxy_call(BuiltinContext* ctx) {
                     }
                 }
             }
-            *ctx.result = heap.construct_fn(ctx.vm, target_tv, &ctx.regs[ctx.base_reg], ctx.argc);
+            *ctx.result = heap.construct_fn(ctx.vm, target_tv, &ctx.regs[ctx.base_reg], ctx.argc, target_tv);
         } else {
             if (heap.call_fn == null) { ctx.result.set_undefined(); return; }
             *ctx.result = heap.call_fn(ctx.vm, target_tv, &ctx.regs[ctx.base_reg], ctx.argc, ctx.this_val);
