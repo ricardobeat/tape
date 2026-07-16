@@ -871,6 +871,127 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Shared Reflect helpers
+// ============================================================================
+
+/// Validate that `arg` is an object. For Reflect methods the target must be an
+/// Object (no ToObject coercion for primitives). Throws TypeError and returns
+/// null if the argument is null, undefined, or any primitive.
+fn HObject* reflect_require_object(BuiltinContext* ctx, TVal arg, char[] msg) {
+    if (arg.is_null() || arg.is_undefined() || !arg.is_object()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, msg);
+        return null;
+    }
+    return (HObject*)arg.get_heapptr();
+}
+
+// ============================================================================
+// Reflect.get — ES6 §26.1.5
+// ============================================================================
+/// Returns the value of the property, or undefined if the property is absent.
+fn void builtin_reflect_get(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.get called on non-object");
+    if (obj == null) return;
+
+    TVal key_tv; key_tv.set_undefined();
+    if (ctx.argc > 1) key_tv = ctx.regs[ctx.base_reg + 1];
+    HString* key = builtin_to_property_key_vm(ctx, &key_tv);
+    if (ctx.should_throw) return;
+    if (key == null) { ctx.result.set_undefined(); return; }
+
+    TVal receiver = target_tv;
+    if (ctx.argc > 2) receiver = ctx.regs[ctx.base_reg + 2];
+
+    TVal out;
+    if (!js_get_with_receiver(ctx.vm, ctx.heap, obj, key, receiver, &out)) {
+        proxy_ctx_ok(ctx);
+        return;
+    }
+    *ctx.result = out;
+}
+
+// ============================================================================
+// Reflect.set — ES6 §26.1.13
+// ============================================================================
+/// Sets the property and returns a boolean indicating success.
+fn void builtin_reflect_set(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.set called on non-object");
+    if (obj == null) return;
+
+    TVal key_tv; key_tv.set_undefined();
+    if (ctx.argc > 1) key_tv = ctx.regs[ctx.base_reg + 1];
+    HString* key = builtin_to_property_key_vm(ctx, &key_tv);
+    if (ctx.should_throw) return;
+    if (key == null) { ctx.result.set_boolean(false); return; }
+
+    TVal value; value.set_undefined();
+    if (ctx.argc > 2) value = ctx.regs[ctx.base_reg + 2];
+
+    TVal receiver = target_tv;
+    if (ctx.argc > 3) receiver = ctx.regs[ctx.base_reg + 3];
+
+    bool res;
+    if (!js_set_with_receiver(ctx.vm, ctx.heap, obj, key, value, receiver, &res)) {
+        proxy_ctx_ok(ctx);
+        return;
+    }
+    ctx.result.set_boolean(res);
+}
+
+// ============================================================================
+// Reflect.has — ES6 §26.1.8
+// ============================================================================
+/// Returns true if the target has the property (own or inherited).
+fn void builtin_reflect_has(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.has called on non-object");
+    if (obj == null) return;
+
+    TVal key_tv; key_tv.set_undefined();
+    if (ctx.argc > 1) key_tv = ctx.regs[ctx.base_reg + 1];
+    HString* key = builtin_to_property_key_vm(ctx, &key_tv);
+    if (ctx.should_throw) return;
+    if (key == null) { ctx.result.set_boolean(false); return; }
+
+    bool out;
+    if (!js_has_property(ctx.vm, ctx.heap, obj, key, &out)) {
+        proxy_ctx_ok(ctx);
+        return;
+    }
+    ctx.result.set_boolean(out);
+}
+
+// ============================================================================
+// Reflect.deleteProperty — ES6 §26.1.4
+// ============================================================================
+/// Deletes the property and returns a boolean indicating success.
+fn void builtin_reflect_deleteProperty(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.deleteProperty called on non-object");
+    if (obj == null) return;
+
+    TVal key_tv; key_tv.set_undefined();
+    if (ctx.argc > 1) key_tv = ctx.regs[ctx.base_reg + 1];
+    HString* key = builtin_to_property_key_vm(ctx, &key_tv);
+    if (ctx.should_throw) return;
+    if (key == null) { ctx.result.set_boolean(true); return; }
+
+    if (obj.flags.exotic_proxyobj) {
+        bool res;
+        if (!proxy_mop_delete(ctx.vm, ctx.heap, obj, key, &res)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(res);
+        return;
+    }
+    ctx.result.set_boolean(obj.es_delete_prop((void*)key));
+}
+
+// ============================================================================
 // Object.getPrototypeOf — ES5 §15.2.3.2
 // ============================================================================
 /// Returns the [[Prototype]] of an object. Throws TypeError if argument is

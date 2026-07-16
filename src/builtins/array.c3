@@ -322,35 +322,34 @@ fn ulong flatten_into(HObject* downstream, HObject* source, ulong source_len, ul
     Heap* heap = ctx.heap;
     for (ulong i = 0; i < source_len; i++) {
         if (ctx.should_throw) return downstream_idx;
-        if (!arr_has_prop(source, i, heap)) {
+        if (!arr_has_prop(source, i, heap, ctx.vm)) {
             continue;
         }
         TVal elem;
-        if (i <= 0xFFFFFFFFUL) {
-            elem = array_get_elem(source, (uint)i, heap);
-        } else {
-            HString* key = heap.int_to_hstring((long)i);
-            if (key != null) {
-                TVal? result = source.get_prop(key);
-                if (try v = result) { elem = v; }
-                else {
-                    TVal? result2 = source.get_prop_proto(key);
-                    if (try v2 = result2) { elem = v2; }
-                    else { elem.set_undefined(); }
+        if (!arr_get_elem_vm(source, i, heap, ctx, &elem)) {
+            continue;
+        }
+        if (elem.is_object() && elem.get_heapptr() != null) {
+            HObject* elem_obj = (HObject*)elem.get_heapptr();
+            bool elem_is_array = (elem_obj.get_class() == hobject::ObjClass.ARRAY);
+            if (!elem_is_array && elem_obj.flags.exotic_proxyobj) {
+                if (!proxy_is_array(heap, elem_obj, &elem_is_array)) {
+                    proxy_ctx_ok(ctx);
+                    return downstream_idx;
                 }
-            } else { elem.set_undefined(); }
-        }
-        if (elem.is_object() && elem.get_heapptr() != null &&
-            ((HObject*)elem.get_heapptr()).get_class() == hobject::ObjClass.ARRAY && depth > 0) {
-            HObject* inner = (HObject*)elem.get_heapptr();
-            ulong inner_len = arr_to_length(array_get_length_raw(inner, heap, null));
-            downstream_idx = flatten_into(downstream, inner, inner_len, downstream_idx, depth - 1, ctx);
-        } else {
-            if (!array_set_elem_ulong_checked(ctx, downstream, downstream_idx, elem)) {
-                return downstream_idx;
             }
-            downstream_idx++;
+            if (elem_is_array && depth > 0) {
+                HObject* inner = elem_obj;
+                ulong inner_len;
+                if (!array_to_length(inner, heap, ctx, &inner_len)) { return downstream_idx; }
+                downstream_idx = flatten_into(downstream, inner, inner_len, downstream_idx, depth - 1, ctx);
+                continue;
+            }
         }
+        if (!array_set_elem_ulong_checked(ctx, downstream, downstream_idx, elem)) {
+            return downstream_idx;
+        }
+        downstream_idx++;
     }
     return downstream_idx;
 }
@@ -443,7 +442,7 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
 
     ulong n = 0;
     for (ulong k = 0; k < len; k++) {
-        if (!arr_has_prop(obj, k, ctx.heap)) continue;
+        if (!arr_has_prop(obj, k, ctx.heap, ctx.vm)) continue;
         TVal v;
         if (!arr_get_elem_vm(obj, k, ctx.heap, ctx, &v)) continue;
 
@@ -451,13 +450,23 @@ fn void builtin_array_proto_flatMap(BuiltinContext* ctx) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
 
         // Flatten mapped result to depth 1
-        if (mapped.is_object() && mapped.get_heapptr() != null &&
-            ((HObject*)mapped.get_heapptr()).get_class() == hobject::ObjClass.ARRAY) {
+        bool mapped_is_array = false;
+        if (mapped.is_object() && mapped.get_heapptr() != null) {
+            HObject* mapped_obj = (HObject*)mapped.get_heapptr();
+            mapped_is_array = (mapped_obj.get_class() == hobject::ObjClass.ARRAY);
+            if (!mapped_is_array && mapped_obj.flags.exotic_proxyobj) {
+                if (!proxy_is_array(ctx.heap, mapped_obj, &mapped_is_array)) {
+                    proxy_ctx_ok(ctx);
+                    ctx.result.set_undefined(); return;
+                }
+            }
+        }
+        if (mapped_is_array) {
             HObject* mapped_arr = (HObject*)mapped.get_heapptr();
             ulong mapped_len;
             if (!array_to_length(mapped_arr, ctx.heap, ctx, &mapped_len)) { ctx.result.set_undefined(); return; }
             for (ulong j = 0; j < mapped_len; j++) {
-                if (arr_has_prop(mapped_arr, j, ctx.heap)) {
+                if (arr_has_prop(mapped_arr, j, ctx.heap, ctx.vm)) {
                     TVal elem;
                     if (arr_get_elem_vm(mapped_arr, j, ctx.heap, ctx, &elem)) {
                         if (!array_set_elem_ulong_checked(ctx, result, n, elem)) {

@@ -338,7 +338,12 @@ const uint BUILTIN_PROMISE_THEN_FINALLY  = 429;
 const uint BUILTIN_PROMISE_CATCH_FINALLY = 430;
 const uint BUILTIN_ARRAY_SPECIES_GETTER  = 431;
 
-const uint BUILTIN_COUNT                       = 432;
+const uint BUILTIN_REFLECT_GET                 = 433;
+const uint BUILTIN_REFLECT_SET                 = 434;
+const uint BUILTIN_REFLECT_HAS                 = 435;
+const uint BUILTIN_REFLECT_DELETE_PROPERTY     = 436;
+
+const uint BUILTIN_COUNT                       = 437;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2201,6 +2206,11 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 420: return { "Proxy", 2 };
         case 421: return { "revocable", 2 };
         case 422: return { "", 0 };     // revoker function
+        // Reflect
+        case 433: return { "get", 2 };
+        case 434: return { "set", 3 };
+        case 435: return { "has", 2 };
+        case 436: return { "deleteProperty", 2 };
         default: return { "", -1 };
     }
 }
@@ -3070,6 +3080,10 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_EVAL_SCRIPT]                = &builtin_eval,
     [BUILTIN_REGEXP_SPECIES_GETTER]       = &builtin_regexp_species_getter,
     [BUILTIN_MODULE_BINDING_GETTER]       = &builtin_module_binding_getter,
+    [BUILTIN_REFLECT_GET]                 = &builtin_reflect_get,
+    [BUILTIN_REFLECT_SET]                 = &builtin_reflect_set,
+    [BUILTIN_REFLECT_HAS]                 = &builtin_reflect_has,
+    [BUILTIN_REFLECT_DELETE_PROPERTY]     = &builtin_reflect_deleteProperty,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3274,6 +3288,23 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         TVal ownkeys_tv;
         ownkeys_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_OWNKEYS);
         reflect_raw.put_prop(ownkeys_key, ownkeys_tv, hobject::PROP_FLAGS_WC);
+
+        // Register Reflect property-access methods
+        HString* get_key = builtin_intern_string(heap, "get");
+        TVal get_tv; get_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_GET);
+        reflect_raw.put_prop(get_key, get_tv, hobject::PROP_FLAGS_WC);
+
+        HString* set_key = builtin_intern_string(heap, "set");
+        TVal set_tv; set_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_SET);
+        reflect_raw.put_prop(set_key, set_tv, hobject::PROP_FLAGS_WC);
+
+        HString* has_key = builtin_intern_string(heap, "has");
+        TVal has_tv; has_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_HAS);
+        reflect_raw.put_prop(has_key, has_tv, hobject::PROP_FLAGS_WC);
+
+        HString* delete_key = builtin_intern_string(heap, "deleteProperty");
+        TVal delete_tv; delete_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_DELETE_PROPERTY);
+        reflect_raw.put_prop(delete_key, delete_tv, hobject::PROP_FLAGS_WC);
     }
 
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
