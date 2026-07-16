@@ -1,62 +1,305 @@
 # Duktape C3 — Backlog
 
-Baseline as of Session 252 (2026-07-06) — **75.5%** (22,241 pass / 29,456 executable).
-The full roadmap to 100%, failure-cluster analysis, and architecture issues live in
-`plans/040-test262-100-percent.md`; per-phase numbers in `progress.md`. Regenerate the
-per-test log with `python3 scripts/run_test262.py --workers 4 --log out/test262_results.tsv`.
+Baseline: **session 283, `out/s283_v3.tsv` (2026-07-14)** — 20,672 PASS / 466
+FAIL / 3 TIMEOUT / 8 CE:unexpected across 21,149 executable test262 tests =
+**97.74% pass, 477 to close**. Regenerate with
+`python3 scripts/run_test262.py --workers 4 --retry-fails --log out/sNNN.tsv`;
+final-status (after retry) breakdown:
+`awk -F'\t' '{if($1=="PASS")p[$2]=1; else n[$2]=$1} END{for(t in p)delete n[t]; for(t in n)print n[t]"\t"t}' out/sNNN.tsv | sort > /tmp/fails.tsv`.
+
+Plan 052 (`plans/052-road-to-zero.md`) remains the strategic roadmap; this file
+tracks the concrete work items derived from the current failure clusters.
 
 ---
 
-- [x] **B53** — *(done, session 257)* ES2015 shorthand object properties + ES2022 Error cause option-bag. **Shorthand**: `object_literal()` in `src/compiler/expressions.c3` now recognises `is_shorthand_key && (COMMA or RBRACE)` after the key, emitting a `GETVAR` of the key's name index into a fresh register then `PUTPROP` — `{ cause }` ≡ `{ cause: cause }` per ES2015 §12.2.6.8. New per-iteration locals `is_shorthand_key` and `shorthand_name_idx` carry the key kind + constant-pool index from the property-name parser down to the dispatch site. `{ x, foo() {}, y: 1 }` all work together. `CoverInitializedName` (`{ x = 1 }`) still CE — requires `:`/`(` next and so is rejected. **ES2022 Error cause**: `builtin_error_constructor_shared` and `builtin_aggregate_error` in `src/builtins/error.c3` now read the trailing `options` argument; if it's an Object with an own `cause` property, install via `put_prop(cause_key, cause_val, PROP_FLAGS_WC)` (writable+configurable, non-enumerable, per §20.5.8.1). Phase 4: 208→212 pass, 9→1 CE; closing `built-ins/Error/cause_property.js`, `built-ins/NativeErrors/cause_property_native_error.js`, `built-ins/AggregateError/cause-property.js`. The 4 newly-PASS tests show as `FAIL` in the batch worker due to a pre-existing `this`-binding bug for `__hasOwnProperty(obj, name)`-style calls (assigning `Object.prototype.hasOwnProperty` to a local strips `this`; only `.call(obj, name)` works) — separate item.
+## Priority 1 — Array.prototype conformance (28 fails)
 
-- [x] **B54** — *(done, session 258)* Array.prototype.length / Function.prototype.length descriptors + exotic ARRAY/ARGUMENTS [[Delete]] for the length slot. Three coordinated changes: (a) `register_function_constructor` installs `Function.prototype.length = 0` with `PROP_FLAGS_NWC` ({writable:false, enumerable:false, configurable:true}) per ES5 §15.3.5.1. (b) `builtin_object_getOwnPropertyDescriptor` synthesises the `length` descriptor directly from `array_size` for any ARRAY exotic ({writable:true, enumerable:false, configurable:false} per ES2015 §22.1.3) — previously fell through the dense-part path (which requires a numeric index `< array_size` AND a non-undefined slot). (c) `hasOwnProperty`/`propertyIsEnumerable` report `length` as an own/non-enumerable property of every ARRAY exotic; `HObject.es_delete_prop` returns `false` for the `length` key on an ARRAY so the strict-mode TypeError fires per ES §13.5.1.2 [[Delete]] step 5. Closes `built-ins/Function/prototype/length.js` and `built-ins/Array/prototype/length.js`; partial progress on B49 (descriptor matrix).
+Full list: `awk '$2 ~ /^built-ins\/Array\/prototype\//' /tmp/fails.tsv`.
 
-- [ ] **B29** — `array_concat.js` (from `test/rosetta/FAILURES.md`): "`[1,2,3].concat([4,5,6])` engine crashes (RC 133)". **Re-investigated in session 248: not reproducible.** Tested 13 concat patterns — basic, multi-arg, with-strings, with-primitives, deeply-nested, 2000-element large concat, single-arg concat, deeply-nested arrays as elements, with-`null`/`undefined` elements, self-concat (`a.concat(a)`), `concat()` with no args (returns copy), pre/post increment of source during concat — all pass. The bug must have been fixed by the B14 generic array-method refactor (session 218) which made `Array.prototype.concat` a proper builtin dispatching through the user-overridable `Symbol.species`-aware path. `test/rosetta/FAILURES.md` updated to mark the entry as closed.
+- [ ] **A1 — Proxy-based Array tests (9)**. Cluster: `concat/create-proxy`,
+  `filter/create-proxy`, `map/create-proxy`, `slice/create-proxy`,
+  `splice/create-proxy`, `flat/proxy-access-count`,
+  `flatMap/proxy-access-count`, `reverse/length-exceeding-integer-limit-with-proxy`,
+  `slice/length-exceeding-integer-limit-proxied-array`. Root cause candidates:
+  (a) `ArraySpeciesCreate` doesn't route through the Proxy `constructor`
+  trap; (b) length-limit tests exercise Proxy `get`/`set` traps on `length`
+  that our current builtins side-step by reading `array_size` directly on
+  ARRAY exotics — need HasProperty/Get through the property path even on
+  proxied targets. Verify each test in isolation before batching.
+
+- [ ] **A2 — Frozen / non-writable `length` on pop/shift (4)**.
+  `pop/set-length-array-is-frozen`, `pop/set-length-array-length-is-non-writable`,
+  `shift/set-length-array-is-frozen`, `shift/set-length-array-length-is-non-writable`.
+  Spec: pop/shift must call `Set(O, "length", newLen, true)` which throws
+  TypeError when [[Set]] returns false. Our builtins likely write
+  `array_size` directly; route through the shared `array_set_length_set`
+  (Throw=true) helper used by `fill` in B46.
+
+- [ ] **A3 — return-abrupt-from-this-length (4)**.
+  `find/return-abrupt-from-this-length`, `findLast/return-abrupt-from-this-length`,
+  `entries/return-abrupt-from-this`, `keys/return-abrupt-from-this`. Tests
+  install a `length` getter that throws; our fast-path reads `array_size`
+  without invoking the accessor when the receiver is an ARRAY exotic *with
+  the getter shadowing on its prototype*. Fix: check for own accessor on
+  `length` before shortcut; or unconditionally go through
+  `LengthOfArrayLike` per spec.
+
+- [ ] **A4 — integer-limit / TIMEOUT cluster (4)**.
+  `reduceRight/length-near-integer-limit` (FAIL) + `splice/create-non-array-invalid-len`,
+  `splice/create-species-length-exceeding-integer-limit`,
+  `splice/create-species-undef-invalid-len` (all TIMEOUT). B40 widened
+  Array to `ulong`; splice's species-create path apparently still loops
+  on 2^53 lengths without the pre-mutation guard. Add the same
+  `MAX_ARRAY_LENGTH` check `push`/`unshift`/`concat` got.
+
+- [ ] **A5 — iterator iteration-mutable (3)**.
+  `entries/iteration-mutable`, `keys/iteration-mutable`,
+  `values/iteration-mutable`. The array iterator must re-read `length` on
+  every `next()` so items pushed after iterator creation become visible.
+  Our iterator likely snapshots length at creation.
+
+- [ ] **A6 — misc (4)**.
+  - `values/this-val-non-obj-coercible` — `Array.prototype.values.call(null|undefined)`
+    must throw TypeError. Currently missing `ToObject` check on the entry
+    of `values` (mirror the fix in `entries`/`keys` A3 sibling).
+  - `methods-called-as-functions` — calling `Array.prototype.concat()` with
+    no `this` binding should throw TypeError immediately; our impl reads
+    property keys off the global first (test installs global getters that
+    throw "lookup should not be performed").
+  - `concat_spreadable-string-wrapper` — `String` wrapper with
+    `[Symbol.isConcatSpreadable] = true` should spread as UTF-16 code
+    units (surrogate pair each as its own element). Related to B51 CESU-8
+    layout; concat's spread path uses byte iteration.
+  - `reverse/S15.4.4.8_A1_T2` — sparse-array reverse with holes must
+    delete-then-set to preserve hole-vs-undefined distinction; our impl
+    probably materialises holes as undefined during reverse.
+
+## Priority 2 — Array conformance shared infrastructure
+
+- [ ] **A7 — Sparse/HasProperty semantics remainder** (from B46 legacy). Spec
+  ops for `shift`/`sort`/`toReversed`/`splice`/`slice` must use
+  `HasProperty` + `Get` instead of dense-slot reads so holes stay holes.
+  Extract shared helpers: `LengthOfArrayLike`, `ArraySpeciesCreate`,
+  `HasPropertyIdx`, `GetIdx`, `SetIdx(Throw=true)`, `DeleteIdxOrThrow`.
+  Retrofit remaining methods to use them. Overlaps A2/A3/A5.
+
+- [ ] **A8 — Symbol.species / ArraySpeciesCreate (8)**.
+  Cluster: `built-ins/Array/Symbol.species` (8 fails — not yet triaged).
+  Sample after A1 lands; likely the same species-constructor plumbing.
 
 ---
 
-## High Impact — RegExp (libregexp swap)
+## Priority 3 — Road to zero, ordered by cluster size
 
-- [x] **B32** — *(done, session 259)* Unicode regex correctness: `re_wrapper.c`'s `re_exec` now converts the CESU-8 subject buffer to a flat UTF-16 array before calling `lre_exec`, passing `cbuf_type=1` (libregexp internally promotes to `cbuf_type=2`, combining surrogate pairs, whenever the compiled bytecode has the `u`/`v` flag — confirmed via `lre_exec`'s own `s->cbuf_type == 1 && s->is_unicode` upgrade in `libregexp.c`, so the wrapper must never pass `cbuf_type=2` itself since the buffer stride is always 2 bytes/unit and doubling it corrupts `cbuf_end`). Capture offsets map back from UTF-16 code-unit indices to CESU-8 byte offsets via a per-call offset table built during the conversion, so all downstream consumers (`regexp.c3`, `string.c3`) keep working in byte offsets unchanged. Surfaced two related pre-existing bugs, both fixed: (1) `AdvanceStringIndex` on a zero-length global match advanced by a fixed 1 byte instead of one code unit (or a full surrogate pair under `u`/`v`) — new `hstring::advance_string_index_byte_len` used at all 6 empty-match-advance call sites; (2) the replace/replaceAll loops silently dropped skipped source characters when advancing past an empty match (`"ab".replace(/x*/g,"-")` produced `"-b-"` instead of `"-a-b-"`). test262 phase 8: 1257→1275 pass; RegExp/string-regex-method sweep: 876→878 pass, 1 timeout fixed. Named capture groups (`.groups`) still return `undefined` — confirmed pre-existing on plain ASCII, unrelated to this fix, filed separately (see B34). **Filed as follow-up, not done here:** native UTF-16/Latin1 string storage (like real QuickJS) would let regex exec skip the per-call CESU-8→UTF-16 conversion entirely — see B55.
+Numbers are deduped final-status fails from `s283_v3.tsv`.
 
-- [x] **B33** — *(done, session 261)* RegExp `d`-flag `.indices` runtime and `hasIndices` / `unicodeSets` getters. `RegExp.prototype.exec` and the String match paths now extract capture offsets from `lre_exec` and build the `.indices` array of `[start,end]` pairs plus `.indices.groups`. Added `RegExp.prototype.hasIndices` and `RegExp.prototype.unicodeSets` accessor getters registered through the builtin dispatch table in `src/builtins/core.c3`, mirroring the existing `dotAll`/`sticky` pattern in `src/builtins/regexp.c3`.
+### Class semantics (26)
+- [ ] **C1 — Private class fields on non-extensible / return-override (2)**:
+  `elements/private-class-field-on-nonextensible-objects`,
+  `subclass/private-class-field-on-nonextensible-return-override`.
+- [ ] **C2 — Class definition edge cases (10)**:
+  `definition/constructable-but-no-prototype`,
+  `definition/fn-{length,name}-static-precedence-order`,
+  `definition/{getters,setters}-restricted-ids`,
+  `definition/methods-gen-yield-newline`,
+  `definition/methods-named-eval-arguments`,
+  `definition/methods-restricted-properties`,
+  `definition/this-access-restriction{,-2}`,
+  `definition/this-check-ordering`.
+  `this-check-ordering` is the "no `this` until first `super()`" clamp;
+  `restricted-ids` = `eval`/`arguments` bans in strict class bodies.
+- [ ] **C3 — Grammar valid (2)**:
+  `elements/syntax/valid/grammar-class-body-ctor-no-heritage`,
+  `elements/syntax/valid/grammar-static-ctor-gen-meth-valid`.
+- [ ] **C4 — subclass-builtins Function / Object (2)**:
+  `subclass-builtins/subclass-Function`, `subclass-builtins/subclass-Object`.
+- [ ] **C5 — subclass/builtin-objects (7)**:
+  `GeneratorFunction/instance-{length,name,prototype}`,
+  `Object/{constructor-return-undefined-throws,regular-subclassing,replacing-prototype}`,
+  `Promise/regular-subclassing`.
+- [ ] **C6 — WeakMap super-must-be-called (1)** + **null-proto-this (1)**:
+  `subclass/builtin-objects/WeakMap/super-must-be-called`,
+  `subclass/class-definition-null-proto-this`.
 
-- [x] **B34** — *(done, session 261)* `String.prototype.match` named groups for non-global regexps. The symbol-match fast path in `builtin_string_proto_match` (`src/builtins/string.c3`) now mirrors the group-name iteration already done by `RegExp.prototype.exec`, so a non-global named-capture regexp such as `/(?<y>\d{4})/` returns `result.groups`. Previously the full match was set but `.groups` was left undefined.
+### RegExp Symbol.split + friends (25)
+- [ ] **R1 — Symbol.split full implementation (17)**. Every failing test is
+  under `Symbol.split/*`: species-ctor plumbing (ctor, ctor-err, species-non-ctor,
+  species-undef, ctor-y, non-obj), lastindex get/set/coerce err paths, str
+  result coercions, empty-match error paths. This is a rewrite of
+  `RegExp.prototype[Symbol.split]` to match the spec algorithm exactly.
+- [ ] **R2 — Symbol.matchAll error propagation (3)**:
+  `Symbol.matchAll/{isregexp-called-once,isregexp-this-throws,regexpcreate-this-throws}`.
+- [ ] **R3 — v/u flag exec (2)**:
+  `exec/regexp-builtin-exec-v-u-flag`, `Symbol.replace/coerce-unicode`.
+- [ ] **R4 — Split coerce-flags (1)**:
+  `Symbol.split/coerce-flags`.
 
-- [x] **B37** — Destructuring-binding parser holes closed across five surfaces. (a) `catch ([x, _]) {}` / `catch ({x}) {}` — catch-clause destructuring now parses and runs with block-scoped LET bindings and REQUIRE_OBJ for object patterns. (b) `for ([x, y] of arr) {}` / `for ({x} of arr) {}` — bare for-of/for-in destructuring heads now parse and run with VAR bindings. (c) `[a = function() { return b; }, b = 1]` — default-value ordering already correct; the remaining nested-object-default gap `[{x} = default]` in array patterns was fixed by consuming the closing `}` before the whole-object default and applying the default to the whole nested object value (with per-property defaults preserved). (d) `({ [computed()]: a } = obj)` — computed property keys in destructuring patterns now parse and execute. (e) `({ __proto__: x, ...y } = obj)` — object rest patterns in destructuring now parse and run. See commits `e6ca1d6`, `668cfe7`, `d3c3b3a`, `12c1642`, `7473dd3`, and the nested-object-default follow-up in this session.
+### String.prototype (21)
+- [ ] **S1 — regexp-prototype-\* v/u flag (5)**:
+  `match/regexp-prototype-match-v-u-flag`,
+  `matchAll/regexp-prototype-matchAll-v-u-flag`,
+  `replace/regexp-prototype-replace-v-u-flag`,
+  `search/regexp-prototype-search-v-flag`,
+  `search/regexp-prototype-search-v-u-flag`.
+- [ ] **S2 — cstm-\* on BigInt primitive (6)**: `match/`, `matchAll/`,
+  `replace/`, `replaceAll/`, `search/`, `split/` all have a
+  `cstm-*-on-bigint-primitive` variant. Likely a shared
+  `RegExpAlike`-branch for BigInt receivers with custom `Symbol.match`
+  etc. properties.
+- [ ] **S3 — indexOf ToInteger ordering (3)**:
+  `indexOf/position-tointeger-{errors,toprimitive}`,
+  `indexOf/searchstring-tostring-toprimitive`.
+- [ ] **S4 — isWellFormed / toWellFormed ToString (2)**:
+  `isWellFormed/to-string-primitive`, `toWellFormed/to-string-primitive`.
+- [ ] **S5 — Symbol.iterator on non-obj-coercible (2)**:
+  `Symbol.iterator/this-val-non-obj-coercible`,
+  `Symbol.iterator/this-val-to-str-err`.
+- [ ] **S6 — misc (3)**: `localeCompare/15.5.4.9_CE`,
+  `replace/S15.5.4.11_A1_T16`, `split/checking-by-using-eval`.
 
-- [x] **B38** — *(done — root cause was B43, now fixed; see B43 entry)* `generators` feature flag CEs. The bulk was missing generator-method shorthand in class bodies/object literals, resolved by the generators branch merge. Residual generator-adjacent CEs (computed-property-names from `yield`/`await` expressions) are tracked under B44's cluster, not a separate surface.
+### Language — variable / eval (15 + 15 + 8)
+- [ ] **L1 — Sloppy-mode var declaration semantics (15)**:
+  `language/statements/variable/12.2.1-{2,4,5,8,9,16,19,20,21}-s`,
+  `S12.2_A{1,3,6_T1,6_T2,7}`, `S14_A1`. All test that `var` still
+  creates writable, non-configurable globals; several use
+  `try { __x = __x; } catch { throw Test262Error }` patterns —
+  auto-vivification of undeclared identifiers into globals under
+  sloppy mode is broken or a strict-mode leak.
+- [ ] **L2 — eval-code direct (8)**: `language/eval-code/direct/*`
+  cluster — sample after triage; likely var-hoisting into caller
+  scope in direct eval.
+- [ ] **L3 — eval-code indirect (7)**: `language/eval-code/indirect/*`
+  — sample; likely global-scope binding creation from indirect eval.
 
-- [x] **B39** — *(done, session 261)* Nested destructuring default parameters. `collect_obj_param_binds` and `collect_arr_param_binds` in `src/compiler/functions.c3` now track when the element just parsed was a nested pattern (synthetic binding) so a following `= default` attaches to the synthetic binding rather than the innermost leaf. The destructuring loops in `compile_inner_function` and `compile_arrow_inner_reparse` (plus the bare-head path in `parse_function_body`) now emit a default-thunk call when `group_reg` is undefined before `REQUIRE_OBJ`, mirroring the existing leaf-default path. Fixes patterns like `function f([[y = 2] = []]) {}`, arrow `([[y = 2] = []]) => y`, and object-nested equivalents. Closes `language/statements/function/dstr/ary-ptrn-elem-ary-elem-init.js` and related default-parameter destructuring surfaces.
+### Object / method definitions (15)
+- [ ] **O1 — fn-name inference for accessors, arrow, class, gen (9)**:
+  `fn-name-{accessor-get,accessor-set,arrow,class,cover,fn,gen}`,
+  `method-definition/fn-name-{fn,gen}`. The NamedEvaluation /
+  SetFunctionName plumbing misses these entry points.
+- [ ] **O2 — Computed accessor names, ToPropertyKey ordering (3)**:
+  `accessor-name-computed-err-to-prop-key`,
+  `computed-property-name-topropertykey-before-value-evaluation`,
+  `method-definition/yield-newline`.
+- [ ] **O3 — Method-def name Symbol + generator proto (3)**:
+  `method-definition/generator-{name-prop-symbol,prototype-prop}`,
+  `method-definition/name-name-prop-symbol`.
+
+### Tagged templates (11)
+- [ ] **T1 — Site caching (5)**: `cache-{same-site,same-site-top-level,
+  different-functions-same-site,eval-inner-function,identical-source-new-function}`.
+  Template site identity must be per-syntactic-site, cached across
+  invocations of the same function, distinct across independent
+  compilations. We likely re-allocate the frozen template object per
+  call.
+- [ ] **T2 — Frozen template object (3)**: `template-object`,
+  `template-object-frozen-strict`, `template-object-template-map`.
+- [ ] **T3 — Invalid escapes → undefined cooked (1)**:
+  `invalid-escape-sequences`.
+- [ ] **T4 — misc (2)**: `call-expression-context-strict`,
+  `constructor-invocation`.
+
+### For / for-of / for-in (9)
+- [ ] **F1 — head-init async-of** (1) + `head-let-destructuring` (1) +
+  `12.6.3_2-3-a-ii-3` (1) + `scope-{body,head}-lex-open` (2) +
+  `S12.6.3_A{11,11.1,12,12.1}_T2` (4).
+
+### Generators (9 + 8)
+- [ ] **G1 — Expression generators default-proto / prototype descriptor
+  (7)**: `default-proto`, `has-instance`, `prototype-own-properties`,
+  `prototype-property-descriptor`, `prototype-typeof`,
+  `prototype-uniqueness`, `prototype-value`. Generator function
+  constructors need a proper `.prototype` shape.
+- [ ] **G2 — statements/generators (8)**: sample after G1 (likely
+  same root cause).
+- [ ] **G3 — expr generators misc (2)**: `scope-name-var-open-strict`,
+  `yield-newline`.
+
+### JSON (9 + 7)
+- [ ] **J1 — JSON.parse reviver error propagation (9)**:
+  `revived-proxy{,revoked}`,
+  `reviver-{array,object}-{define-prop,delete,length-coerce,length-get,own-keys}-err`.
+  Reviver must propagate abrupt completions from DefineProperty,
+  Delete, [[OwnPropertyKeys]], length coercion. Some also need Proxy
+  routing (`revived-proxy*`).
+- [ ] **J2 — JSON.stringify (7)**: sample after J1 (not yet triaged).
+
+### Function.prototype (9 + 6)
+- [ ] **P1 — apply/call/bind strict-mode this-coercion (4)**:
+  `apply/S15.3.4.3_A5_T{1,2}`, `call/S15.3.4.4_A5_T{1,2}`,
+  `bind/S15.3.4.5_A5`.
+- [ ] **P2 — arguments/caller poison-pill descriptors (3)**:
+  `arguments/prop-desc`, `caller/prop-desc`,
+  `caller-arguments/accessor-properties`.
+- [ ] **P3 — toString unicode (1)**: `toString/unicode`
+  (residual B47 unicode-in-name path).
+- [ ] **P4 — Function/length (6)**: sample; likely bound-function
+  length attr.
+
+### Optional chaining (8) + Arrow function (8)
+- [ ] **X1 — Optional chaining edges (8)**: `member-expression`,
+  `new-target-optional-call`, `eval-optional-call`,
+  `iteration-statement-{do,for-await-of}`,
+  `optional-chain-async-optional-chain-square-brackets`,
+  `optional-chain-expression-optional-expression`,
+  `optional-chain-prod-expression`.
+- [ ] **X2 — Arrow function lexical scoping (8)**:
+  `cannot-override-this-with-thisArg`, `lexical-arguments`,
+  `lexical-new.target`, `lexical-super-call-from-within-constructor`,
+  `lexical-this`, `name`, `scope-paramsbody-var-{open,close}`.
+
+### Hashbang comments (8)
+- [ ] **H1 — Full hashbang comment support (8)**: `language/comments/
+  hashbang/*` — top-of-file `#!` line must be treated as a
+  single-line comment. Lexer addition; small.
+
+### TypedArrayConstructors (8 + 7)
+- [ ] **TA1 — Integer-Indexed [[DefineOwnProperty]] (6)**:
+  `DefineOwnProperty/conversion-operation{,-consistent-nan}`,
+  `desc-value-throws`, `key-is-numericindex-{accessor,not-enumerable,not-writable}-desc-*-throws`.
+- [ ] **TA2 — Integer-Indexed [[Set]] prototype chain (2)**:
+  `Set/key-is-{canonical-invalid-index,valid-index}-prototype-chain-set`.
+- [ ] **TA3 — ctors (7)**: sample after TA1/TA2.
+
+### Date.prototype (8)
+- [ ] **D1 — Date algorithm gaps (8)**: `setFullYear/arg-year-to-number`,
+  `toISOString/15.9.5.43-0-{4,14,15}`, `toJSON/{invoke-abrupt,to-object,to-primitive-symbol}`,
+  `valueOf/S9.4_A3_T1`.
+
+### Long tail (< 8 per dir)
+- [ ] **Z — Cluster + fix everything else** (~180 tests across ~100 dirs).
+  Approach: extract remaining rows from `/tmp/fails.tsv`, cluster by
+  stderr signature (`awk` + `run_single_test.sh`), batch by root cause.
+  Top remaining bins from current data:
+  - `built-ins/Symbol/prototype` (7),
+  - `built-ins/Promise/{race,any,prototype}` (12 total incl. `finally`),
+  - `Object/{seal,assign,prototype}` (12),
+  - `Number/prototype` (6), `Set/Symbol.species` (4),
+  - `built-ins/Array/of` (6), `built-ins/Array/Symbol.species` (8 → A8),
+  - `language/expressions/super` (7),
+  - `language/block-scope/leave` (4).
 
 ---
 
-## Session 250 review findings (2026-07-05) — see plans/040-test262-100-percent.md for full detail
+## Infrastructure
 
-- [x] **B40** — *(done, session 251)* Huge-length array-like handling. Root cause: `array_to_length`/`array_to_length_checked` clamped to 2^53-1 correctly but then truncated to 32-bit `uint`, so end-iterating methods started at index ~4.29e9 instead of ~9e15 and walked billions of indices interning a numeric string each one (the 30GB MEMKILL mechanism). Fixed in `src/builtins/array.c3`: lengths/indices widened to `ulong` across all Array.prototype methods; `MAX_ARRAY_LENGTH` const + `tval_set_index` (fastint is 48-bit — larger indices/lengths stored as doubles); pre-mutation TypeError in `push`/`unshift`/`splice`/`concat` when result would exceed 2^53-1; `find`/`findIndex`/`findLast`/`findLastIndex` no longer skip holes (spec Gets every index — the hole-skip was the residual infinite loop); `pop`/`slice`/`reverse`/`fill`/`copyWithin` moved from ToUint32 to ToLength with spec hole/delete semantics; `splice` no-arg now deletes 0 (was: everything) and always writes length. Two latent engine bugs found and fixed along the way: (1) `HObject.delete_prop` shape rebuild reversed surviving key order relative to compacted values — `delete o.b` on `{a,b,c,d}` scrambled the object (src/hobject.c3); (2) builtin element writes on plain array-likes went into a hidden dense array part that named-prop reads shadow — `array_set_elem_ulong`/`arr_delete_elem_ulong` now use named props except for ARRAY/ARGUMENTS. Cluster result: 24/28 of `*/maximum-index` + `*-integer-limit*` pass; the 4 remaining need `Proxy` (not implemented). Local tests: `test/array.js` 83/3 (was 82/4 — `concat holey array` fixed, partial B46(b)); rosetta 100/100; bench-fast unchanged.
+- [ ] **I1 — Flake budget**. 3 TIMEOUT + retry logic already in place
+  (B50). Investigate the ±33 run-to-run wobble mentioned in
+  `test262-clustering-workflow` memory; at <500 remaining, flakes
+  dominate signal.
+- [ ] **I2 — `$262.detachArrayBuffer` host hook**. Unblocks a fixed
+  cluster of TypedArray callback tests currently CE.
+- [ ] **I3 — CE:unexpected (8)**. Enumerate and reclassify or fix:
+  `awk '$1=="CE:unexpected"' /tmp/fails.tsv`.
+- [ ] **I4 — Two-consecutive-run zero-fail gate**. Once <50 fails,
+  run twice in a row before declaring done; enforce in CI.
 
-- [x] **B41** — *(done, session 252 — commit `40c0ece`)* `continue` in `finally` that overrides a `break` from the `try` block loops forever. Repro: `do { try { c1+=1; break; } catch(e){} finally { fin=1; continue; } } while (c1<2);` now terminates correctly (`c1=2, fin=1`). Fixed alongside two related generator/finally bugs (generator `return()` skipping pending finally blocks; yield*-delegated `.return()` not running the delegate's finally). Should also clear the 12 `language/statements/try` timeouts (S12.14_A9_*, A11_*, cptn-*-break) — worth re-running that cluster to confirm.
+---
 
-- [x] **B42** — *(done, session 252)* Parser rejected reserved words as object-literal property names and getter/setter names (`{ default: 1 }`, `{ get if() {} }`). Member access after `.` and class method/getter/setter names already accepted keywords via `lexer::keyword_to_string` — only the object-literal key parser (`object_literal()` in `src/compiler/expressions.c3`) was strict about `IDENTIFIER`/`STRING` only. Widened both call sites (plain key and getter/setter actual-name) to match the existing class.c3 pattern. Verified: `{ default: 1, extends: 2, get default() { return 99; } }`, `{ get if() {}, set if(v) {} }`. Phase 6 CE 10→6 in the full run.
+## Non-goals (out of scope, tracked so nobody re-opens them)
 
-- [x] **B43** — *(done, already fixed by the generators branch merge — session 252 verification)* Generator method shorthand: `class C { *m() { yield 1; } }`, `({ *g() { yield 1; } })`, and `static *m()` all now parse and run correctly. Phase 15 (Classes) CE count dropped from 930 (plan-040 baseline) to 203 in a fresh run; pass count 680 → 933. Remaining phase-15 CEs are mostly B44 (async arrow functions) and computed-property-names using `yield`/`await` expressions — separate, narrower gaps.
-
-- [x] **B44** — *(done, session 252)* Async arrow functions: `async () => 42`, `async x => x`, `async (a, ...rest) => {...}`, destructured params, and `await` inside the body all now parse and execute correctly, returning a real Promise. Fix: (1) `CompilerContext.is_async_arrow_lookahead()` in `src/compiler/tokens.c3` — pure lookahead detecting `async` followed by `IDENTIFIER ARROW` or `LPAREN` (reuses the existing pushback mechanism, mirrors `match_async_function`); (2) `src/compiler/expressions.c3` primary_expr IDENTIFIER case consumes `async`, sets `is_async`, and recurses into `primary_expr()` to reuse the existing arrow-detection paths; (3) `compile_arrow_inner`/`compile_arrow_inner_reparse` in `src/compiler/functions.c3` were missing `is_async` propagation into the new `arrow_ctx` entirely (unlike `compile_inner_function`), which was the actual runtime bug — parsing succeeded but bodies ran as plain sync functions with no Promise wrapping. `async` as a plain identifier/function name still works (regression-tested). Confirmed via phase 11 test262 run: CE count unchanged at 13 (remaining are unrelated super-call-in-arrow and destructuring-pattern gaps), no local test regressions.
-
-- [x] **B45** — *(done, session 252 — smaller than estimated)* for-of/for-in heads rejected member-expression LHS (`for (obj.prop of arr)`) and, separately, bare (no `var`/`let`/`const`) identifier for-in (`for (x in obj)` — a pre-existing gap found while investigating this, fixed in the same pass). Real footprint was ~4 tests (`head-lhs-member.js` + 3 related), not the 150–300 originally estimated — phase 14's 320 CEs are overwhelmingly B37 destructuring patterns, a separate item. Fix in `src/compiler/statements.c3`: `for_statement`'s bare-head detection now speculatively scans for a member-expression LHS followed by `of`/`in` (mirroring the existing destructuring lookahead), and re-parses+recompiles the LHS from a saved `ForLhsSnapshot` (full lexer+pushback state, not just a byte offset — `self.lexer.pos` is already past any pending lookahead token by the time detection runs) fresh every loop iteration via `emit_forof_loop_member`/`emit_forin_loop_member`/`emit_member_lhs_store`, giving correct per-iteration re-evaluation of the member base. Verified against the actual test262 `head-lhs-member.js` (for-of and for-in) plus manual cases (array-index LHS, bare for-in, regression on `var`/`let` for-of/for-in). No local test regressions. *(Also fixed during this work: `scripts/run_test262.py` silently ran a stale `batch_test_vm` binary — it only rebuilt when the binary was missing, not when source had changed, which understated today's B42/B44 gains until caught. Now always rebuilds before running.)*
-
-- [ ] **B46** — Array.prototype conformance sweep (progress, session 262). Spec step ordering fixed for `map`/`filter`/`every`/`some`/`flatMap` (Get(length) precedes IsCallable) in session 261; **session 262 added four spec-conformance fixes**: (a) `isConcatSpreadable` *getter* invocation in `concat_process_item` (treat getter `undefined` as `is_array=true` per ES2022 §23.1.3.1 5.b.iii) — 4 tests; (b) `Array.prototype.includes` Get semantics — don't short-circuit holes via `arr_get_elem_vm`'s boolean, treat missing as `undefined` — 2 tests; (c) `reduce`/`reduceRight` missing-callback IsCallable — explicit `undefined` init for `argc < 1` so `arr_check_callback` throws TypeError — 3 tests; (d) `Array.prototype.fill` [[Set]] semantics + Symbol rejection — `array_set_elem_ulong_set` (Throw=true) per ES2015 §22.1.3.6, `builtin_to_integer_vm` for ToInteger with abrupt propagation, undefined-default gating, Symbol-typed start/end pre-check, plus matching Symbol check added to `builtin_to_number_vm` so `o.length = Symbol(...)` throws TypeError — 8 tests. **Phase 6: 3663 → 3686 pass (+23, −23 fail)**. Remaining surfaces: sparse/hole semantics via HasProperty for `shift`/`sort`/`toReversed`, shared spec-op helpers (LengthOfArrayLike, ArraySpeciesCreate, hole-aware iteration) per plan 040 §A4, plus the still-open top failure clusters (concat species 13, copyWithin 10, splice 11, slice 12, indexOf 19, lastIndexOf 15, map 14, filter 10, flatMap 11, reduce 11, reduceRight 13, includes 13).
-
-- [x] **B47** — *(partial, session 260)* Function.prototype cluster — **`toString` source-text retention** implemented for compiled user functions. `CompiledFunction` gained `src_ptr`/`src_len` (heap-owned, `libc::malloc`'d); every `compile_inner_function` / `function_expr` / `function_declaration` / `function_expr_body` / arrow / hoist / export site now captures the opening token's byte offset (`function`, computed-key `[`, arrow head) and the closing position; `builtin_function_proto_toString` returns the retained source via `builtin_intern_string` for compiled user-script functions, falling back to `[native code]` for builtin/Function-ctor ones. Lexer gained `token_start` / `lookahead_token_start` fields + `refresh_token_start()` so loop iterations (class body, object literal) remember each element's first-token offset. Async prefix prepended so `async function f(){}` returns `async f() { … }`. **Phase 5: 6680 → 6697 pass (+17)**, 26 of 51 `Function.prototype.toString/*` tests now pass. Remaining 25 fail in two clusters: **(a) comment preservation** (~20 tests: `arrow-function.js`, `async-arrow-function.js`, `async-function-{declaration,expression}.js`, `generator-method.js`, `line-terminator-normalisation-*`, `unicode.js`, `Function.js`, `AsyncFunction.js`, `GeneratorFunction.js` — all require embedded `/* */` and `//` comments preserved; needs lexer to retain comment spans, architectural follow-up); **(b) static-method / computed-key / bound-function / class-explicit-ctor offsets** (~5 tests: `getter-class-expression-static.js`, `setter-class-{expression,statement}-static.js`, `method-class-{expression,statement}-static.js`, `method-computed-property-name.js`, `class-declaration-complex-heritage.js`, `class-{declaration,expression}-{explicit,implicit}-ctor.js`, `bound-function.js` — class-body offset tracking for `static`/`*`/computed-key needs an additional fix in the loop). `bind` (48) / `call`/`apply` (80) / `Symbol.hasInstance` (18) sub-clusters remain open.
-
-- [x] **B48** — *(done, session 261)* Number.prototype formatting via QuickJS `dtoa`. Replaced the snprintf-based `Number.prototype.{toFixed,toExponential,toPrecision}` implementations in `src/builtins/number.c3` with QuickJS `js_dtoa` paths exposed through `dtoa_wrapper.{c,h}` and `dtoa_bindings.c3`, giving spec-accurate rounding, trailing-zero handling, and large-digit output.
-
-- [ ] **B49** — Property-descriptor validation matrix (progress, session 261). Array-exotic `length` descriptors fixed: `SETALEN` (`src/vm/vm_objects.c3`) and `Array.of` (`src/builtins/array.c3`) now create the `.length` property with `PROP_FLAGS_WENC` ({writable:true, enumerable:false, configurable:false}) instead of `PROP_FLAGS_WEC`. `Object.defineProperty` now rejects `{enumerable:true}` on array `length` and converts the descriptor `value` via `builtin_to_number_vm` so objects are coerced through ToPrimitive (number hint) before validation, fixing `value: <object-with-valueOf>` and `value: undefined` edge cases. Closes `15.2.3.6-4-118` through `15.2.3.6-4-121` and `15.2.3.6-4-125`/146-151. Remaining surfaces: generic non-configurable descriptor rejection matrix (accessor↔data flips, writable:false value changes), `getOwnPropertyDescriptor` dense-array flag accuracy, and `seal`/`freeze` dense-part handling per `plans/022-property-descriptor-correctness.md`.
-
-- [x] **B50** — *(done, session 261)* test262 runner `--retry-fails`. `scripts/run_test262.py` now accepts `--retry-fails`; after the initial worker run, any FAIL / TIMEOUT / MEMKILL / CE:unexpected result is rerun serially once, and if the retry passes the final report uses PASS. This distinguishes genuine failures from run-to-run flakiness caused by GC timing, timeout adjacency, or worker-death misattribution.
-
-- [x] **B51** — *(done, session 259)* String model migrated to UTF-16 code-unit semantics, matching real Duktape's own internal representation (confirmed against vendored `duktape/src-separate/duk_unicode_support.c`): astral codepoints (≥U+10000) are split into their surrogate pair and each half independently encoded as a standalone 3-byte CESU-8 sequence, so `.length`/`char_length()`/`char_at()` all correctly report/index UTF-16 code units without any change to their existing byte-scanning logic. Landed in 3 tracked stages, each built + rosetta-verified + test262-phase-gated + committed separately: **Stage 1+2** (`05bf848`) — CESU-8 encode/decode primitives in `hstring.c3`; `Heap.str_intern` made the single normalization chokepoint (fixed two other hand-rolled interning paths in `constants.c3`/`core.c3` that bypassed it, which broke `===` and property lookup for literal-vs-`\u{}`-escape spellings of the same astral string); `charCodeAt`/`codePointAt`/`.at()`/`fromCodePoint` surrogate semantics; string iterator/`split("")`/`Array.from(string)` combine surrogate pairs into one iteration step; `print()`/console output re-encode CESU-8 back to standard UTF-8 for host display. **Stage 3** (`15651d0`) — `charAt`/`slice`/`substring`/`substr`/`indexOf`/`lastIndexOf`/`includes`/`startsWith`/`endsWith`/`padStart`/`padEnd` all rewritten on `char_length()`/`char_at()`/`char_offset_to_byte_offset()`; incidentally fixed a latent 256-byte truncation bug in `slice`/`substring` (fixed-size buffer, unrelated to UTF-16). **Stage 4** — JSON `\uHHHH` escape round-trip audited, needed no changes (already per-surrogate-half correct). **Stage 5 = B32** (libregexp wiring), tracked separately above. Known residual gaps, documented not fixed: raw astral UTF-8 bytes typed literally in source (not via `\u{}` escape) aren't normalized by the lexer's fast no-escape string-slicing path; `String.prototype.normalize()` doesn't recombine surrogate pairs before calling libunicode. **Follow-up filed as B55**: native UTF-16/Latin1 string storage (matching real QuickJS's flat-array representation) would avoid CESU-8's ~1.5x byte overhead on non-ASCII strings and the per-regex-exec conversion cost B32 now pays — a second full migration, out of scope here.
-
-- [x] **B52** — *(done, session 259)* Unicode identifier tables (ID_Start / ID_Continue) — bound libregexp's vendored libunicode.c tables, plus a lexer-side buffer bump. **`is_identifier_start` / `is_identifier_part` rewritten as `@inline` thin wrappers around the new `unicode_is_identifier_start(uint) / unicode_is_identifier_continue(uint)` C externs** (in `libregexp/unicode_wrapper.{h,c}` and `src/unicode_bindings.c3`); the C side fast-paths ASCII (`[A-Za-z_$]` for start, plus `0-9` for continue) and routes everything >= 128 through `lre_is_id_start` / `lre_is_id_continue`, which consult libregexp's full ID_Start / ID_Continue property tables (same tables QuickJS uses for `lre_js_is_ident_first/next`). ZWNJ (U+200C) and ZWJ (U+200D) added explicitly on the continue side per UAX #31. Also bumped the lexer's `ident_buf` from `char[256]` with a `buf_len < 250` cap to `char[4096]` with `buf_len < 4090` (handle long escaped-identifier names like the `var _\u{...83 codepoints}` test262 surfaces). Two-part fix surface: (a) full `Other_ID_Continue` grandfathered chars (U+00B7 ·, U+0387 ·, U+1369-1371 Ethiopic digits, U+19DA ᧚) plus all astral ID_Continue planes (U+11A01+, U+11D31+, etc.) now parse as identifier continuations; (b) the 250-byte escape-path limit no longer truncates the 75-codepoint / ~270-byte identifiers in `part-unicode-*.js`. Result: Phase 0-1 Identifier subset went from 798 → 827 pass (+29), 263 → 235 fail (-28). Remaining `start-unicode-{5..17}.0.0.js` failures are **register-limit exceedances** (8,327 `var` statements in one scope > 511 reg limit) — unrelated to B52, would need a register allocator overhaul.
-
-- [ ] **B55** — Native UTF-16/Latin1 string storage (follow-up to B51/B32). Current CESU-8 storage (each UTF-16 code unit independently encoded as its own 1-3 byte UTF-8 sequence) was chosen to minimize migration blast radius — `char_length()`/`char_at()`/GC/interning all needed zero structural change. Trade-off: non-ASCII strings cost up to 1.5x their UTF-16 byte size, and every regex exec call now pays a full CESU-8→UTF-16 buffer conversion (see B32) that a natively-UTF-16-backed engine (real QuickJS: flat Latin1 or UTF-16 arrays, no conversion ever) never pays. Would require reopening `hstring.c3`'s core representation, GC, interning, and every string builtin — a second full migration on the scale of B51, not a small patch. Not started.
+- **Reflect API** — runner-skipped by policy (`reflect-excluded` memory).
+- **Sloppy-mode-only tests** — runner-skipped by policy.
+- **Native UTF-16/Latin1 string storage (ex-B55)**. Would replace the
+  current CESU-8 layout for ~1.5x memory win on non-ASCII and remove
+  the per-regex-exec conversion; would touch every string builtin and
+  the GC. Not part of the 100% push.
