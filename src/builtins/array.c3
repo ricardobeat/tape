@@ -4084,14 +4084,16 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
+    // Spec order: ToLength before IsCallable — a throwing length accessor must
+    // surface before any callback-shape validation.
+    ulong len;
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     TVal cb_val;
     if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
     if (!arr_check_callback(cb_val, ctx)) return;
     TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    ulong len;
-    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (ulong k = 0; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal v;
@@ -4122,14 +4124,15 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
+    // Spec order: ToLength before IsCallable.
+    ulong len;
+    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     TVal cb_val;
     if (ctx.argc >= 1) { cb_val = ctx.regs[ctx.base_reg]; } else { cb_val.set_undefined(); }
     if (!arr_check_callback(cb_val, ctx)) return;
     TVal callback = cb_val;
     TVal thisArg;
     if (ctx.argc >= 2) { thisArg = ctx.regs[ctx.base_reg + 1]; } else { thisArg.set_undefined(); }
-    ulong len;
-    if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     for (long k = (long)len - 1; k >= 0; k--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal v;

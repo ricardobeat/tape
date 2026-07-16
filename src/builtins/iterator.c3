@@ -58,14 +58,13 @@ fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
 fn void create_array_iterator(BuiltinContext* ctx, uint kind) {
     Heap* heap = ctx.heap;
     TVal this_val = ctx.this_val;
-    HObject* iterable;
-    if (this_val.is_object()) {
-        iterable = (HObject*)this_val.get_heapptr();
-    } else {
-        HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
-        if (catch err = wrapped) { ctx.result.set_undefined(); return; }
-        iterable = wrapped;
+    // ES2015 §22.1.3.4/13/17 step 1: ToObject(this) — throw TypeError on
+    // null/undefined so the abrupt completion from ToObject is observable.
+    if (!this_val.is_object()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert undefined or null to object");
+        return;
     }
+    HObject* iterable = (HObject*)this_val.get_heapptr();
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.ARRAY_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
