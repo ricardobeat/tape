@@ -311,6 +311,17 @@ fn void track_heap_store(Activation* act, TVal* val, uint reg_idx) @inline {
     }
 }
 
+/// ES2015 §9.2.2 step 15 / §8.1.1.3.4: an explicit `return;`, `return undefined;`,
+/// or implicit fallthrough from a derived constructor falls through to
+/// GetThisBinding() — if super() was never called, this_binding is still the
+/// TDZ sentinel and must throw ReferenceError. Shared by RET (when the return
+/// value is undefined) and RETUNDEF so both opcodes enforce the same check.
+fn bool derived_ctor_returns_undefined_uninitialized(Activation* callee_act) @inline {
+    return (callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
+        && (callee_act.flags & ACT_FLAG_DERIVED) != 0
+        && env::is_tdz_sentinel(&callee_act.this_binding);
+}
+
 /// Decrement the reference count of every register in the given activation.
 /// Must be called BEFORE the activation is popped, while the register range
 /// is still valid.  Safe to call on activations with null func (no registers).

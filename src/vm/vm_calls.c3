@@ -1449,8 +1449,14 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     // Initialize the derived constructor's this_binding with the
                     // object returned by the builtin super constructor (§9.2.2).
                     TVal* sc_result_lf = ds.regs_base + result_reg;
+                    bool sc_already_bound = false;
                     if (sc_result_lf.is_object()) {
-                        super_init_this_chain(vm, ds.act, sc_result_lf);
+                        sc_already_bound = super_init_this_chain(vm, ds.act, sc_result_lf);
+                    }
+                    if (sc_already_bound) {
+                        // §8.1.1.3.1 BindThisValue step 3: the derived-ctor
+                        // frame this walk resolved to was already initialized.
+                        vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
                     }
                 } else {
                     // §8.1.1.3.1 BindThisValue step 3: this_binding is already
@@ -1535,8 +1541,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         // Bound target was a builtin that returned directly
                         if (env::is_tdz_sentinel(&ds.act.this_binding)) {
                             TVal* sc_bound_result = ds.regs_base + result_reg;
+                            bool sc_bound_already_bound = false;
                             if (sc_bound_result.is_object()) {
-                                super_init_this_chain(vm, ds.act, sc_bound_result);
+                                sc_bound_already_bound = super_init_this_chain(vm, ds.act, sc_bound_result);
+                            }
+                            if (sc_bound_already_bound) {
+                                // §8.1.1.3.1 BindThisValue step 3: already initialized.
+                                vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
                             }
                         } else {
                             // §8.1.1.3.1 BindThisValue step 3: already initialized.
@@ -1578,8 +1589,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     vm_throw_value(vm, sc_lf_ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart);
                 } else if (env::is_tdz_sentinel(&ds.act.this_binding)) {
                     TVal* sc_lf_result = ds.regs_base + result_reg;
+                    bool sc_lf_already_bound = false;
                     if (sc_lf_result.is_object()) {
-                        super_init_this_chain(vm, ds.act, sc_lf_result);
+                        sc_lf_already_bound = super_init_this_chain(vm, ds.act, sc_lf_result);
+                    }
+                    if (sc_lf_already_bound) {
+                        // §8.1.1.3.1 BindThisValue step 3: already initialized.
+                        vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
                     }
                 } else {
                     // §8.1.1.3.1 BindThisValue step 3: already initialized.
@@ -1614,8 +1630,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         // Initialize the derived constructor's this_binding with the
                         // object returned by the builtin super constructor (§9.2.2).
                         TVal* sc_result_bi = ds.regs_base + result_reg;
+                        bool sc_bi_already_bound = false;
                         if (sc_result_bi.is_object()) {
-                            super_init_this_chain(vm, ds.act, sc_result_bi);
+                            sc_bi_already_bound = super_init_this_chain(vm, ds.act, sc_result_bi);
+                        }
+                        if (sc_bi_already_bound) {
+                            // §8.1.1.3.1 BindThisValue step 3: already initialized.
+                            vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
                         }
                     } else {
                         // §8.1.1.3.1 BindThisValue step 3: already initialized.

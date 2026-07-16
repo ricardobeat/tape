@@ -2482,15 +2482,9 @@ fn TVal? Vm.run(Vm* vm) {
                     && !val.is_object()
                     && !val.is_undefined();
 
-            // ES2015 §9.2.2 step 15 / §8.1.1.3.4: an explicit `return;` or
-            // `return undefined;` from a derived constructor falls through to
-            // GetThisBinding() — if super() was never called, this_binding is
-            // still the TDZ sentinel and must throw ReferenceError (same check
-            // RETUNDEF performs for implicit fallthrough returns).
-            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
-                    && (callee_act.flags & ACT_FLAG_DERIVED) != 0
-                    && val.is_undefined()
-                    && env::is_tdz_sentinel(&callee_act.this_binding)) {
+            // `return undefined;` from a derived constructor is equivalent to
+            // bare `return;` (RETUNDEF) — same TDZ check applies.
+            if (val.is_undefined() && derived_ctor_returns_undefined_uninitialized(callee_act)) {
                 if (!vm_throw_error(vm, vm.heap.ref_err_proto,
                         "Must call super constructor in derived class before returning from derived constructor",
                         ds.act, &ds.curr_pc, &ds.needs_restart)) {
@@ -2640,9 +2634,7 @@ fn TVal? Vm.run(Vm* vm) {
 
             // ES2015 §9.2.2 step 13.d / §8.1.1.3.4: derived constructor returning
             // without calling super() → this_binding is still TDZ sentinel → ReferenceError.
-            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
-                    && (callee_act.flags & ACT_FLAG_DERIVED) != 0
-                    && env::is_tdz_sentinel(&callee_act.this_binding)) {
+            if (derived_ctor_returns_undefined_uninitialized(callee_act)) {
                 if (!vm_throw_error(vm, vm.heap.ref_err_proto,
                         "Must call super constructor in derived class before returning from derived constructor",
                         ds.act, &ds.curr_pc, &ds.needs_restart)) {
