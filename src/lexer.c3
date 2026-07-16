@@ -95,6 +95,7 @@ struct Token {
     bool str_owns_memory;
     bool has_octal_escape;
     bool is_template;
+    bool has_invalid_escape;
 }
 
 /// Create a simple token with no value payload.
@@ -108,6 +109,7 @@ fn Token make_token(TokenType tt, uint line, uint col) {
     t.str_owns_memory = false;
     t.has_octal_escape = false;
     t.is_template = false;
+    t.has_invalid_escape = false;
     return t;
 }
 
@@ -1626,8 +1628,12 @@ fn Token? Lexer.scan_regexp(&self) {
 /// Returns the decoded text (may be empty) and sets `end_char` to the
 /// character that terminated the scan: '`' for backtick, '$' for "${",
 /// or 0 for end-of-input (error).
-fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes) {
+/// For tagged templates, invalid escape sequences are allowed; in that
+/// case `has_invalid_escape` is set and the returned string is the raw
+/// (uncooked) source text of the part.
+fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes, bool* has_invalid_escape) {
     uint start_pos = self.pos;
+    *has_invalid_escape = false;
 
     // Fast path: scan ahead to see if there are any escape sequences
     // or special characters (`, $).
@@ -1704,9 +1710,8 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes)
         if (ch == '\\') {
             self.advance_char(); // consume backslash
             if (self.at_end()) {
-                *end_char = 0;
-                *has_escapes = true;
-                return {};
+                *has_invalid_escape = true;
+                break;
             }
 
             char esc = self.peek_char();
@@ -1722,6 +1727,13 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes)
                     self.advance_char();
                 }
                 continue;
+            }
+
+            // Invalid legacy octal / decimal escapes: \1-\9 and \0 followed by a digit.
+            if ((esc >= '1' && esc <= '9') ||
+                (esc == '0' && !self.at_end() && self.peek_char_at(1) >= '0' && self.peek_char_at(1) <= '9')) {
+                *has_invalid_escape = true;
+                break;
             }
 
             self.advance_char(); // consume escape char
@@ -1742,51 +1754,99 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes)
                 case 'x':
                     // \xHH in template literals — same UTF-8 encoding fix as
                     // in regular string literals: the value is a Unicode codepoint.
-                    if (self.remaining() < 2) { *end_char = 0; *has_escapes = true; return {}; }
+                    if (self.remaining() < 2 ||
+                        !is_hex_digit(self.peek_char()) ||
+                        !is_hex_digit(self.peek_char_at(1))) {
+                        *has_invalid_escape = true;
+                        break;
+                    }
                     {
                         char h1 = self.advance_char();
                         char h2 = self.advance_char();
-                        if (!is_hex_digit(h1) || !is_hex_digit(h2)) { *end_char = 0; *has_escapes = true; return {}; }
                         uint hval = hex_value(h1) * 16 + hex_value(h2);
                         buf_len = encode_utf8_to_buf(&buf, buf_len, hval);
                     }
 
                 case 'u':
-                    if (self.at_end()) { *end_char = 0; *has_escapes = true; return {}; }
+                    if (self.at_end()) { *has_invalid_escape = true; break; }
                     if (self.peek_char() == '{') {
-                        self.advance_char();
+                        // Peek the braced unicode escape without consuming so
+                        // we can fall back to raw text on invalid input.
+                        uint peek_pos = self.pos + 1; // after '{'
                         uint ucp = 0;
                         uint udigits = 0;
-                        while (!self.at_end() && self.peek_char() != '}') {
-                            if (!is_hex_digit(self.peek_char())) { *end_char = 0; *has_escapes = true; return {}; }
-                            ucp = ucp * 16 + hex_value(self.peek_char());
-                            self.advance_char();
+                        bool uvalid = true;
+                        while (peek_pos < (uint)self.source.len && self.source[peek_pos] != '}') {
+                            if (!is_hex_digit(self.source[peek_pos])) { uvalid = false; break; }
+                            ucp = ucp * 16 + hex_value(self.source[peek_pos]);
+                            peek_pos++;
                             udigits++;
-                            if (ucp > 0x10FFFF) { *end_char = 0; *has_escapes = true; return {}; }
+                            if (ucp > 0x10FFFF) { uvalid = false; break; }
                         }
-                        if (self.at_end() || udigits == 0) { *end_char = 0; *has_escapes = true; return {}; }
-                        self.advance_char();
+                        if (!uvalid || udigits == 0 || peek_pos >= (uint)self.source.len) {
+                            *has_invalid_escape = true;
+                            break;
+                        }
+                        // Valid \u{H+}; consume it.
+                        self.advance_char(); // {
+                        for (uint i = 0; i < udigits; i++) {
+                            self.advance_char();
+                        }
+                        self.advance_char(); // }
                         buf_len = encode_utf8_to_buf(&buf, buf_len, ucp);
                     } else {
-                        if (self.remaining() < 4) { *end_char = 0; *has_escapes = true; return {}; }
+                        if (self.remaining() < 4 ||
+                            !is_hex_digit(self.peek_char()) ||
+                            !is_hex_digit(self.peek_char_at(1)) ||
+                            !is_hex_digit(self.peek_char_at(2)) ||
+                            !is_hex_digit(self.peek_char_at(3))) {
+                            *has_invalid_escape = true;
+                            break;
+                        }
                         uint ucp4 = 0;
                         for (int i = 0; i < 4; i++) {
                             char hc = self.advance_char();
-                            if (!is_hex_digit(hc)) { *end_char = 0; *has_escapes = true; return {}; }
                             ucp4 = ucp4 * 16 + hex_value(hc);
                         }
                         buf_len = encode_utf8_to_buf(&buf, buf_len, ucp4);
                     }
 
                 default:
-                    // Unknown escape — just emit the character as-is (ES spec: TemplateEscapeSequence)
+                    // Other non-standard escape (e.g. \q) — emit the character as-is.
                     buf[buf_len] = esc; buf_len++;
             }
+            if (*has_invalid_escape) break;
             continue;
         }
 
         buf[buf_len] = self.advance_char();
         buf_len++;
+    }
+
+    if (*has_invalid_escape) {
+        // Invalid escape in a template part. For tagged templates this is
+        // allowed and the cooked value is undefined; the raw value is the
+        // literal source text. Scan the rest of the part as raw text.
+        while (!self.at_end()) {
+            char ch = self.peek_char();
+            if (ch == '`') {
+                *end_char = '`';
+                break;
+            }
+            if (ch == '$' && self.peek_char_at(1) == '{') {
+                *end_char = '$';
+                break;
+            }
+            self.advance_char();
+        }
+        if (self.at_end()) {
+            *end_char = 0;
+        }
+        uint raw_end = self.at_end() ? (uint)self.source.len : self.pos;
+        if (raw_end > start_pos) {
+            return self.source[start_pos..raw_end - 1];
+        }
+        return {};
     }
 
     *has_escapes = true;
@@ -1808,7 +1868,8 @@ fn Token? Lexer.scan_template_head(&self) {
 
     char end_char = 0;
     bool has_escapes = false;
-    char[]? content = self.scan_template_content(&end_char, &has_escapes);
+    bool has_invalid_escape = false;
+    char[]? content = self.scan_template_content(&end_char, &has_escapes, &has_invalid_escape);
 
     if (catch err = content) {
         return LEX_ERROR~;
@@ -1821,6 +1882,7 @@ fn Token? Lexer.scan_template_head(&self) {
         tok.str_value = content;
         tok.str_owns_memory = false;
         tok.is_template = true;
+        tok.has_invalid_escape = has_invalid_escape;
         return tok;
     }
 
@@ -1832,6 +1894,7 @@ fn Token? Lexer.scan_template_head(&self) {
         tok.str_value = content;
         tok.str_owns_memory = false;
         tok.is_template = true;
+        tok.has_invalid_escape = has_invalid_escape;
         return tok;
     }
 
@@ -1847,7 +1910,8 @@ fn Token? Lexer.scan_template_after_expr(&self) {
 
     char end_char = 0;
     bool has_escapes = false;
-    char[]? content = self.scan_template_content(&end_char, &has_escapes);
+    bool has_invalid_escape = false;
+    char[]? content = self.scan_template_content(&end_char, &has_escapes, &has_invalid_escape);
 
     if (catch err = content) {
         return LEX_ERROR~;
@@ -1860,6 +1924,7 @@ fn Token? Lexer.scan_template_after_expr(&self) {
         tok.str_value = content;
         tok.str_owns_memory = false;
         tok.is_template = true;
+        tok.has_invalid_escape = has_invalid_escape;
         return tok;
     }
 
@@ -1871,6 +1936,7 @@ fn Token? Lexer.scan_template_after_expr(&self) {
         tok.str_value = content;
         tok.str_owns_memory = false;
         tok.is_template = true;
+        tok.has_invalid_escape = has_invalid_escape;
         return tok;
     }
 

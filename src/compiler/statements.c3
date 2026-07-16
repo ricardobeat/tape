@@ -1214,21 +1214,34 @@ fn void? CompilerContext.for_statement(&self) {
         Token id_tok = self.advance()!;
         if (try tok2 = self.lexer.peek()) {
             if (tok2.type == TokenType.IDENTIFIER && str_eq(tok2.str_value, "of")) {
-                self.advance()!;  // consume "of"
-                ushort iter_reg = self.assignment_expr()!;
-                self.expect(TokenType.RPAREN)!;
-                self.emit_forof_loop(id_tok.str_value, iter_reg, saved_scope, saved_reg, false, false, true)!;
-                return;
-            }
-            if (tok2.type == TokenType.IN) {
+                // `of` is only a for-of keyword when it is not part of an arrow-function
+                // parameter list. For example, `for (async of => {}; ...)` is a plain
+                // for-loop whose init is the call expression `async(of => {})`.
+                Token of_tok = self.advance()!;
+                bool is_arrow = self.peek_type() == TokenType.ARROW;
+                self.pushback(of_tok);
+                self.pushback(id_tok);
+                if (!is_arrow) {
+                    // consume the tokens we pushed back; tok2/of_tok is already consumed
+                    self.advance()!; // id_tok
+                    self.advance()!; // of_tok
+                    ushort iter_reg = self.assignment_expr()!;
+                    self.expect(TokenType.RPAREN)!;
+                    self.emit_forof_loop(id_tok.str_value, iter_reg, saved_scope, saved_reg, false, false, true)!;
+                    return;
+                }
+            } else if (tok2.type == TokenType.IN) {
                 self.advance()!;  // consume "in"
                 ushort obj_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
                 self.emit_bare_forin_loop(id_tok.str_value, obj_reg, saved_scope, saved_reg)!;
                 return;
+            } else {
+                self.pushback(id_tok);
             }
+        } else {
+            self.pushback(id_tok);
         }
-        self.pushback(id_tok);
     }
 
     // Check for parenthesized identifier LHS: for ((x) of expr) / for ((x) in expr).

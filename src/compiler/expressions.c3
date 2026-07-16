@@ -1525,6 +1525,7 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
 
     // Collect string parts and expression registers
     uint[MAX_TEMPLATE_PARTS] str_indices;
+    bool[MAX_TEMPLATE_PARTS] part_invalid;
     ushort[MAX_TEMPLATE_PARTS] expr_regs;
     uint part_count = 0;
     uint expr_count = 0;
@@ -1538,16 +1539,19 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
             return COMPILE_ERROR~;
         }
         str_indices[0] = self.add_string_constant(str_tok.str_value);
+        part_invalid[0] = str_tok.has_invalid_escape;
         part_count = 1;
     } else if (tt == TokenType.TEMPLATE) {
         // Legacy TEMPLATE token (should not normally appear, but handle gracefully)
         Token tmpl_tok = self.advance()!;
         str_indices[0] = self.add_string_constant(tmpl_tok.str_value);
+        part_invalid[0] = false;
         part_count = 1;
     } else if (tt == TokenType.TEMPLATE_HEAD) {
         // Template with substitutions: `text${expr}text${expr}text`
         Token head_tok = self.advance()!;
         str_indices[0] = self.add_string_constant(head_tok.str_value);
+        part_invalid[0] = head_tok.has_invalid_escape;
         part_count = 1;
 
         // Compile first expression, then consume its closing `}` and scan
@@ -1560,6 +1564,7 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
         // Handle TEMPLATE_MIDDLE / TEMPLATE_TAIL chain
         while (next_tok.type == TokenType.TEMPLATE_MIDDLE) {
             str_indices[part_count] = self.add_string_constant(next_tok.str_value);
+            part_invalid[part_count] = next_tok.has_invalid_escape;
             part_count++;
 
             expr_regs[expr_count] = self.expression()!;
@@ -1573,6 +1578,7 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
             return COMPILE_ERROR~;
         }
         str_indices[part_count] = self.add_string_constant(next_tok.str_value);
+        part_invalid[part_count] = next_tok.has_invalid_escape;
         part_count++;
     } else {
         return COMPILE_ERROR~;
@@ -1583,14 +1589,18 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
     ushort tmpl_arr_reg = self.alloc_reg();
     self.emit_abc(Opcode.NEWARR, (uint)tmpl_arr_reg, 0, 0);
 
-    // Fill with string parts
+    // Fill with string parts (cooked values; undefined for invalid escapes)
     for (uint i = 0; i < part_count; i++) {
-        ushort str_reg = self.alloc_reg();
-        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)str_reg, str_indices[i]));
+        ushort elem_reg = self.alloc_reg();
+        if (part_invalid[i]) {
+            self.emit_abc(Opcode.LDUNDEF, (uint)elem_reg, 0, 0);
+        } else {
+            self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)elem_reg, str_indices[i]));
+        }
         ushort idx_reg = self.alloc_reg();
         self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)i));
-        self.emit_abc(Opcode.PUTPROP, (uint)tmpl_arr_reg, (uint)idx_reg, (uint)str_reg);
-        self.free_reg(str_reg);
+        self.emit_abc(Opcode.PUTPROP, (uint)tmpl_arr_reg, (uint)idx_reg, (uint)elem_reg);
+        self.free_reg(elem_reg);
         self.free_reg(idx_reg);
     }
     self.emit(bytecode::make_a_bc(Opcode.SETALEN, (uint)tmpl_arr_reg, part_count));
@@ -1675,6 +1685,8 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
 fn ushort? CompilerContext.new_expr(&self) {
     self.expect(TokenType.NEW)!;
 
+    ushort ctor_reg;
+
     // Check for new.target meta-property
     if (self.match(TokenType.DOT)) {
         Token? target_tok_opt = self.lexer.next_token();
@@ -1693,120 +1705,176 @@ fn ushort? CompilerContext.new_expr(&self) {
             && target_name[5] == 't') {
             ushort result_reg = self.alloc_reg();
             self.emit_abc(Opcode.NEWTARGET, (uint)result_reg, 0, 0);
-            return result_reg;
+            ctor_reg = result_reg;
+        } else {
+            // Not 'target' — error
+            return COMPILE_ERROR~;
         }
-        // Not 'target' — error
-        return COMPILE_ERROR~;
-    }
+    } else {
+        // Parse the constructor (could be member access)
+        ctor_reg = self.member_expr()!;
 
-    // Parse the constructor (could be member access)
-    ushort ctor_reg = self.member_expr()!;
+        // Per ES2023 §13.3.1.1 (EvaluateNew): GetValue(constructor) happens
+        // BEFORE argument evaluation. If the constructor is a local var and
+        // an argument expression assigns to that same var, the assignment
+        // would clobber our constructor register. Move the constructor to
+        // a fresh register that is guaranteed not to alias any local var slot.
+        ushort safe_ctor_reg = self.alloc_reg();
+        if (ctor_reg != safe_ctor_reg) {
+            self.emit_abc(Opcode.LDREG, (uint)safe_ctor_reg, (uint)ctor_reg, 0);
+            ctor_reg = safe_ctor_reg;
+        }
 
-    // Per ES2023 §13.3.1.1 (EvaluateNew): GetValue(constructor) happens
-    // BEFORE argument evaluation. If the constructor is a local var and
-    // an argument expression assigns to that same var, the assignment
-    // would clobber our constructor register. Move the constructor to
-    // a fresh register that is guaranteed not to alias any local var slot.
-    ushort safe_ctor_reg = self.alloc_reg();
-    if (ctor_reg != safe_ctor_reg) {
-        self.emit_abc(Opcode.LDREG, (uint)safe_ctor_reg, (uint)ctor_reg, 0);
-        // The original ctor_reg can now be reused for arg layout.
-        ctor_reg = safe_ctor_reg;
-    }
-    // safe_ctor_reg stays allocated; free_regs_to(ctor_reg) at the end releases it.
+        // Args start right after constructor (same convention as emit_call)
+        ushort first_arg = ctor_reg + 2;
+        if (self.next_reg < first_arg) {
+            self.next_reg = first_arg;
+        }
+        ushort arg_count = 0;
+        bool has_spread = false;
+        ushort total_count_reg = MAX_REGISTERS;
 
-    // Args start right after constructor (same convention as emit_call)
-    ushort first_arg = ctor_reg + 2;
-    if (self.next_reg < first_arg) {
-        self.next_reg = first_arg;
-    }
-    ushort arg_count = 0;
-    bool has_spread = false;
-    ushort total_count_reg = MAX_REGISTERS;
-
-    if (self.match(TokenType.LPAREN)) {
-        if (!self.check(TokenType.RPAREN)) {
-            for (;;) {
-                if (self.match(TokenType.ELLIPSIS)) {
-                    // Spread argument inside `new ...(...)`. SPREAD_ARG writes
-                    // the spread elements at first_arg + <running total> and
-                    // advances the running-total register, stacking multiple
-                    // spreads and interleaved PUTARG args in order.
-                    ushort dest_start = first_arg + arg_count;
-                    if (self.next_reg <= dest_start + 1) {
-                        self.next_reg = dest_start + 2;
-                    }
-                    ushort spread_reg = self.assignment_expr()!;
-                    // If spread_reg is at or above dest_start, SPREAD_ARG could overwrite it
-                    // (the iterator may yield arbitrarily many elements into dest_start+0, +1, …).
-                    if (spread_reg >= dest_start) {
-                        ushort safe_reg = self.alloc_reg();
-                        self.emit_abc(Opcode.LDREG, (uint)safe_reg, (uint)spread_reg, 0);
-                        self.free_reg(spread_reg);
-                        spread_reg = safe_reg;
-                    }
-                    if (!has_spread) {
-                        has_spread = true;
-                        total_count_reg = self.alloc_reg();
-                        self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
-                    }
-                    self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
-                    self.free_reg(spread_reg);
-                    if (self.next_reg <= dest_start + 1) {
-                        self.next_reg = dest_start + 2;
-                    }
-                } else {
-                    ushort arg_reg = self.assignment_expr()!;
-                    if (has_spread) {
-                        self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
-                        self.free_reg(arg_reg);
-                    } else {
-                        ushort expected = first_arg + arg_count;
-                        if (arg_reg != expected) {
-                            self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
-                            self.free_reg(arg_reg);
-                            if (self.next_reg <= expected) {
-                                self.next_reg = expected + 1;
-                            }
+        if (self.match(TokenType.LPAREN)) {
+            if (!self.check(TokenType.RPAREN)) {
+                for (;;) {
+                    if (self.match(TokenType.ELLIPSIS)) {
+                        ushort dest_start = first_arg + arg_count;
+                        if (self.next_reg <= dest_start + 1) {
+                            self.next_reg = dest_start + 2;
                         }
-                        arg_count++;
+                        ushort spread_reg = self.assignment_expr()!;
+                        if (spread_reg >= dest_start) {
+                            ushort safe_reg = self.alloc_reg();
+                            self.emit_abc(Opcode.LDREG, (uint)safe_reg, (uint)spread_reg, 0);
+                            self.free_reg(spread_reg);
+                            spread_reg = safe_reg;
+                        }
+                        if (!has_spread) {
+                            has_spread = true;
+                            total_count_reg = self.alloc_reg();
+                            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
+                        }
+                        self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
+                        self.free_reg(spread_reg);
+                        if (self.next_reg <= dest_start + 1) {
+                            self.next_reg = dest_start + 2;
+                        }
+                    } else {
+                        ushort arg_reg = self.assignment_expr()!;
+                        if (has_spread) {
+                            self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
+                            self.free_reg(arg_reg);
+                        } else {
+                            ushort expected = first_arg + arg_count;
+                            if (arg_reg != expected) {
+                                self.emit_abc(Opcode.LDREG, (uint)expected, (uint)arg_reg, 0);
+                                self.free_reg(arg_reg);
+                                if (self.next_reg <= expected) {
+                                    self.next_reg = expected + 1;
+                                }
+                            }
+                            arg_count++;
+                        }
                     }
-                }
 
-                if (!self.match(TokenType.COMMA)) {
-                    break;
-                }
-                // Trailing comma: ',)' is valid per ES2017
-                if (self.check(TokenType.RPAREN)) {
-                    break;
+                    if (!self.match(TokenType.COMMA)) {
+                        break;
+                    }
+                    if (self.check(TokenType.RPAREN)) {
+                        break;
+                    }
                 }
             }
+            self.expect(TokenType.RPAREN)!;
         }
-        self.expect(TokenType.RPAREN)!;
-    }
 
-    // Emit NEW_OBJ or NEW_OBJ_S (spread variant).
-    if (has_spread) {
-        // NEW_OBJ_S: A=result_reg, B=ctor_reg, C=total_count_reg.
-        self.emit_abc(Opcode.NEW_OBJ_S, (uint)ctor_reg, (uint)ctor_reg, (uint)total_count_reg);
-    } else {
-        self.emit_abc(Opcode.NEW_OBJ, (uint)ctor_reg, (uint)ctor_reg, (uint)arg_count);
-    }
+        // Emit NEW_OBJ or NEW_OBJ_S (spread variant).
+        if (has_spread) {
+            self.emit_abc(Opcode.NEW_OBJ_S, (uint)ctor_reg, (uint)ctor_reg, (uint)total_count_reg);
+        } else {
+            self.emit_abc(Opcode.NEW_OBJ, (uint)ctor_reg, (uint)ctor_reg, (uint)arg_count);
+        }
 
-    self.free_regs_to(ctor_reg);
-    self.next_reg = ctor_reg + 1;
-    if (self.next_reg > self.max_reg) {
-        self.max_reg = self.next_reg;
-    }
+        self.free_regs_to(ctor_reg);
+        self.next_reg = ctor_reg + 1;
+        if (self.next_reg > self.max_reg) {
+            self.max_reg = self.next_reg;
+        }
+    } // end else (non-new.target path)
 
-    // Handle trailing member access and calls: new X().prop, new X()[idx], new X().method()
+    // Handle trailing member access, optional chaining, and calls:
+    // new X().prop, new X()[idx], new X().method(), new D(99)?.a, new.target?.()
     // Reset member tracking: only a trailing property access (not a call) that is
     // the *last* thing parsed here should leave last_was_member set, so an outer
     // assignment (`new X().p = v`) emits a PUTPROP that runs setters, rather than
     // treating the read result as a discardable value.
     self.last_was_member = false;
     for (;;) {
-        if (self.match(TokenType.DOT)) {
+        if (self.match(TokenType.OPT_CHAIN)) {
+            // Template literal after ?. is a SyntaxError
+            if (self.is_next_template()) {
+                self.fail("Template literal after optional chain is not supported");
+                return COMPILE_ERROR~;
+            }
+
+            // Emit null/undefined check for short-circuit
+            ushort cmp_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDNULL, (uint)cmp_reg, 0, 0);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)ctor_reg, (uint)cmp_reg);
+            uint null_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
+            self.emit_abc(Opcode.LDUNDEF, (uint)cmp_reg, 0, 0);
+            self.emit_abc(Opcode.SEQ, (uint)cmp_reg, (uint)ctor_reg, (uint)cmp_reg);
+            uint undef_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)cmp_reg);
+            self.free_reg(cmp_reg);
+
+            self.last_was_optional_chain = true;
+
+            if (self.check(TokenType.LPAREN)) {
+                // new X()?.()
+                self.callee_is_eval = false;
+                self.call_prop_obj_reg = MAX_REGISTERS;
+                ctor_reg = self.emit_call(ctor_reg)!;
+                self.last_was_member = false;
+                self.last_was_getvar = false;
+            } else if (self.match(TokenType.LBRACKET)) {
+                // new X()?.[expr]
+                ushort idx_reg = self.expression()!;
+                self.expect(TokenType.RBRACKET)!;
+                ushort result = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)idx_reg);
+                self.free_reg(idx_reg);
+                self.last_was_member = false;
+                self.last_was_getvar = false;
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                self.call_prop_obj_reg = ctor_reg;
+                ctor_reg = result;
+            } else {
+                // new X()?.prop
+                char[] prop_str = self.read_property_name()!;
+                uint prop_const = self.add_string_constant(prop_str);
+                ushort prop_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)prop_reg, prop_const));
+                ushort result = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)result, (uint)ctor_reg, (uint)prop_reg);
+                self.free_reg(prop_reg);
+                self.last_was_member = false;
+                self.last_was_getvar = false;
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                self.call_prop_obj_reg = ctor_reg;
+                ctor_reg = result;
+            }
+
+            // Patch short-circuit jumps
+            uint skip = self.emit_jump(Opcode.JUMP);
+            self.patch_jump(null_jump);
+            self.patch_jump(undef_jump);
+            self.emit_abc(Opcode.LDUNDEF, (uint)ctor_reg, 0, 0);
+            self.patch_jump(skip);
+        } else if (self.match(TokenType.DOT)) {
             Token? prop_name_opt = self.lexer.next_token();
             if (catch err = prop_name_opt) return COMPILE_ERROR~;
             Token prop_name = prop_name_opt;
@@ -2104,6 +2172,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
             // Legacy octal escape sequences in strings are SyntaxErrors
             // per ES5 §7.8.4 + Annex B.1.2.
             if (str_tok.has_octal_escape) {
+                return COMPILE_ERROR~;
+            }
+            if (str_tok.is_template && str_tok.has_invalid_escape) {
                 return COMPILE_ERROR~;
             }
 
@@ -2892,6 +2963,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
         {
             // Template literal with substitutions: `text${expr}text${expr}text`
             Token head_tok = self.advance()!;
+            if (head_tok.has_invalid_escape) {
+                return COMPILE_ERROR~;
+            }
             uint head_idx = self.add_string_constant(head_tok.str_value);
             ushort result_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)result_reg, head_idx));
@@ -2918,6 +2992,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
             // Handle TEMPLATE_MIDDLE / TEMPLATE_TAIL chain
             while (next_tok.type == TokenType.TEMPLATE_MIDDLE) {
+                if (next_tok.has_invalid_escape) {
+                    return COMPILE_ERROR~;
+                }
                 uint mid_idx = self.add_string_constant(next_tok.str_value);
                 ushort mid_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)mid_reg, mid_idx));
@@ -2945,6 +3022,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
             if (next_tok.type != TokenType.TEMPLATE_TAIL) {
                 // Expected TEMPLATE_MIDDLE or TEMPLATE_TAIL
+                return COMPILE_ERROR~;
+            }
+            if (next_tok.has_invalid_escape) {
                 return COMPILE_ERROR~;
             }
 
