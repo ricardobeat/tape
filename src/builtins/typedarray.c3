@@ -926,12 +926,8 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
         if (src_is_string_exotic && src_prim_str != null) {
             // Serve char at index i from the underlying string.
             char[] data = src_prim_str.get_data();
-            usz byte_start = 0; usz byte_end = src_prim_str.blen; usz ch_idx = 0;
-            for (usz bi = 0; bi < src_prim_str.blen && ch_idx <= (usz)i; bi++) {
-                if (ch_idx == (usz)i) { byte_start = bi; }
-                if ((data[bi] & 0xC0) != 0x80) { ch_idx++; }
-                if (ch_idx > (usz)i) { byte_end = bi + 1; break; }
-            }
+            usz byte_start = (usz)src_prim_str.char_offset_to_byte_offset(i);
+            usz byte_end = (usz)src_prim_str.char_offset_to_byte_offset(i + 1);
             if (byte_start < byte_end) {
                 usz copy_len = byte_end - byte_start;
                 char[8] one;

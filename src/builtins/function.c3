@@ -1415,26 +1415,6 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
         proto.put_prop(hasinst_sym, hasinst_tv, hi_flags);
     }
 
-    // Add @@species accessor (ES6 §19.2.4.7): getter returns this.
-    HString* species_sym = ensure_species_symbol(heap);
-    if (species_sym != null) {
-        HObject*? getter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (try getter = getter_raw) {
-            getter.flags.callable = true;
-            (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_FUNCTION_PROTO_SPECIES_GETTER;
-            TVal getter_tv;
-            getter_tv.set_object(getter);
-            TVal undef;
-            undef.set_undefined();
-            hobject::PropFlags acc_flags;
-            acc_flags.writable = false;
-            acc_flags.enumerable = false;
-            acc_flags.configurable = true;
-            acc_flags.is_accessor = true;
-            proto.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
-        }
-    }
-
     // Set .constructor to the Function constructor object itself
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;
