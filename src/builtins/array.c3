@@ -924,7 +924,17 @@ fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
 /// For all other classes (OBJECT, etc.), writes go through put_prop so that
 /// named numeric properties are visible to subsequent reads and not shadowed
 /// by a hidden dense part.
-fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap) {
+fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap, void* vm = null) {
+    // Proxy exotic: route through the [[Set]] MOP trap.
+    if (obj.flags.exotic_proxyobj) {
+        if (vm == null) return;
+        HString* key = heap.int_to_hstring((long)idx);
+        if (key == null) return;
+        TVal recv; recv.set_object(obj);
+        bool sres;
+        proxy_mop_set(vm, heap, obj, key, val, recv, &sres);
+        return;
+    }
     if ((obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)
         && obj.set_array_idx(idx, val)) {
         return;
@@ -944,9 +954,19 @@ fn void array_delete_elem(HObject* obj, uint idx, Heap* heap) {
 /// Set array element at a 53-bit numeric index (array-likes may address up
 /// to 2^53-2). Indices below 2^32 use the dense-part fast path; larger
 /// indices are always named properties.
-fn void array_set_elem_ulong(HObject* obj, ulong idx, TVal val, Heap* heap) {
+fn void array_set_elem_ulong(HObject* obj, ulong idx, TVal val, Heap* heap, void* vm = null) {
     if (idx <= 0xFFFFFFFFUL) {
-        array_set_elem(obj, (uint)idx, val, heap);
+        array_set_elem(obj, (uint)idx, val, heap, vm);
+        return;
+    }
+    // Proxy exotic: route through the [[Set]] MOP trap.
+    if (obj.flags.exotic_proxyobj) {
+        if (vm == null) return;
+        HString* key = heap.int_to_hstring((long)idx);
+        if (key == null) return;
+        TVal recv; recv.set_object(obj);
+        bool sres;
+        proxy_mop_set(vm, heap, obj, key, val, recv, &sres);
         return;
     }
     HString* key = heap.int_to_hstring((long)idx);
@@ -1419,24 +1439,35 @@ fn void builtin_array_proto_reverse(BuiltinContext* ctx) {
 
     for (ulong lower = 0; lower < middle; lower++) {
         ulong upper = len - 1 - lower;
+
+        // ES2022 §23.1.3.27 steps 5.a-5.d: HasProperty then conditional Get,
+        // for lower then upper (in that order — matters for Proxy trap order).
+        bool has_lower = arr_has_prop(obj, lower, ctx.heap, ctx.vm);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal lower_val;
-        TVal upper_val;
-        bool has_lower = arr_get_elem_vm(obj, lower, ctx.heap, ctx, &lower_val);
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        bool has_upper = arr_get_elem_vm(obj, upper, ctx.heap, ctx, &upper_val);
-        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        if (has_upper) {
-            array_set_elem_ulong(obj, lower, upper_val, ctx.heap);
-        } else {
-            HString* del_key = ctx.heap.int_to_hstring((long)lower);
-            if (del_key != null) obj.delete_prop(del_key);
-        }
         if (has_lower) {
-            array_set_elem_ulong(obj, upper, lower_val, ctx.heap);
-        } else {
-            HString* del_key = ctx.heap.int_to_hstring((long)upper);
-            if (del_key != null) obj.delete_prop(del_key);
+            arr_get_elem_vm(obj, lower, ctx.heap, ctx, &lower_val);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         }
+        bool has_upper = arr_has_prop(obj, upper, ctx.heap, ctx.vm);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal upper_val;
+        if (has_upper) {
+            arr_get_elem_vm(obj, upper, ctx.heap, ctx, &upper_val);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        }
+
+        if (has_lower && has_upper) {
+            array_set_elem_ulong(obj, lower, upper_val, ctx.heap, ctx.vm);
+            array_set_elem_ulong(obj, upper, lower_val, ctx.heap, ctx.vm);
+        } else if (has_upper) {
+            array_set_elem_ulong(obj, lower, upper_val, ctx.heap, ctx.vm);
+            arr_delete_elem_or_throw(ctx, obj, upper);
+        } else if (has_lower) {
+            arr_delete_elem_or_throw(ctx, obj, lower);
+            array_set_elem_ulong(obj, upper, lower_val, ctx.heap, ctx.vm);
+        }
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
 
     ctx.result.set_object(obj);
@@ -3306,6 +3337,41 @@ fn bool arr_has_prop(HObject* obj, ulong key, Heap* heap, void* vm = null) {
     return @ok(found);
 }
 
+/// Helper: DeletePropertyOrThrow(obj, key) for a numeric array index — used by
+/// methods (e.g. reverse) that must delete a hole through the Proxy
+/// [[Delete]] trap rather than mutating the target's property table directly.
+/// Sets ctx.should_throw on a proxy trap failure/throw.
+fn void arr_delete_elem_or_throw(BuiltinContext* ctx, HObject* obj, ulong key) {
+    if (obj.flags.exotic_proxyobj) {
+        if (ctx.vm == null) return;
+        HString* pk = ctx.heap.int_to_hstring((long)key);
+        if (pk == null) return;
+        bool out;
+        if (!proxy_mop_delete(ctx.vm, ctx.heap, obj, pk, &out)) {
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+            }
+            return;
+        }
+        if (!out) {
+            arr_throw_type_error(ctx, "Cannot delete property");
+        }
+        return;
+    }
+    HString* del_key = ctx.heap.int_to_hstring((long)key);
+    if (del_key != null) obj.delete_prop(del_key);
+    // Also clear the dense-part slot (if any) — named-table deletion alone
+    // does not remove a value cached in the dense array_idx storage.
+    if (key <= 0xFFFFFFFFUL
+        && (obj.get_class() == hobject::ObjClass.ARRAY
+            || obj.get_class() == hobject::ObjClass.ARGUMENTS)) {
+        TVal undef; undef.set_undefined();
+        obj.set_array_idx((uint)key, undef);
+    }
+}
+
 /// Helper: invoke a getter function. Returns the getter result or undefined.
 /// Used by arr_get_elem to handle accessor properties at numeric indices.
 fn TVal arr_invoke_getter(HObject* obj, TVal getter_fn, Heap* heap, void* vm_ptr) {
@@ -3450,7 +3516,12 @@ fn HObject* array_species_create_result(BuiltinContext* ctx, HObject* original, 
     }
     // Step 4: if original is not an Array, return ArrayCreate(length) directly
     // without consulting the constructor property.
+    // §9.4.2.2 ArrayCreate step 3: if length > 2^32-1, throw RangeError.
     if (!orig_is_array) {
+        if (len > 0xFFFFFFFFUL) {
+            arr_throw_range_error(ctx, "Invalid array length");
+            return null;
+        }
         HObject*? fallback_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
         if (catch err = fallback_raw) return null;
         HObject* fallback = fallback_raw;
@@ -3482,6 +3553,11 @@ fn HObject* array_species_create_result(BuiltinContext* ctx, HObject* original, 
         }
     }
 
+    // §9.4.2.2 ArrayCreate step 3: if length > 2^32-1, throw RangeError.
+    if (len > 0xFFFFFFFFUL) {
+        arr_throw_range_error(ctx, "Invalid array length");
+        return null;
+    }
     HObject*? fallback_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
     if (catch err = fallback_raw) return null;
     HObject* fallback = fallback_raw;
@@ -3749,14 +3825,8 @@ fn bool arr_get_elem(HObject* obj, uint key, Heap* heap, TVal* out) {
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null && (long)key < prim.char_length()) {
             char[] data = prim.get_data();
-            usz byte_start = 0;
-            usz byte_end = prim.blen;
-            usz ch_idx = 0;
-            for (usz i = 0; i < prim.blen && ch_idx <= (usz)key; i++) {
-                if (ch_idx == (usz)key) { byte_start = i; }
-                if ((data[i] & 0xC0) != 0x80) { ch_idx++; }
-                if (ch_idx > (usz)key) { byte_end = i + 1; break; }
-            }
+            usz byte_start = (usz)prim.char_offset_to_byte_offset(key);
+            usz byte_end = (usz)prim.char_offset_to_byte_offset(key + 1);
             if (byte_start < byte_end) {
                 char[8] one;
                 usz copy_len = byte_end - byte_start;
@@ -3837,14 +3907,8 @@ fn bool arr_get_elem_vm(HObject* obj, ulong key, Heap* heap, BuiltinContext* ctx
         HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
         if (prim != null && (long)key < prim.char_length()) {
             char[] data = prim.get_data();
-            usz byte_start = 0;
-            usz byte_end = prim.blen;
-            usz ch_idx = 0;
-            for (usz i = 0; i < prim.blen && ch_idx <= (usz)key; i++) {
-                if (ch_idx == (usz)key) { byte_start = i; }
-                if ((data[i] & 0xC0) != 0x80) { ch_idx++; }
-                if (ch_idx > (usz)key) { byte_end = i + 1; break; }
-            }
+            usz byte_start = (usz)prim.char_offset_to_byte_offset((uint)key);
+            usz byte_end = (usz)prim.char_offset_to_byte_offset((uint)key + 1);
             if (byte_start < byte_end) {
                 char[8] one;
                 usz copy_len = byte_end - byte_start;
@@ -4084,8 +4148,6 @@ fn void builtin_array_proto_find(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    // Spec order: ToLength before IsCallable — a throwing length accessor must
-    // surface before any callback-shape validation.
     ulong len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     TVal cb_val;
@@ -4124,7 +4186,6 @@ fn void builtin_array_proto_findLast(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
         return;
     }
-    // Spec order: ToLength before IsCallable.
     ulong len;
     if (!array_to_length(o, ctx.heap, ctx, &len)) { ctx.result.set_undefined(); return; }
     TVal cb_val;
@@ -4350,7 +4411,8 @@ fn void builtin_array_proto_reduce(BuiltinContext* ctx) {
                 TVal[4] args;
                 args[0] = acc;
                 args[1] = v;
-                TVal k_tv; k_tv.set_fastint((long)k);
+                TVal k_tv;
+                if (k <= (ulong)types::FASTINT_MAX) { k_tv.set_fastint((long)k); } else { k_tv.set_number((double)k); }
                 args[2] = k_tv;
                 args[3].set_object((void*)o);
                 acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, undef_this);
@@ -4388,7 +4450,7 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
         arr_throw_type_error(ctx, "Reduce of empty array with no initial value");
         return;
     }
-    int k = (len > 0) ? (int)len - 1 : -1;
+    long k = (len > 0) ? (long)len - 1 : -1;
     TVal acc;
     bool has_acc;
     if (ctx.argc > 1) {
@@ -4414,7 +4476,8 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
                 TVal[4] args;
                 args[0] = acc;
                 args[1] = v;
-                TVal k_tv; k_tv.set_fastint((long)k);
+                TVal k_tv;
+                if (k <= types::FASTINT_MAX) { k_tv.set_fastint(k); } else { k_tv.set_number((double)k); }
                 args[2] = k_tv;
                 args[3].set_object((void*)o);
                 acc = ctx.heap.call_fn(ctx.vm, callback, &args[0], 4, undef_this);
