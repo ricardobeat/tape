@@ -382,9 +382,25 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                     }
                     act.this_binding = this_val;
                 }
+            } else if (target.is_arrow()) {
+                // Arrow functions have no receiver of their own — `this` is
+                // lexically inherited from the enclosing scope, captured once
+                // at CLOSURE-creation time (§9.2.1 [[ThisMode]]=lexical), not
+                // from the caller-supplied this_val (which for a call routed
+                // through a builtin, e.g. Array.prototype.map's thisArg or an
+                // iterator's ITER_CLOSE-driven .return(), is unrelated to the
+                // arrow's defining scope). Exception: a still-TDZ captured
+                // value (arrow defined before super() ran in a derived
+                // constructor) must be re-resolved live from the immediate
+                // caller — see super_walk_live_this().
+                TVal arrow_this = (*hobj.extra_ptr()).func.captured_this;
+                if (env::is_tdz_sentinel(&arrow_this) && saved_act_count > 0) {
+                    arrow_this = super_walk_live_this(vm, &saved_acts[saved_act_count - 1]);
+                }
+                act.this_binding = arrow_this;
             } else {
                 // Non-resume: ES5 §10.4.3 — substitute global object for undefined/null this.
-                if (!target.is_arrow() && !target.is_strict()
+                if (!target.is_strict()
                     && (this_val.is_undefined() || this_val.is_null())
                     && vm.global_env != null && vm.global_env.bindings != null) {
                     this_val.set_object(vm.global_env.bindings);

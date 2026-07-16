@@ -455,6 +455,15 @@ struct HObjectFunction {
     EnvRecord*        var_env;
     EnvRecord*        lex_env;
     int               builtin_fn_index;
+    /// Arrow functions only (ES2015 §9.2.1 [[ThisMode]] = lexical): the
+    /// enclosing activation's `this` at CLOSURE-creation time, captured once
+    /// and reused for every future call regardless of how the arrow is later
+    /// invoked (bare call, .call/.apply, builtin callback thisArg, or a call
+    /// routed through vm_call_fn_impl's nested-Vm.run boundary). Undefined /
+    /// unused for non-arrow functions. Placed after builtin_fn_index so
+    /// HObjectProxy's builtin_fn_index (which overlays this struct) keeps
+    /// the same offset.
+    TVal              captured_this;
 }
 
 /// Primitive wrapper (Boolean, Number, String objects).
@@ -1787,6 +1796,12 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
         heap::Heap* h = (heap::Heap*)_active_heap;
         h.decref_tval(&(*obj.extra_ptr()).gs.getter);
         h.decref_tval(&(*obj.extra_ptr()).gs.setter);
+    }
+
+    // Decref an arrow function's captured lexical `this`.
+    if (obj.flags.obj_class == ObjClass.FUNCTION && _active_heap != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        h.decref_tval(&(*obj.extra_ptr()).func.captured_this);
     }
 
     // Decref string values held in property slots and array elements.

@@ -56,6 +56,35 @@ fn bool super_init_this_chain(Vm* vm, Activation* act, TVal* constructed) {
     return false;
 }
 
+/// Resolve an arrow's live lexical `this` when its CLOSURE-time captured
+/// value was the TDZ sentinel (i.e. the arrow was defined inside a derived
+/// constructor before super() ran). A value captured at closure-creation
+/// time cannot observe super_init_this_chain()'s later in-place mutation of
+/// the owning derived-constructor activation's this_binding, so on the TDZ
+/// fallback path we re-walk from the calling activation — using the same
+/// parent/shadow_act_list traversal as super_init_this_chain — to find that
+/// activation's *current* this_binding. `caller_act` is the activation that
+/// is invoking the arrow right now; for a well-formed program this is always
+/// either the derived-constructor activation itself or a frame reached from
+/// it via a still-live call chain (arrows referencing `this`/`super` cannot
+/// legally escape their enclosing constructor's dynamic extent before it
+/// returns). Returns the TDZ sentinel unchanged if no such frame is found.
+fn TVal super_walk_live_this(Vm* vm, Activation* caller_act) {
+    Activation* a = caller_act;
+    ShadowActFrame* shadow = (ShadowActFrame*)vm.shadow_act_list;
+    while (true) {
+        if (a == null) {
+            if (shadow == null) break;
+            if (shadow.count == 0) { shadow = (ShadowActFrame*)shadow.prev; continue; }
+            a = &shadow.acts[shadow.count - 1];
+            shadow = (ShadowActFrame*)shadow.prev;
+        }
+        if ((a.flags & ACT_FLAG_DERIVED) != 0) return a.this_binding;
+        a = a.parent;
+    }
+    return env::tdz_sentinel();
+}
+
 /// Same boundary-crossing walk for reading: find the nearest enclosing
 /// activation (live or shadow-saved) that has a new_target.
 fn HObject* super_walk_new_target(Vm* vm, Activation* act) {
@@ -224,11 +253,27 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     }
                     new_act.max_heap_reg = 0;
                     new_act.caller_valstack_top = vm.valstack_top;
-                    // Arrow functions use lexical this (inherited from enclosing scope)
+                    // Arrow functions use lexical this — captured once at
+                    // CLOSURE-creation time (§9.2.1 [[ThisMode]]=lexical), not
+                    // the calling activation's this_binding (which only
+                    // coincidentally matches when an arrow is invoked from
+                    // exactly the activation it was defined in). Exception: if
+                    // the captured value is still the TDZ sentinel (arrow
+                    // defined inside a derived constructor before super()
+                    // ran), re-resolve the *live* this_binding via the same
+                    // parent/shadow_act_list walk super_init_this_chain() uses
+                    // to mutate it — a stale TDZ snapshot would never observe
+                    // that later mutation.
+                    TVal arrow_live_this;
+                    if (target_fast.is_arrow() && env::is_tdz_sentinel(&(*hobj_fast.extra_ptr()).func.captured_this)) {
+                        arrow_live_this = super_walk_live_this(vm, ds.act);
+                    }
                     // ES5 §10.4.3: for non-strict (non-arrow) compiled functions,
                     // coerce null/undefined thisArg → global object.
                     {
-                        TVal* this_src = target_fast.is_arrow() ? &ds.act.this_binding : &saved_this;
+                        TVal* this_src = target_fast.is_arrow()
+                            ? (env::is_tdz_sentinel(&(*hobj_fast.extra_ptr()).func.captured_this) ? &arrow_live_this : &(*hobj_fast.extra_ptr()).func.captured_this)
+                            : &saved_this;
                         TVal coerced_this;
                         bool used_coerced = false;
                         if (!target_fast.is_arrow() && !target_fast.is_strict() && (this_src.is_undefined() || this_src.is_null())) {
@@ -1197,10 +1242,18 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     new_act.async_promise = p;
                 }
             }
-            // Arrow functions use lexical this (inherited from enclosing scope).
+            // Arrow functions use lexical this — captured once at
+            // CLOSURE-creation time (§9.2.1 [[ThisMode]]=lexical), not the
+            // calling activation's this_binding. Exception: a still-TDZ
+            // captured value (arrow defined before super() ran) must be
+            // re-resolved live — see super_walk_live_this().
             // ES5 §10.4.3: for non-arrow compiled functions, coerce null/undefined → global.
             if (target.is_arrow()) {
-                vm.heap.tval_copy_ref(&new_act.this_binding, &ds.act.this_binding);
+                TVal arrow_this2 = (*hobj.extra_ptr()).func.captured_this;
+                if (env::is_tdz_sentinel(&arrow_this2)) {
+                    arrow_this2 = super_walk_live_this(vm, ds.act);
+                }
+                vm.heap.tval_copy_ref(&new_act.this_binding, &arrow_this2);
             } else {
                 TVal raw_this = ds.regs_base[callee_reg + 1];
                 if (!target.is_strict() && (raw_this.is_undefined() || raw_this.is_null()) && vm.global_env != null && vm.global_env.bindings != null) {

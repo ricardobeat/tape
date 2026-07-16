@@ -179,7 +179,7 @@ fn void class_initaccessor_set_name(Vm* vm, HObject* fn_obj, TVal* key_tval, cha
 /// instantiates exported `function` declarations eagerly at link time so a
 /// cyclic early import observes the hoisted function rather than `undefined`
 /// (ECMA-262 16.2.1.5.5 step 17).
-fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* var_env, EnvRecord* lex_env) {
+fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* var_env, EnvRecord* lex_env, TVal* enclosing_this = null) {
     HObject*? func_obj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch _e = func_obj_raw) return null;
     HObject* func_obj = func_obj_raw;
@@ -198,6 +198,14 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
     (*func_obj.extra_ptr()).func.comp_func = template;
     (*func_obj.extra_ptr()).func.var_env = var_env;
     (*func_obj.extra_ptr()).func.lex_env = lex_env;
+    // ES2015 §9.2.1 [[ThisMode]]=lexical: capture the enclosing activation's
+    // `this` once, at closure-creation time, so it survives being called from
+    // any later call site (bare call, .call/.apply/.bind, builtin callback
+    // thisArg, or a call routed through vm_call_fn_impl's nested-Vm.run
+    // boundary) — none of which reflect the arrow's true lexical `this`.
+    if (template.is_arrow() && enclosing_this != null) {
+        vm.heap.tval_copy_ref(&(*func_obj.extra_ptr()).func.captured_this, enclosing_this);
+    }
 
     // Set .length property (ES5 §15.3.5.1: non-writable, non-enumerable, configurable).
     // Must be defined before .name — SetFunctionLength/SetFunctionName ordering
@@ -273,7 +281,7 @@ fn TVal? dispatch_closures(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             uint bc = insn.get_bc();
             if (bc < vm.current_func.inner_count) {
                 CompiledFunction* template = vm.current_func.inner_funcs[bc];
-                HObject* func_obj = instantiate_closure(vm, template, ds.act.var_env, ds.act.lex_env);
+                HObject* func_obj = instantiate_closure(vm, template, ds.act.var_env, ds.act.lex_env, &ds.act.this_binding);
                 if (func_obj != null) {
                     ra.set_object(func_obj);
                     track_heap_store(ds.act, ra, (uint)insn.a);
