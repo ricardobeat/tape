@@ -32,6 +32,8 @@ struct ReCompiled {
     int      capture_count;
 };
 
+static uint8_t* cesu8_pattern_to_utf8(const char* input, size_t input_len, size_t* out_len);
+
 ReCompiled* re_compile(const char* pattern, size_t pattern_len,
                        int flags, char* error_msg, int error_msg_size)
 {
@@ -52,10 +54,35 @@ ReCompiled* re_compile(const char* pattern, size_t pattern_len,
         return NULL;
     }
 
+    /* lre_compile parses the pattern as standard UTF-8; our internal storage
+     * is CESU-8 (each surrogate half is its own 3-byte sequence), so astral
+     * literals in the pattern must be recombined into real 4-byte UTF-8
+     * sequences before compiling, or the parser sees two lone surrogates
+     * instead of one codepoint > 0xFFFF. Only do this in unicode mode
+     * (u/v): lre_compile's non-unicode parser explicitly rejects codepoints
+     * above 0xFFFF (patterns operate on UTF-16 code units, not codepoints,
+     * when !is_unicode), so astral literals there must stay as two lone
+     * surrogate code units. */
+    int is_unicode_mode = (lre_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
+    size_t utf8_len = 0;
+    uint8_t* utf8_pattern = NULL;
+    if (is_unicode_mode) {
+        utf8_pattern = cesu8_pattern_to_utf8(pattern, pattern_len, &utf8_len);
+        if (pattern_len > 0 && !utf8_pattern) {
+            if (error_msg && error_msg_size > 0) {
+                strncpy(error_msg, "out of memory", error_msg_size - 1);
+                error_msg[error_msg_size - 1] = '\0';
+            }
+            return NULL;
+        }
+    }
+
     char internal_error[128];
     int bc_len;
     uint8_t* bc = lre_compile(&bc_len, internal_error, sizeof(internal_error),
-                               pattern, pattern_len, lre_flags, NULL);
+                               (const char*)(utf8_pattern ? utf8_pattern : (const uint8_t*)pattern),
+                               utf8_pattern ? utf8_len : pattern_len, lre_flags, NULL);
+    free(utf8_pattern);
     if (!bc) {
         if (error_msg && error_msg_size > 0) {
             strncpy(error_msg, internal_error, error_msg_size - 1);
@@ -92,6 +119,55 @@ static uint32_t decode_utf8_unit(const uint8_t** p, const uint8_t* end)
     /* invalid/truncated lead byte: treat as a single raw byte unit */
     *p = s + 1;
     return c0;
+}
+
+/*
+ * Re-encode a CESU-8 buffer (each UTF-16 code unit independently encoded as
+ * a standalone UTF-8 sequence) into standard UTF-8 for lre_compile(): every
+ * adjacent high+low surrogate pair (each a lone 3-byte CESU-8 sequence) is
+ * recombined into a single 4-byte UTF-8 sequence for the astral codepoint.
+ * Lone/unpaired surrogates already look like valid 3-byte UTF-8 sequences
+ * and pass through unchanged (lre_compile's UTF-8 decoder accepts them as
+ * plain codepoints in the surrogate range, same as duktape/QuickJS do for
+ * unicode-mode patterns). Returns a malloc'd, NUL-terminated buffer (caller
+ * frees) holding at most `input_len` bytes of pattern data; writes the
+ * output length (excluding the NUL) to *out_len. The trailing NUL is
+ * required by lre_compile()'s UTF-8 decoder, which is documented (cutils.h)
+ * to read up to UTF8_CHAR_LEN_MAX (4) bytes past the last consumed byte
+ * unless the buffer is null-terminated — an exact-sized buffer without it
+ * is a heap over-read whenever a multi-byte sequence starts near the end.
+ */
+static uint8_t* cesu8_pattern_to_utf8(const char* input, size_t input_len, size_t* out_len)
+{
+    uint8_t* out = (uint8_t*)malloc((input_len > 0 ? input_len : 0) + 1);
+    if (!out) { *out_len = 0; return NULL; }
+
+    const uint8_t* p = (const uint8_t*)input;
+    const uint8_t* end = p + input_len;
+    size_t o = 0;
+    while (p < end) {
+        const uint8_t* unit_start = p;
+        uint32_t cp = decode_utf8_unit(&p, end);
+        if (cp >= 0xD800 && cp <= 0xDBFF && p < end) {
+            const uint8_t* p2 = p;
+            uint32_t low = decode_utf8_unit(&p2, end);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                uint32_t astral = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                out[o++] = (uint8_t)(0xF0 | (astral >> 18));
+                out[o++] = (uint8_t)(0x80 | ((astral >> 12) & 0x3F));
+                out[o++] = (uint8_t)(0x80 | ((astral >> 6) & 0x3F));
+                out[o++] = (uint8_t)(0x80 | (astral & 0x3F));
+                p = p2;
+                continue;
+            }
+        }
+        size_t unit_bytes = (size_t)(p - unit_start);
+        memcpy(out + o, unit_start, unit_bytes);
+        o += unit_bytes;
+    }
+    out[o] = 0;
+    *out_len = o;
+    return out;
 }
 
 /*

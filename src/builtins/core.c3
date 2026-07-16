@@ -341,8 +341,9 @@ const uint BUILTIN_PROMISE_RESOLVE_THENABLE_JOB = 428;
 /// thenable) settles — or propagate onFinally's own throw instead.
 const uint BUILTIN_PROMISE_THEN_FINALLY  = 429;
 const uint BUILTIN_PROMISE_CATCH_FINALLY = 430;
+const uint BUILTIN_ARRAY_SPECIES_GETTER  = 431;
 
-const uint BUILTIN_COUNT                       = 431;
+const uint BUILTIN_COUNT                       = 432;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2878,6 +2879,7 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROMISE_RESOLVE_THENABLE_JOB] = &builtin_promise_resolve_thenable_job,
     [BUILTIN_PROMISE_THEN_FINALLY] = &builtin_promise_then_finally,
     [BUILTIN_PROMISE_CATCH_FINALLY] = &builtin_promise_catch_finally,
+    [BUILTIN_ARRAY_SPECIES_GETTER] = &builtin_array_species_getter,
     [BUILTIN_PROMISE_PROTO_CATCH] = &builtin_promise_proto_catch,
     [BUILTIN_PROMISE_PROTO_FINALLY] = &builtin_promise_proto_finally,
     [BUILTIN_PROMISE_PROTO_THEN] = &builtin_promise_proto_then,

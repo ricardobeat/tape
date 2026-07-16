@@ -4429,6 +4429,14 @@ fn void builtin_array_proto_reduceRight(BuiltinContext* ctx) {
     (*ctx.result) = acc;
 }
 
+/// Array[@@species] getter — ES2022 §23.1.2.5. Returns the this value (the
+/// constructor itself), so a subclass like `class MyArray extends Array {}`
+/// gets MyArray back from ArraySpeciesCreate by inheriting this accessor
+/// through its constructor's prototype chain.
+fn void builtin_array_species_getter(BuiltinContext* ctx) {
+    *ctx.result = ctx.regs[ctx.base_reg - 1];
+}
+
 fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     // Create Array.prototype
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
@@ -4583,6 +4591,34 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     TVal from_tv;
     from_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_FROM);
     arr.put_prop(from_key, from_tv, hobject::PROP_FLAGS_WC);
+
+    // Add @@species accessor (ES2022 §23.1.2.5): getter returns `this`.
+    HString* species_sym = ensure_species_symbol(heap);
+    if (species_sym != null) {
+        HObject*? getter_fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (try getter_fn = getter_fn_raw) {
+            (*getter_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY_SPECIES_GETTER;
+            getter_fn.flags.callable = true;
+            getter_fn.prototype = heap.function_proto;
+            HString* getter_name = builtin_intern_string(heap, "get [Symbol.species]");
+            if (getter_name != null) {
+                TVal name_tv; name_tv.set_string(getter_name);
+                getter_fn.put_prop((void*)builtin_intern_string(heap, "name"), name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* len_key_sp = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            TVal zero_tv; zero_tv.set_fastint(0);
+            getter_fn.put_prop(len_key_sp, zero_tv, hobject::PROP_FLAGS_NWC);
+
+            TVal getter_tv; getter_tv.set_object(getter_fn);
+            TVal undef; undef.set_undefined();
+            hobject::PropFlags acc_flags;
+            acc_flags.writable = false;
+            acc_flags.enumerable = false;
+            acc_flags.configurable = true;
+            acc_flags.is_accessor = true;
+            arr.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
+        }
+    }
 
     // Register Array constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Array");
