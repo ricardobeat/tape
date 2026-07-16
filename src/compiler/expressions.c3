@@ -2532,9 +2532,20 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 return id_reg;
             }
             self.advance()!;  // consume 'yield'
+            // ES2015 §14.4 YieldExpression: `yield [no LineTerminator here] *`
+            // and `yield [no LineTerminator here] AssignmentExpression` — a
+            // LineTerminator right after `yield` forces the bare `yield`
+            // (yields undefined), same as ASI restricted productions.
+            // `seen_line_term` reflects whitespace scanned *before* the most
+            // recently produced token, so force the lookahead scan (via
+            // peek_type) before reading it — otherwise it's stale from
+            // before `yield` itself (see postfix_expr's nl_before_postfix_op
+            // for the same pattern).
+            self.peek_type();
+            bool nl_after_yield = self.lexer.seen_line_term;
             // Check for yield* (delegating yield)
             bool is_delegate = false;
-            if (self.match(TokenType.STAR)) {
+            if (!nl_after_yield && self.match(TokenType.STAR)) {
                 is_delegate = true;
             }
 
@@ -2550,7 +2561,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 return result_reg;
             } else {
                 // yield expression (optional)
-                if (self.check(TokenType.SEMICOLON) || self.check(TokenType.RBRACE)
+                if (nl_after_yield || self.check(TokenType.SEMICOLON) || self.check(TokenType.RBRACE)
                     || self.check(TokenType.RPAREN) || self.check(TokenType.COMMA)
                     || self.check(TokenType.COLON) || self.check(TokenType.RBRACKET)
                     || self.is_at_end()) {

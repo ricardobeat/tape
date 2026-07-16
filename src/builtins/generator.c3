@@ -91,25 +91,48 @@ fn void builtin_dynamic_gen_function(BuiltinContext* ctx, bool is_gen, bool is_a
     (*func_obj.extra_ptr()).func.var_env = ctx.global_env;
     (*func_obj.extra_ptr()).func.lex_env = ctx.global_env;
 
-    // Set [[Prototype]] of the returned function object:
+    // Set [[Prototype]] of the returned function object (ES2015 §9.2.2
+    // [[Construct]] step 5/2.a: OrdinaryCreateFromConstructor(newTarget, ...)
+    // so `class Sub extends GeneratorFunction {}` produces an instance whose
+    // [[Prototype]] is Sub.prototype, not %GeneratorFunction.prototype%):
     // async functions → AsyncFunction.prototype, generator functions → GeneratorFunction.prototype
+    HObject* default_fn_proto;
     if (is_async && ctx.heap.async_func_proto != null) {
-        func_obj.prototype = ctx.heap.async_func_proto;
+        default_fn_proto = ctx.heap.async_func_proto;
     } else if (ctx.heap.generator_func_proto != null) {
-        func_obj.prototype = ctx.heap.generator_func_proto;
+        default_fn_proto = ctx.heap.generator_func_proto;
     } else {
-        func_obj.prototype = ctx.heap.function_proto;
+        default_fn_proto = ctx.heap.function_proto;
     }
+    func_obj.prototype = builtin_proto_from_new_target(ctx, default_fn_proto);
 
-    // Prototype object for generator instances
+    // Prototype object for generator instances (25.2.4.3: writable,
+    // non-enumerable, non-configurable — matches Function instances).
     HObject*? gen_proto_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (try gen_proto = gen_proto_raw) {
         gen_proto.prototype = ctx.heap.generator_proto;
         HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
         TVal proto_tv;
         proto_tv.set_object(gen_proto);
-        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WEC);
+        func_obj.put_prop(proto_key, proto_tv, hobject::PROP_FLAGS_WENC);
     }
+
+    // .length (25.2.4.1) and .name (25.2.4.2): non-writable, non-enumerable,
+    // configurable — same as CreateDynamicFunction for plain Function.
+    HString* len_key = builtin_intern_string(ctx.heap, "length");
+    TVal len_tv;
+    len_tv.set_fastint((long)func.num_formals);
+    func_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
+
+    HString* name_key = builtin_intern_string(ctx.heap, "name");
+    TVal name_tv;
+    name_tv.set_string(builtin_intern_string(ctx.heap, "anonymous"));
+    func_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+
+    // GeneratorFunction/AsyncFunction instances are callable but not
+    // constructable (ES2015 §25.2.3 / §25.7.3 — `new gfn()` throws TypeError).
+    func_obj.flags.callable = true;
+    func_obj.flags.constructable = false;
 
     ctx.result.set_object(func_obj);
 }

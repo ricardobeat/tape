@@ -909,14 +909,15 @@ fn void builtin_promise(BuiltinContext* ctx) {
     // ES2015 §25.4.3.1 step 3: OrdinaryCreateFromConstructor(NewTarget, "%PromisePrototype%")
     promise.prototype = builtin_proto_from_new_target(ctx, ctx.heap.promise_proto);
 
+    // ES2015 §25.6.3.1 step 2: throw TypeError if IsCallable(executor) is
+    // false — including when no argument was passed at all (executor is
+    // then undefined, which is not callable).
+    TVal executor;
     if (ctx.argc < 1) {
-        // No executor — return pending promise
-        ctx.result.set_object(promise);
-        return;
+        executor.set_undefined();
+    } else {
+        executor = ctx.regs[ctx.base_reg];
     }
-
-    TVal executor = ctx.regs[ctx.base_reg];
-    // ES2015 §25.6.3.1 step 2: throw TypeError if IsCallable(executor) is false.
     // An executor is callable iff it's an object with is_callable() or a lightfunc.
     bool exec_callable = executor.is_lightfunc();
     HObject* exec_func = null;

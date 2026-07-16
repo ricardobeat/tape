@@ -20,7 +20,14 @@ import std::math;
 /// function whose activation inherited the constructor's uninitialized (TDZ)
 /// this — walk up through TDZ activations until the derived constructor
 /// itself is initialized (§9.2.2 "initialized" state).
-fn void super_init_this_chain(Vm* vm, Activation* act, TVal* constructed) {
+///
+/// Returns true if the target derived-constructor frame's this_binding was
+/// ALREADY initialized (i.e. this was a second super() call) — per §8.1.1.3.1
+/// BindThisValue step 3, that must throw ReferenceError. The base-constructor
+/// side effects (already executed by the time this runs, per §12.3.5.1 step 4
+/// Construct-before-BindThisValue) still happened; only the this-binding is
+/// left untouched here so the caller can throw.
+fn bool super_init_this_chain(Vm* vm, Activation* act, TVal* constructed) {
     // Intermediate frames with a real this (e.g. an object method that
     // invoked the super-capturing arrow) are skipped, not a stop condition;
     // the walk ends at the first derived-constructor frame — the one whose
@@ -38,13 +45,15 @@ fn void super_init_this_chain(Vm* vm, Activation* act, TVal* constructed) {
             a = &shadow.acts[shadow.count - 1];
             shadow = (ShadowActFrame*)shadow.prev;
         }
-        if (env::is_tdz_sentinel(&a.this_binding)) {
+        bool is_tdz = env::is_tdz_sentinel(&a.this_binding);
+        if (is_tdz) {
             vm.heap.tval_copy_ref(&a.this_binding, constructed);
             a.flags |= ACT_FLAG_THIS_OWNED;
         }
-        if ((a.flags & ACT_FLAG_DERIVED) != 0) break;
+        if ((a.flags & ACT_FLAG_DERIVED) != 0) return !is_tdz;
         a = a.parent;
     }
+    return false;
 }
 
 /// Same boundary-crossing walk for reading: find the nearest enclosing
