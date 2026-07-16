@@ -2222,12 +2222,16 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         if (exist_flags.is_accessor) {
                             // Accessor property — invoke setter
                             TVal setter_fn = hobject::hobject_access_setter(*entry);
-                            // No setter (get-only accessor) — strict-only engine:
-                            // assignment throws TypeError (§10.1.9.3 / OrdinarySet).
+                            // No setter (get-only accessor): §10.1.9.3 / OrdinarySet
+                            // step returns false; PutValue only turns that into a
+                            // TypeError for a strict reference (§13.15.2) — code
+                            // compiled without "use strict" silently no-ops instead.
                             if (!setter_fn.is_object() || setter_fn.get_heapptr() == null) {
-                                HString* nm = (HString*)key;
-                                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot set property '%s' which has only a getter", nm.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return VM_ERROR~;
+                                if (vm.current_func != null && vm.current_func.is_strict()) {
+                                    HString* nm = (HString*)key;
+                                    if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "Cannot set property '%s' which has only a getter", nm.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                        return VM_ERROR~;
+                                    }
                                 }
                                 return (TVal){};
                             }
@@ -2353,12 +2357,16 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         hobject::AccessorResult acc = hobj.find_accessor_proto(key, false);
                         // find_accessor_proto sets found=true for any accessor property on
                         // the chain, even a get-only one (accessor_fn left as undefined in
-                        // that case). ES2024 §10.1.9.2 OrdinarySet step 2: an inherited
-                        // accessor with no [[Set]] must throw TypeError (strict-only engine),
-                        // not fall through to the data-property/create-own-property path.
+                        // that case). ES2024 §10.1.9.2 OrdinarySet step 2 returns false for
+                        // an inherited accessor with no [[Set]]; PutValue only turns that
+                        // into a TypeError for a strict reference (§13.15.2) — code compiled
+                        // without "use strict" silently no-ops instead of creating an own
+                        // property.
                         if (acc.found && (!acc.accessor_fn.is_object() || acc.accessor_fn.get_heapptr() == null)) {
-                            if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot set property which has only a getter", ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                return VM_ERROR~;
+                            if (vm.current_func != null && vm.current_func.is_strict()) {
+                                if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot set property which has only a getter", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return VM_ERROR~;
+                                }
                             }
                             return (TVal){};
                         }

@@ -1343,7 +1343,10 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
         if (ctx.should_throw) return;
         if (matched_hstr == null) matched_hstr = builtin_intern_string(heap, "undefined");
 
-        // Step 14.e: position = ? ToInteger(? Get(result, "index")), clamped [0,|S|].
+        // Step 14.e: position = ? ToInteger(? Get(result, "index")), clamped
+        // [0,|S|] — |S| is the UTF-16 code-unit length, since "index" is a
+        // code-unit index. Convert to a CESU-8 byte offset before using it
+        // to slice `input` (which is the raw CESU-8 byte buffer).
         HString* idx_key = builtin_intern_string(heap, "index");
         TVal? idx_opt = builtins_generic_get(m, idx_key, ctx);
         if (ctx.should_throw) return;
@@ -1352,8 +1355,9 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
         double pos_d = builtin_to_integer_vm(ctx, &idx_raw);
         if (ctx.should_throw) return;
         if (pos_d < 0.0) pos_d = 0.0;
-        if (pos_d > (double)input_len) pos_d = (double)input_len;
-        int out_start = (int)pos_d;
+        double str_charlen_d = (double)s_hstr.char_length();
+        if (pos_d > str_charlen_d) pos_d = str_charlen_d;
+        int out_start = (int)s_hstr.char_offset_to_byte_offset((uint)pos_d);
         int out_end = out_start + (int)matched_hstr.blen;
         if (out_end > input_len) out_end = input_len;
 
