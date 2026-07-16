@@ -224,7 +224,43 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 // Pending Promise: suspend the async function
                 // 1. Allocate GeneratorState for saving execution state
                 void* gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
-                if (gs_raw == null) break;
+                if (gs_raw == null) {
+                    // OOM: cannot suspend.  Reject the async Promise if
+                    // applicable, otherwise propagate as an uncaught error.
+                    TVal oom_reason;
+                    oom_reason.set_undefined();
+                    if ((ds.act.flags & ACT_FLAG_ASYNC) != 0 && ds.act.async_promise != null) {
+                        builtins::promise_settle(ds.act.async_promise, builtins::PROMISE_REJECTED, &oom_reason, vm.heap);
+                        builtins::promise_trigger_reactions(ds.act.async_promise, vm.heap, (void*)vm);
+                        decref_callee_regs(vm, ds.act);
+                        vm.activation_count--;
+                        if (vm.activation_count == 0) {
+                            TVal undef_val;
+                            undef_val.set_undefined();
+                            vm.heap.tval_copy_ref(&vm.return_val, &undef_val);
+                            ds.halt = true;
+                            ds.halt_value = vm.return_val;
+                            return (TVal){};
+                        }
+                        ds.act = &vm.activations[vm.activation_count - 1];
+                        vm.valstack_bottom = ds.act.bottom;
+                        vm.valstack_top = ds.act.caller_valstack_top;
+                        CompiledFunction* caller_f = (CompiledFunction*)ds.act.func;
+                        if (caller_f != vm.current_func) {
+                            vm.current_func = caller_f;
+                            ds.code_base = caller_f.code;
+                            ds.code_count = caller_f.code_count;
+                            ds.code_end = ds.code_base + ds.code_count;
+                            ds.constants = caller_f.constants;
+                            ds.ic_base = (hobject::ICEntry*)caller_f.ic_entries;
+                            ds.var_ic_base = (hobject::VarICEntry*)caller_f.var_ic_entries;
+                            ds.nregs = caller_f.num_regs;
+                        }
+                        ds.curr_pc = ds.act.curr_pc;
+                        ds.regs_base = ds.act.bottom;
+                    }
+                    return vm_uncaught_error(vm, &oom_reason);
+                }
                 GeneratorState* gs = (GeneratorState*)gs_raw;
                 libc::memset(gs_raw, 0, GeneratorState::size);
                 gs.pending_resume_reg = 0xFFFF;
@@ -243,6 +279,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 usz regs_bytes = (usz)gs.num_regs * TVal::size;
                 void* regs_mem = vm.heap.alloc_func(vm.heap.heap_udata, regs_bytes);
                 if (regs_mem == null) {
+                    vm.heap.decref_tval(&gs.this_binding);
                     vm.heap.free_func(vm.heap.heap_udata, gs_raw);
                     return (TVal){};
                 }
@@ -261,6 +298,10 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 // 2. Create resume callback (builtin)
                 HObject*? resume_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
                 if (catch _e1 = resume_raw) {
+                    for (uint i = 0; i < gs.num_regs; i++) {
+                        vm.heap.decref_tval(&gs.saved_regs[i]);
+                    }
+                    vm.heap.decref_tval(&gs.this_binding);
                     vm.heap.free_func(vm.heap.heap_udata, gs.saved_regs);
                     vm.heap.free_func(vm.heap.heap_udata, gs_raw);
                     return (TVal){};
@@ -275,6 +316,16 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 // 3. Create reject callback (builtin)
                 HObject*? reject_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
                 if (catch _e2 = reject_raw) {
+                    // Clear resume_fn's async_state so the GC won't dereference
+                    // the freed GeneratorState via var_env.
+                    resume_fn.flags.is_async_state = false;
+                    (*resume_fn.extra_ptr()).func.var_env = null;
+                    for (uint i = 0; i < gs.num_regs; i++) {
+                        vm.heap.decref_tval(&gs.saved_regs[i]);
+                    }
+                    vm.heap.decref_tval(&gs.this_binding);
+                    vm.heap.free_func(vm.heap.heap_udata, gs.saved_regs);
+                    vm.heap.free_func(vm.heap.heap_udata, gs_raw);
                     return (TVal){};
                 }
                 HObject* reject_fn = reject_raw;
@@ -287,6 +338,18 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 // 4. Create reaction and add to the pending Promise
                 HObject*? rxn_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
                 if (catch _e3 = rxn_raw) {
+                    // Clear both callbacks' async_state so the GC won't
+                    // dereference the freed GeneratorState via var_env.
+                    resume_fn.flags.is_async_state = false;
+                    (*resume_fn.extra_ptr()).func.var_env = null;
+                    reject_fn.flags.is_async_state = false;
+                    (*reject_fn.extra_ptr()).func.var_env = null;
+                    for (uint i = 0; i < gs.num_regs; i++) {
+                        vm.heap.decref_tval(&gs.saved_regs[i]);
+                    }
+                    vm.heap.decref_tval(&gs.this_binding);
+                    vm.heap.free_func(vm.heap.heap_udata, gs.saved_regs);
+                    vm.heap.free_func(vm.heap.heap_udata, gs_raw);
                     return (TVal){};
                 }
                 HObject* rxn = rxn_raw;
@@ -331,7 +394,10 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 ds.needs_restart = true;
                 return (TVal){};
             }
-            // Non-Promise: continue as-is (TODO: thenable support)
+            // Unreachable: the thenable-wrap above ensures await_obj is
+            // always a PROMISE by this point.  The only way to reach here
+            // is via the alloc-failure `break` at line 227, which exits
+            // the case entirely (falling out of the switch).
             return (TVal){};
         }
 

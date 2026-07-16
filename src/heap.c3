@@ -1798,7 +1798,6 @@ fn void Heap.drain_gray(&self) {
                 break;
         }
 
-        // TODO: mark CompiledFunction constants (bytecode.c3 helper)
     }
 }
 
