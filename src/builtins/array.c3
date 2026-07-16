@@ -927,7 +927,7 @@ fn TVal array_get_elem(HObject* obj, uint idx, Heap* heap) {
 fn void array_set_elem(HObject* obj, uint idx, TVal val, Heap* heap, void* vm = null) {
     // Proxy exotic: route through the [[Set]] MOP trap.
     if (obj.flags.exotic_proxyobj) {
-        if (vm == null) return;
+        if (vm == null) unreachable("array_set_elem: proxy target requires vm arg");
         HString* key = heap.int_to_hstring((long)idx);
         if (key == null) return;
         TVal recv; recv.set_object(obj);
@@ -961,7 +961,7 @@ fn void array_set_elem_ulong(HObject* obj, ulong idx, TVal val, Heap* heap, void
     }
     // Proxy exotic: route through the [[Set]] MOP trap.
     if (obj.flags.exotic_proxyobj) {
-        if (vm == null) return;
+        if (vm == null) unreachable("array_set_elem_ulong: proxy target requires vm arg");
         HString* key = heap.int_to_hstring((long)idx);
         if (key == null) return;
         TVal recv; recv.set_object(obj);
@@ -1365,16 +1365,8 @@ fn void builtin_array_proto_pop(BuiltinContext* ctx) {
     }
 
     // Delete the last element: named property for all classes, dense part for ARRAY/ARGUMENTS
-    HString* del_key = ctx.heap.int_to_hstring((long)idx);
-    if (del_key != null) {
-        obj.delete_prop(del_key);
-    }
-    if (idx <= 0xFFFFFFFFUL
-        && (obj.get_class() == hobject::ObjClass.ARRAY
-            || obj.get_class() == hobject::ObjClass.ARGUMENTS)) {
-        TVal undef; undef.set_undefined();
-        obj.set_array_idx((uint)idx, undef);
-    }
+    arr_delete_elem_or_throw(ctx, obj, idx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
 
     // ES2022 §23.1.3.20 step 6: Set(O, "length", idx, true) — throws if non-writable.
     if (!arr_set_length_or_throw(ctx, obj, len_key_pop, idx)) { ctx.result.set_undefined(); return; }
@@ -1509,35 +1501,19 @@ fn void builtin_array_proto_shift(BuiltinContext* ctx) {
         TVal elem;
         if (arr_get_elem_vm(obj, k, ctx.heap, ctx, &elem)) {
             if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-            array_set_elem_ulong(obj, k - 1, elem, ctx.heap);
+            array_set_elem_ulong(obj, k - 1, elem, ctx.heap, ctx.vm);
         } else if (ctx.should_throw) {
             ctx.result.set_undefined(); return;
         } else {
             // fromPresent is false: delete target slot (k-1)
-            HString* del_key = ctx.heap.int_to_hstring((long)(k - 1));
-            if (del_key != null) {
-                obj.delete_prop(del_key);
-            }
-            if (k - 1 <= 0xFFFFFFFFUL
-                && (obj.get_class() == hobject::ObjClass.ARRAY
-                    || obj.get_class() == hobject::ObjClass.ARGUMENTS)) {
-                TVal undef; undef.set_undefined();
-                obj.set_array_idx((uint)(k - 1), undef);
-            }
+            arr_delete_elem_or_throw(ctx, obj, k - 1);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         }
     }
 
     // Step 7: delete last element (len - 1)
-    HString* last_key = ctx.heap.int_to_hstring((long)(len - 1));
-    if (last_key != null) {
-        obj.delete_prop(last_key);
-    }
-    if (len - 1 <= 0xFFFFFFFFUL
-        && (obj.get_class() == hobject::ObjClass.ARRAY
-            || obj.get_class() == hobject::ObjClass.ARGUMENTS)) {
-        TVal undef; undef.set_undefined();
-        obj.set_array_idx((uint)(len - 1), undef);
-    }
+    arr_delete_elem_or_throw(ctx, obj, len - 1);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
 
     // Step 8: Set(O, "length", len - 1, true) — throws if non-writable.
     if (!arr_set_length_or_throw(ctx, obj, len_key_shift, len - 1)) { ctx.result.set_undefined(); return; }
@@ -2691,6 +2667,32 @@ fn void arr_iterator_close_after_throw(BuiltinContext* ctx, TVal iterator) {
 /// constructor whose .prototype defines a length setter. Returns true on
 /// success; on failure sets ctx.should_throw and returns false.
 fn bool arr_set_length_or_throw(BuiltinContext* ctx, HObject* obj, HString* len_key, ulong len_val) {
+    // Proxy exotic: Set("length", val, proxy) via the [[Set]] MOP trap.
+    if (obj.flags.exotic_proxyobj) {
+        if (ctx == null || ctx.vm == null) return false;
+        TVal len_tv2;
+        if (len_val <= (ulong)types::FASTINT_MAX) {
+            len_tv2.set_fastint((long)len_val);
+        } else {
+            len_tv2.set_number((double)len_val);
+        }
+        TVal recv; recv.set_object(obj);
+        bool sres;
+        if (!proxy_mop_set(ctx.vm, ctx.heap, obj, len_key, len_tv2, recv, &sres)) {
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+            }
+            return false;
+        }
+        if (!sres) {
+            arr_throw_type_error(ctx, "Cannot set property length on proxy");
+            return false;
+        }
+        return true;
+    }
+
     // ES2022 §10.4.2.4 ArraySetLength: ToUint32(len_val) must equal len_val.
     if (obj.get_class() == hobject::ObjClass.ARRAY && len_val > 0xFFFFFFFFUL) {
         arr_throw_range_error(ctx, "Invalid array length");
@@ -3362,14 +3364,6 @@ fn void arr_delete_elem_or_throw(BuiltinContext* ctx, HObject* obj, ulong key) {
     }
     HString* del_key = ctx.heap.int_to_hstring((long)key);
     if (del_key != null) obj.delete_prop(del_key);
-    // Also clear the dense-part slot (if any) — named-table deletion alone
-    // does not remove a value cached in the dense array_idx storage.
-    if (key <= 0xFFFFFFFFUL
-        && (obj.get_class() == hobject::ObjClass.ARRAY
-            || obj.get_class() == hobject::ObjClass.ARGUMENTS)) {
-        TVal undef; undef.set_undefined();
-        obj.set_array_idx((uint)key, undef);
-    }
 }
 
 /// Helper: invoke a getter function. Returns the getter result or undefined.
@@ -3700,11 +3694,6 @@ fn bool array_delete_elem_ulong_checked(BuiltinContext* ctx, HObject* obj, ulong
     if (key != null) {
         obj.delete_prop(key);
     }
-    if (idx <= 0xFFFFFFFFUL
-        && (obj.get_class() == hobject::ObjClass.ARRAY || obj.get_class() == hobject::ObjClass.ARGUMENTS)) {
-        TVal undef; undef.set_undefined();
-        obj.set_array_idx((uint)idx, undef);
-    }
     return true;
 }
 
@@ -3716,6 +3705,26 @@ fn bool array_delete_elem_ulong_checked(BuiltinContext* ctx, HObject* obj, ulong
 fn bool array_set_elem_ulong_set(BuiltinContext* ctx, HObject* obj, ulong idx, TVal val) {
     HString* key = ctx.heap.int_to_hstring((long)idx);
     if (key == null) return true;
+
+    // Proxy exotic: route through the [[Set]] MOP trap.
+    if (obj.flags.exotic_proxyobj) {
+        if (ctx == null || ctx.vm == null) return false;
+        TVal recv; recv.set_object(obj);
+        bool sres;
+        if (!proxy_mop_set(ctx.vm, ctx.heap, obj, key, val, recv, &sres)) {
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+            }
+            return false;
+        }
+        if (!sres) {
+            arr_throw_type_error(ctx, "Cannot set property on proxy");
+            return false;
+        }
+        return true;
+    }
 
     // Cache current length for ARRAY class so we can grow it when writing at
     // or beyond the boundary.

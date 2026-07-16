@@ -101,14 +101,6 @@ fn void builtin_set_proto_clear(BuiltinContext* ctx) {
 }
 
 // ============================================================================
-// Set.prototype.keys() — ES6 §23.2.3.8
-// Same as values() — returns a SetIterator with kind=1.
-// ============================================================================
-fn void builtin_set_proto_keys(BuiltinContext* ctx) {
-    create_set_iterator(ctx, 1);
-}
-
-// ============================================================================
 // Set.prototype.data.values() — ES6 §23.2.3.10
 // Returns a SetIterator with kind=0.
 // ============================================================================

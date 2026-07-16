@@ -12,43 +12,6 @@ import duktape::re_bindings;
 // Iterator protocol — built-in @@iterator methods and .next() functions
 // ============================================================================
 
-/// Array.prototype[Symbol.iterator] — creates an array iterator object.
-fn void builtin_array_proto_symbol_iter(BuiltinContext* ctx) {
-    Heap* heap = ctx.heap;
-
-    // Get `this` — ToObject; throws TypeError for null/undefined (ES2022 §22.1.3.30 step 1).
-    TVal this_val = ctx.this_val;
-    HObject* iterable = arr_to_object(this_val, heap);
-    if (iterable == null) {
-        arr_throw_type_error(ctx, "Cannot convert undefined or null to object");
-        return;
-    }
-
-    // Create an ARRAY_ITERATOR object
-    HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.ARRAY_ITERATOR);
-    if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
-    HObject* iter = iter_raw;
-    (*iter.extra_ptr()).iter.target = iterable;
-    (*iter.extra_ptr()).iter.index = 0;
-    iter.prototype = heap.iterator_proto;
-
-    // Add .next method as an own property
-    HString* next_key = builtin_intern_string(heap, "next");
-    if (next_key != null) {
-        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (try fn_obj = fn_raw) {
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY_ITERATOR_NEXT;
-            fn_obj.flags.callable = true;
-            fn_obj.prototype = heap.function_proto;
-            TVal fn_tv;
-            fn_tv.set_object(fn_obj);
-            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
-        }
-    }
-
-    ctx.result.set_object(iter);
-}
-
 /// Helper: create an array iterator with a specific kind.
 /// kind: 0=value (default), 1=key, 2=key+value (entries)
 fn void create_array_iterator(BuiltinContext* ctx, uint kind) {

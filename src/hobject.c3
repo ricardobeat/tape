@@ -1353,6 +1353,21 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
 /// prop_count, and rebuilds this object's shape from scratch (private,
 /// not shared) so the hash table reflects the new layout.
 fn bool HObject.delete_prop(&self, void* key) {
+    // ARRAY / ARGUMENTS exotic: a numeric-string key may also be cached in
+    // the dense array part (mirrors dense_arridx_lookup / get_prop). Clear
+    // it so subsequent numeric-index reads don't see the stale value —
+    // undefined is this codebase's hole sentinel for the dense part.
+    if (key != null && (self.get_class() == hobject::ObjClass.ARRAY || self.get_class() == hobject::ObjClass.ARGUMENTS)) {
+        HString* hkey = (HString*)key;
+        if (hkey.is_arridx()) {
+            uint ai = (uint)hkey.array_index();
+            if (ai < self.array_size) {
+                TVal undef; undef.set_undefined();
+                self.set_array_idx(ai, undef);
+            }
+        }
+    }
+
     int idx = self.find_prop_idx(key);
     if (idx < 0) {
         return false;
@@ -2305,18 +2320,8 @@ fn bool HObject.es_delete_prop(&self, void* key) {
         if (!self.get_prop_flags((uint)idx).configurable) {
             return false;  // Non-configurable → [[Delete]] returns false.
         }
-        // When deleting a named property that is also an array index,
-        // clear the dense array slot too — put_prop syncs both directions.
-        if (key != null && (self.get_class() == hobject::ObjClass.ARRAY || self.get_class() == hobject::ObjClass.ARGUMENTS)) {
-            HString* hkey2 = (HString*)key;
-            if (hkey2.is_arridx()) {
-                uint ai2 = (uint)hkey2.array_index();
-                if (ai2 < self.array_size) {
-                    TVal undef2; undef2.set_undefined();
-                    self.set_array_idx(ai2, undef2);
-                }
-            }
-        }
+        // delete_prop() clears the dense array slot (if any) as part of the
+        // named-table removal.
         return self.delete_prop(key);
     }
     // ARRAY / ARGUMENTS exotic: numeric indices stored in the dense part are

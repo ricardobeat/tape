@@ -1149,12 +1149,6 @@ fn void builtin_function_proto_hasInstance(BuiltinContext* ctx) {
     ctx.result.set_boolean(matched);
 }
 
-/// Function.prototype[@@species] getter — ES6 §19.2.4.7
-/// Returns the this value.
-fn void builtin_function_proto_species_getter(BuiltinContext* ctx) {
-    *ctx.result = ctx.regs[ctx.base_reg - 1];
-}
-
 /// Bound function [[Call]] handler.
 /// When a bound function is called, this handler unwraps the bound data,
 /// prepends bound args to the call args, and re-dispatches.

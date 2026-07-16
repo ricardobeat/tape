@@ -773,13 +773,6 @@ fn void builtin_ta_proto_entries(BuiltinContext* ctx) {
     create_array_iterator(ctx, 2);
 }
 
-/// %TypedArray%.prototype[@@iterator] — alias for values().
-fn void builtin_ta_proto_symbol_iterator(BuiltinContext* ctx) {
-    HObject* obj = ta_validate(ctx);
-    if (obj == null) return;
-    create_array_iterator(ctx, 0);
-}
-
 // ---- set ----
 
 /// %TypedArray%.prototype.set(source [, offset]) — §23.2.3.24.

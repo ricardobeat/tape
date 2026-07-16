@@ -1975,15 +1975,8 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
                         threw_type_error = true;
                         break;
                     }
-                    if (elem_idx >= 0) {
-                        obj.delete_prop(idx_key);
-                    }
-                }
-                // Also clear the dense-array slot if present.
-                if (di < obj.array_size) {
-                    TVal undef_tv; undef_tv.set_undefined();
-                    obj.array_part()[di] = undef_tv;
-                    if (obj.array_used > 0) obj.array_used--;
+                    // delete_prop() also clears the dense-array slot (if any).
+                    obj.delete_prop(idx_key);
                 }
             }
         }
@@ -2511,12 +2504,8 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                                 threw_type_error2 = true;
                                 break;
                             }
-                            if (elem_idx2 >= 0) obj.delete_prop(idx_key2);
-                        }
-                        if (di2 < obj.array_size) {
-                            TVal undef_tv2; undef_tv2.set_undefined();
-                            obj.array_part()[di2] = undef_tv2;
-                            if (obj.array_used > 0) obj.array_used--;
+                            // delete_prop() also clears the dense-array slot (if any).
+                            obj.delete_prop(idx_key2);
                         }
                     }
                 }
