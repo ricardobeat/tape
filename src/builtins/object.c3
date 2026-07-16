@@ -992,6 +992,141 @@ fn void builtin_reflect_deleteProperty(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Reflect.getOwnPropertyDescriptor — ES6 §26.1.6
+// ============================================================================
+/// Returns a property descriptor for the own property, or undefined.
+fn void builtin_reflect_getOwnPropertyDescriptor(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.getOwnPropertyDescriptor called on non-object");
+    if (obj == null) return;
+
+    TVal key_tv; key_tv.set_undefined();
+    if (ctx.argc > 1) key_tv = ctx.regs[ctx.base_reg + 1];
+    HString* key = builtin_to_property_key_vm(ctx, &key_tv);
+    if (ctx.should_throw) return;
+    if (key == null) { ctx.result.set_undefined(); return; }
+
+    ProxyDesc pd;
+    if (!own_property_desc(ctx.vm, ctx.heap, obj, key, &pd)) { proxy_ctx_ok(ctx); return; }
+    if (!pd.found) { ctx.result.set_undefined(); return; }
+    pd.complete();
+    HObject* desc = proxy_desc_to_object(ctx.heap, &pd);
+    if (desc == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_object(desc);
+}
+
+// ============================================================================
+// Reflect.defineProperty — ES6 §26.1.3
+// ============================================================================
+/// Defines a property and returns a boolean indicating success.
+fn void builtin_reflect_defineProperty(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.defineProperty called on non-object");
+    if (obj == null) return;
+
+    TVal key_tv; key_tv.set_undefined();
+    if (ctx.argc > 1) key_tv = ctx.regs[ctx.base_reg + 1];
+    HString* key = builtin_to_property_key_vm(ctx, &key_tv);
+    if (ctx.should_throw) return;
+    if (key == null) { ctx.result.set_boolean(false); return; }
+
+    TVal desc_tv; desc_tv.set_undefined();
+    if (ctx.argc > 2) desc_tv = ctx.regs[ctx.base_reg + 2];
+    if (desc_tv.is_null() || desc_tv.is_undefined() || !desc_tv.is_object()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.defineProperty called with non-object descriptor");
+        return;
+    }
+    HObject* desc_obj = (HObject*)desc_tv.get_heapptr();
+
+    ProxyDesc pd;
+    if (!proxy_object_to_desc(ctx.vm, ctx.heap, desc_obj, &pd)) { proxy_ctx_ok(ctx); return; }
+
+    bool res;
+    if (!object_define_own(ctx.vm, ctx.heap, obj, key, &pd, &res)) { proxy_ctx_ok(ctx); return; }
+    ctx.result.set_boolean(res);
+}
+
+// ============================================================================
+// Reflect.getPrototypeOf — ES6 §26.1.7
+// ============================================================================
+/// Returns the [[Prototype]] of the target object.
+fn void builtin_reflect_getPrototypeOf(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.getPrototypeOf called on non-object");
+    if (obj == null) return;
+
+    TVal proto;
+    if (!object_get_proto(ctx.vm, ctx.heap, obj, &proto)) { proxy_ctx_ok(ctx); return; }
+    *ctx.result = proto;
+}
+
+// ============================================================================
+// Reflect.setPrototypeOf — ES6 §26.1.14
+// ============================================================================
+/// Sets the [[Prototype]] and returns a boolean indicating success.
+fn void builtin_reflect_setPrototypeOf(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.setPrototypeOf called on non-object");
+    if (obj == null) return;
+
+    TVal proto_tv; proto_tv.set_undefined();
+    if (ctx.argc > 1) proto_tv = ctx.regs[ctx.base_reg + 1];
+    if (!proto_tv.is_null() && !proto_tv.is_object()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Reflect.setPrototypeOf called with invalid prototype");
+        return;
+    }
+
+    if (obj.flags.exotic_proxyobj) {
+        bool res;
+        if (!proxy_mop_set_proto(ctx.vm, ctx.heap, obj, proto_tv, &res)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(res);
+        return;
+    }
+    HObject* proto_obj = proto_tv.is_null() ? null : (HObject*)proto_tv.get_heapptr();
+    obj.prototype = proto_obj;
+    ctx.result.set_boolean(true);
+}
+
+// ============================================================================
+// Reflect.isExtensible — ES6 §26.1.9
+// ============================================================================
+/// Returns true if the target object is extensible.
+fn void builtin_reflect_isExtensible(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.isExtensible called on non-object");
+    if (obj == null) return;
+
+    bool ext;
+    if (!object_is_extensible(ctx.vm, ctx.heap, obj, &ext)) { proxy_ctx_ok(ctx); return; }
+    ctx.result.set_boolean(ext);
+}
+
+// ============================================================================
+// Reflect.preventExtensions — ES6 §26.1.12
+// ============================================================================
+/// Makes the target object non-extensible and returns a boolean.
+fn void builtin_reflect_preventExtensions(BuiltinContext* ctx) {
+    TVal target_tv; target_tv.set_undefined();
+    if (ctx.argc > 0) target_tv = ctx.regs[ctx.base_reg];
+    HObject* obj = reflect_require_object(ctx, target_tv, "Reflect.preventExtensions called on non-object");
+    if (obj == null) return;
+
+    if (obj.flags.exotic_proxyobj) {
+        bool res;
+        if (!proxy_mop_prevent_extensions(ctx.vm, ctx.heap, obj, &res)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(res);
+        return;
+    }
+    obj.flags.extensible = false;
+    ctx.result.set_boolean(true);
+}
+
+// ============================================================================
 // Object.getPrototypeOf — ES5 §15.2.3.2
 // ============================================================================
 /// Returns the [[Prototype]] of an object. Throws TypeError if argument is

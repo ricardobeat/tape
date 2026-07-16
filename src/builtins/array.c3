@@ -1590,7 +1590,7 @@ fn void builtin_array_proto_slice(BuiltinContext* ctx) {
     // the final length is the full count even when it ends in holes.
     ulong n = 0;
     for (ulong i = k; i < final_val; i++) {
-        if (arr_has_prop(obj, i, ctx.heap)) {
+        if (arr_has_prop(obj, i, ctx.heap, ctx.vm)) {
             TVal v;
             if (arr_get_elem_vm(obj, i, ctx.heap, ctx, &v)) {
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
@@ -1880,7 +1880,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
     for (ulong i = 0; i < actual_delete_count; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (arr_has_prop(obj, actual_start + i, ctx.heap)) {
+        if (arr_has_prop(obj, actual_start + i, ctx.heap, ctx.vm)) {
             if (arr_get_elem_vm(obj, actual_start + i, ctx.heap, ctx, &elem)) {
                 if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                 if (!array_set_elem_ulong_checked(ctx, result, i, elem)) {
@@ -1900,7 +1900,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
             TVal elem;
             ulong from_idx = actual_start + actual_delete_count + k;
             ulong to_idx = actual_start + item_count + k;
-            if (arr_has_prop(obj, from_idx, ctx.heap)) {
+            if (arr_has_prop(obj, from_idx, ctx.heap, ctx.vm)) {
                 if (arr_get_elem_vm(obj, from_idx, ctx.heap, ctx, &elem)) {
                     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                     if (!array_set_elem_ulong_checked(ctx, obj, to_idx, elem)) {
@@ -1935,7 +1935,7 @@ fn void builtin_array_proto_splice(BuiltinContext* ctx) {
             ulong from = actual_start + actual_delete_count + k - 1;
             ulong to = actual_start + item_count + k - 1;
             TVal elem;
-            if (arr_has_prop(obj, from, ctx.heap)) {
+            if (arr_has_prop(obj, from, ctx.heap, ctx.vm)) {
                 if (arr_get_elem_vm(obj, from, ctx.heap, ctx, &elem)) {
                     if (ctx.should_throw) { ctx.result.set_undefined(); return; }
                     if (!array_set_elem_ulong_checked(ctx, obj, to, elem)) {

@@ -342,8 +342,14 @@ const uint BUILTIN_REFLECT_GET                 = 433;
 const uint BUILTIN_REFLECT_SET                 = 434;
 const uint BUILTIN_REFLECT_HAS                 = 435;
 const uint BUILTIN_REFLECT_DELETE_PROPERTY     = 436;
+const uint BUILTIN_REFLECT_GET_OWN_PROPERTY_DESCRIPTOR = 437;
+const uint BUILTIN_REFLECT_DEFINE_PROPERTY     = 438;
+const uint BUILTIN_REFLECT_GET_PROTOTYPE_OF    = 439;
+const uint BUILTIN_REFLECT_SET_PROTOTYPE_OF    = 440;
+const uint BUILTIN_REFLECT_IS_EXTENSIBLE       = 441;
+const uint BUILTIN_REFLECT_PREVENT_EXTENSIONS  = 442;
 
-const uint BUILTIN_COUNT                       = 437;
+const uint BUILTIN_COUNT                       = 443;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2211,6 +2217,12 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 434: return { "set", 3 };
         case 435: return { "has", 2 };
         case 436: return { "deleteProperty", 2 };
+        case 437: return { "getOwnPropertyDescriptor", 2 };
+        case 438: return { "defineProperty", 3 };
+        case 439: return { "getPrototypeOf", 1 };
+        case 440: return { "setPrototypeOf", 2 };
+        case 441: return { "isExtensible", 1 };
+        case 442: return { "preventExtensions", 1 };
         default: return { "", -1 };
     }
 }
@@ -3084,6 +3096,12 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REFLECT_SET]                 = &builtin_reflect_set,
     [BUILTIN_REFLECT_HAS]                 = &builtin_reflect_has,
     [BUILTIN_REFLECT_DELETE_PROPERTY]     = &builtin_reflect_deleteProperty,
+    [BUILTIN_REFLECT_GET_OWN_PROPERTY_DESCRIPTOR] = &builtin_reflect_getOwnPropertyDescriptor,
+    [BUILTIN_REFLECT_DEFINE_PROPERTY]     = &builtin_reflect_defineProperty,
+    [BUILTIN_REFLECT_GET_PROTOTYPE_OF]    = &builtin_reflect_getPrototypeOf,
+    [BUILTIN_REFLECT_SET_PROTOTYPE_OF]    = &builtin_reflect_setPrototypeOf,
+    [BUILTIN_REFLECT_IS_EXTENSIBLE]       = &builtin_reflect_isExtensible,
+    [BUILTIN_REFLECT_PREVENT_EXTENSIONS]  = &builtin_reflect_preventExtensions,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3305,6 +3323,31 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
         HString* delete_key = builtin_intern_string(heap, "deleteProperty");
         TVal delete_tv; delete_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_DELETE_PROPERTY);
         reflect_raw.put_prop(delete_key, delete_tv, hobject::PROP_FLAGS_WC);
+
+        // Register Reflect descriptor / prototype / extensibility methods
+        HString* gopd_key = builtin_intern_string(heap, "getOwnPropertyDescriptor");
+        TVal gopd_tv; gopd_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_GET_OWN_PROPERTY_DESCRIPTOR);
+        reflect_raw.put_prop(gopd_key, gopd_tv, hobject::PROP_FLAGS_WC);
+
+        HString* define_key = builtin_intern_string(heap, "defineProperty");
+        TVal define_tv; define_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_DEFINE_PROPERTY);
+        reflect_raw.put_prop(define_key, define_tv, hobject::PROP_FLAGS_WC);
+
+        HString* getproto_key = builtin_intern_string(heap, "getPrototypeOf");
+        TVal getproto_tv; getproto_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_GET_PROTOTYPE_OF);
+        reflect_raw.put_prop(getproto_key, getproto_tv, hobject::PROP_FLAGS_WC);
+
+        HString* setproto_key = builtin_intern_string(heap, "setPrototypeOf");
+        TVal setproto_tv; setproto_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_SET_PROTOTYPE_OF);
+        reflect_raw.put_prop(setproto_key, setproto_tv, hobject::PROP_FLAGS_WC);
+
+        HString* isext_key = builtin_intern_string(heap, "isExtensible");
+        TVal isext_tv; isext_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_IS_EXTENSIBLE);
+        reflect_raw.put_prop(isext_key, isext_tv, hobject::PROP_FLAGS_WC);
+
+        HString* prevent_key = builtin_intern_string(heap, "preventExtensions");
+        TVal prevent_tv; prevent_tv.set_lightfunc((void*)(usz)BUILTIN_REFLECT_PREVENT_EXTENSIONS);
+        reflect_raw.put_prop(prevent_key, prevent_tv, hobject::PROP_FLAGS_WC);
     }
 
     // Register Error constructors (Error, TypeError, RangeError, ReferenceError, SyntaxError, EvalError)
