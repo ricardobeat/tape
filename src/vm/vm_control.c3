@@ -199,6 +199,15 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
     (*func_obj.extra_ptr()).func.var_env = var_env;
     (*func_obj.extra_ptr()).func.lex_env = lex_env;
 
+    // Set .length property (ES5 §15.3.5.1: non-writable, non-enumerable, configurable).
+    // Must be defined before .name — SetFunctionLength/SetFunctionName ordering
+    // (e.g. FunctionDeclarationInstantiation / ClassDefinitionEvaluation set
+    // length first) is observable via Object.getOwnPropertyNames insertion order.
+    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+    TVal len_val;
+    len_val.set_fastint((long)template.num_formals);
+    func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_NWC);
+
     // Set .name property (ES6 §14.1.20: non-writable, non-enumerable, configurable)
     // Always set name — anonymous functions get "" per spec
     char[] name_data = template.get_name();
@@ -213,12 +222,6 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
         name_tv.set_string(name_hstr);
         func_obj.put_prop((HString*)vm.heap.strs[heap::BuiltinStr.NAME], name_tv, hobject::PROP_FLAGS_NWC);
     }
-
-    // Set .length property (ES5 §15.3.5.1: non-writable, non-enumerable, configurable)
-    HString* len_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-    TVal len_val;
-    len_val.set_fastint((long)template.num_formals);
-    func_obj.put_prop(len_key, len_val, hobject::PROP_FLAGS_NWC);
 
     // Only constructable functions get a .prototype property.
     // Arrow functions, async functions, and class methods are

@@ -2482,6 +2482,23 @@ fn TVal? Vm.run(Vm* vm) {
                     && !val.is_object()
                     && !val.is_undefined();
 
+            // ES2015 §9.2.2 step 15 / §8.1.1.3.4: an explicit `return;` or
+            // `return undefined;` from a derived constructor falls through to
+            // GetThisBinding() — if super() was never called, this_binding is
+            // still the TDZ sentinel and must throw ReferenceError (same check
+            // RETUNDEF performs for implicit fallthrough returns).
+            if ((callee_act.flags & ACT_FLAG_CONSTRUCT) != 0
+                    && (callee_act.flags & ACT_FLAG_DERIVED) != 0
+                    && val.is_undefined()
+                    && env::is_tdz_sentinel(&callee_act.this_binding)) {
+                if (!vm_throw_error(vm, vm.heap.ref_err_proto,
+                        "Must call super constructor in derived class before returning from derived constructor",
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &vm.throw_value);
+                }
+                continue;
+            }
+
             // Protect the return value: if its only reference lives in a
             // callee register, decref_callee_regs below would free it.
             bool val_pinned = false;
@@ -2564,13 +2581,14 @@ fn TVal? Vm.run(Vm* vm) {
             // After a super-constructor returns (callee was CONSTRUCT, caller is DERIVED),
             // initialize the derived constructor's this_binding with the constructed object.
             // This is §9.2.2's "initialized" state — subsequent LDTHIS will succeed.
+            bool super_already_bound = false;
             if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
                     && vm.activation_count > 0
                     && callee_result != null && callee_result.is_object()) {
                 // The result of super() is in callee_result (already written
                 // above). The immediate caller may be an arrow or a method the
                 // arrow was invoked through — walk up to the derived ctor.
-                super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                super_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
             }
 
             // ES2015 §9.2.2 step 13.c: now in the caller's context, throw TypeError.
@@ -2579,6 +2597,18 @@ fn TVal? Vm.run(Vm* vm) {
             if (derived_return_error) {
                 if (!vm_throw_error(vm, vm.heap.type_err_proto,
                         "Derived constructors may only return object or undefined",
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &vm.throw_value);
+                }
+                continue;
+            }
+            // §8.1.1.3.1 BindThisValue step 3: this_binding was already
+            // initialized by a prior super() call — the superclass constructor
+            // still ran (its side effects already happened above), but binding
+            // the result to `this` a second time is a ReferenceError.
+            if (super_already_bound) {
+                if (!vm_throw_error(vm, vm.heap.ref_err_proto,
+                        "Super constructor may only be called once",
                         ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return vm_uncaught_error(vm, &vm.throw_value);
                 }
@@ -2675,7 +2705,17 @@ fn TVal? Vm.run(Vm* vm) {
             if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
                     && vm.activation_count > 0
                     && callee_result != null && callee_result.is_object()) {
-                super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                bool su_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                // §8.1.1.3.1 BindThisValue step 3: a second super() call — the
+                // superclass constructor already ran (side effects above), but
+                // binding its result to `this` again is a ReferenceError.
+                if (su_already_bound) {
+                    if (!vm_throw_error(vm, vm.heap.ref_err_proto,
+                            "Super constructor may only be called once",
+                            ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                }
             }
             continue;
         }

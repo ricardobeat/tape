@@ -930,19 +930,10 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     len_flags.is_accessor = false;
     bound_obj.put_prop(len_key, len_tv, len_flags);
 
-    // ── Prototype chain for `new` operator ─────────────────────────────
-    if (downstream_constructable && downstream.is_object()) {
-        HObject* tobj = (HObject*)downstream.get_heapptr();
-        if (tobj != null) {
-            TVal? proto_val = tobj.get_prop_proto(builtin_intern_string(ctx.heap, "prototype"));
-            if (try pv = proto_val) {
-                if (pv.is_object() && pv.get_heapptr() != null) {
-                    HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
-                    bound_obj.put_prop(proto_key, pv, hobject::PROP_FLAGS_WEC);
-                }
-            }
-        }
-    }
+    // Bound function exotic objects have no own "prototype" property
+    // (ES2015 §19.2.3.2 BoundFunctionCreate step 4 only sets length/name).
+    // [[Construct]] forwards to the bound target, which resolves its own
+    // .prototype at construct time via the re-dispatch path below.
 
     // Result
     ctx.result.set_object(bound_obj);

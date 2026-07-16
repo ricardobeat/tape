@@ -193,9 +193,15 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         return (TVal){};
                     }
                     // ES5 strict mode: function.caller and function.arguments throw TypeError
+                    // (AddRestrictedFunctionProperties poison pill) — but only when the
+                    // function has no own property of that name (e.g. a class's own
+                    // `static get arguments() {}` shadows the poison pill; ES2015
+                    // ClassDefinitionEvaluation defines own properties before the pill
+                    // would apply, and OrdinaryGet checks own properties first).
                     if (hobj.is_callable() && hobj_cls == hobject::ObjClass.FUNCTION) {
                         HString* key_hstr = (HString*)key;
-                        if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                        if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))
+                            && hobj.find_prop_idx(key) < 0) {
                             if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -567,8 +573,11 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             return (TVal){};
                         }
                         // ES5 strict mode: function.caller and function.arguments throw TypeError
+                        // (AddRestrictedFunctionProperties poison pill) — skipped when the
+                        // function has its own property of that name (see GETPROP above).
                         if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION
-                            && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                            && (key_hstr.equals("caller") || key_hstr.equals("arguments"))
+                            && hobj.find_prop_idx(key) < 0) {
                             if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                                 return VM_ERROR~;
                             }
@@ -1002,6 +1011,19 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         }
                         vm.heap.tval_copy_ref(ra2, &pout2);
                         track_heap_store(ds.act, ra2, dst2_reg);
+                        return (TVal){};
+                    }
+
+                    // ES5 strict mode: function.caller and function.arguments throw
+                    // TypeError (AddRestrictedFunctionProperties poison pill) — unless
+                    // the function has its own property of that name (see GETPROP).
+                    if (hobj2.is_callable() && hobj2.get_class() == hobject::ObjClass.FUNCTION
+                        && key2_hstr != null
+                        && (key2_hstr.equals("caller") || key2_hstr.equals("arguments"))
+                        && hobj2.find_prop_idx((void*)key2_hstr) < 0) {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
+                        }
                         return (TVal){};
                     }
 
@@ -1902,10 +1924,12 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
                 // ES5 strict mode: function.caller = ... and function.arguments = ...
                 // throw TypeError (AddRestrictedFunctionProperties poison pill).
-                // Strict-only engine: always throws.
+                // Strict-only engine: always throws — unless the function has its own
+                // property of that name (e.g. a class's own `static set arguments`).
                 if (hobj.is_callable() && hobj.get_class() == hobject::ObjClass.FUNCTION && rb.is_string()) {
                     HString* key_hstr = (HString*)rb.get_heapptr();
-                    if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))) {
+                    if (key_hstr != null && (key_hstr.equals("caller") || key_hstr.equals("arguments"))
+                        && hobj.find_prop_idx((void*)key_hstr) < 0) {
                         if (!vm_throw_error(vm, vm.heap.type_err_proto, "'caller' and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them", ds.act, &ds.curr_pc, &ds.needs_restart)) {
                             return VM_ERROR~;
                         }
