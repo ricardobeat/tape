@@ -68,17 +68,12 @@ Plan 052 (`plans/052-road-to-zero.md`) remains the strategic roadmap.
 
 ## Priority 3 — Remaining Array.prototype (5 — Reflect-blocked)
 
-- [ ] **A9 — Implement minimum `Reflect` surface**. Blocks 5 Array tests
-  (`flat/proxy-access-count`, `flatMap/proxy-access-count`,
-  `reverse/length-exceeding-integer-limit-with-proxy`,
-  `slice/length-exceeding-integer-limit-proxied-array`,
-  `splice/create-species-length-exceeding-integer-limit`) plus a broader
-  swath of Proxy-trap tests currently skipped or failing. Minimum:
-  `Reflect.get`, `Reflect.has`, `Reflect.set`, `Reflect.deleteProperty`,
-  `Reflect.defineProperty`, `Reflect.getOwnPropertyDescriptor`,
-  `Reflect.construct`. All are thin wrappers around already-existing
-  `js_get`/`js_has_property`/`proxy_mop_*` internals. Runner currently
-  skips `built-ins/Reflect/` as policy — narrow that skip if implementing.
+- [x] **A9 — Implement minimum `Reflect` surface**. Implemented the full ES6
+  Reflect API (`get`, `set`, `has`, `deleteProperty`, `defineProperty`,
+  `getOwnPropertyDescriptor`, `getPrototypeOf`, `setPrototypeOf`,
+  `isExtensible`, `preventExtensions`, `apply`, `construct`, `ownKeys`).
+  The `built-ins/Reflect/` directory is now enabled in phase 3 and the
+  runner skip-list entries have been removed.
 
 ## Priority 3b — Remaining Class semantics (3)
 
