@@ -1041,6 +1041,24 @@ struct CompiledFunction {
     char*           src_ptr;
     /// Length in bytes (no NUL terminator counted).
     uint            src_len;
+
+    // ---- Private class fields (ES2022) -----------------------------------
+
+    /// The hidden `__field_init__` function template compiling every
+    /// instance field initializer in source order (see class.c3), or NULL
+    /// when the class declares no instance fields. A raw pointer (not an
+    /// index into inner_funcs) because __field_init__ is compiled in the
+    /// class-enclosing scope's CompilerContext, a different inner-function
+    /// table than this constructor's own — see vm_calls.c3
+    /// vm_init_private_members for why the VM construct path needs this to
+    /// be self-contained rather than pool-index-relative.
+    CompiledFunction* field_init_func;
+    /// Interned binding name (e.g. "#priv:brand") used to look up the
+    /// class's brand symbol in the constructor's lex_env (classScope) at
+    /// construction time, or NULL when the class has no private members and
+    /// stamps no brand. A raw HString* (not a constant-pool index) for the
+    /// same reason as field_init_func.
+    void*           brand_name_hstr;
 }
 
 // ============================================================================

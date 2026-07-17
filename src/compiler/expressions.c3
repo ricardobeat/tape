@@ -1190,6 +1190,31 @@ fn ushort? CompilerContext.call_expr(&self) {
                 self.call_prop_obj_reg = MAX_REGISTERS;
             }
         } else if (self.match(TokenType.DOT)) {
+            if (self.check(TokenType.HASH_IDENT)) {
+                // f().#name — private field access on a call result.
+                if (self.del_mode) {
+                    return self.fail("Private fields can not be deleted")~;
+                }
+                Token priv_tok2 = self.advance()!;
+                ushort priv_prop_reg = self.emit_private_access(priv_tok2.str_value, callee)!;
+                ushort priv_result = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)priv_result, (uint)callee, (uint)priv_prop_reg);
+
+                if (self.check(TokenType.LPAREN) || self.check(TokenType.OPT_CHAIN) || self.is_next_template()) {
+                    self.free_reg(priv_prop_reg);
+                    self.last_was_member = false;
+                    self.call_prop_obj_reg = callee;
+                } else {
+                    self.last_was_member = true;
+                    self.last_member_is_super = false;
+                    self.last_member_is_private = true;
+                    self.last_member_obj_reg = callee;
+                    self.last_member_prop_reg = priv_prop_reg;
+                    self.call_prop_obj_reg = callee;
+                }
+                callee = priv_result;
+                continue;
+            }
             // Property access: callee.name
             char[] prop_str = self.read_property_name()!;
             uint prop_const = self.add_string_constant(prop_str);
@@ -1214,6 +1239,7 @@ fn ushort? CompilerContext.call_expr(&self) {
             } else {
                 self.last_was_member = true;
                 self.last_member_is_super = false;
+                self.last_member_is_private = false;
                 self.last_member_obj_reg = callee;
                 self.last_member_prop_reg = prop_reg;
                 self.call_prop_obj_reg = callee;
@@ -1300,6 +1326,27 @@ fn ushort? CompilerContext.call_expr(&self) {
                 }
                 self.call_prop_obj_reg = callee;
                 callee = result;
+            } else if (self.check(TokenType.HASH_IDENT)) {
+                // a?.#name — short-circuits above on nullish `a`; on the live
+                // path this is a normal (brand-checked) private field read.
+                // Result is never a referenceable member/target, matching the
+                // a?.prop case below.
+                if (self.del_mode) {
+                    return self.fail("Private fields can not be deleted")~;
+                }
+                Token priv_tok3 = self.advance()!;
+                ushort priv_prop_reg2 = self.emit_private_access(priv_tok3.str_value, callee)!;
+                ushort priv_result2 = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)priv_result2, (uint)callee, (uint)priv_prop_reg2);
+                self.free_reg(priv_prop_reg2);
+
+                self.last_was_member = false;
+                self.last_was_getvar = false;
+                if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                    self.free_reg(self.call_prop_obj_reg);
+                }
+                self.call_prop_obj_reg = callee;
+                callee = priv_result2;
             } else {
                 // a?.prop — result is never a referenceable member
                 char[] prop_str = self.read_property_name()!;
@@ -1977,6 +2024,48 @@ fn ushort? CompilerContext.member_expr(&self) {
             // Member access (obj.prop) — not a direct identifier reference,
             // so clear the direct eval flag.
             self.callee_is_eval = false;
+
+            if (self.check(TokenType.HASH_IDENT)) {
+                // obj.#name — private field access. `delete obj.#x` is a
+                // SyntaxError (early error; not a runtime concern here).
+                if (self.del_mode) {
+                    return self.fail("Private fields can not be deleted")~;
+                }
+                Token priv_tok = self.advance()!;
+                ushort prop_reg = self.emit_private_access(priv_tok.str_value, obj)!;
+
+                ushort result = self.alloc_reg();
+                self.emit_abc(Opcode.GETPROP, (uint)result, (uint)obj, (uint)prop_reg);
+
+                self.last_was_member = true;
+                self.last_member_is_super = false;
+                self.last_member_is_private = true;
+                self.last_member_obj_reg = obj;
+                self.last_member_prop_reg = prop_reg;
+                self.last_member_obj_is_local = obj_is_base_local;
+
+                if (self.lhs_mode) {
+                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                        self.free_reg(self.call_prop_obj_reg);
+                    }
+                    self.call_prop_obj_reg = obj;
+                } else {
+                    TokenType priv_next_tt = self.peek_type();
+                    bool priv_is_postfix = (priv_next_tt == TokenType.INC || priv_next_tt == TokenType.DEC);
+                    if (!priv_is_postfix) {
+                        self.free_reg(prop_reg);
+                    }
+                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                        self.free_reg(self.call_prop_obj_reg);
+                    }
+                    self.call_prop_obj_reg = priv_is_postfix ? MAX_REGISTERS : obj;
+                }
+
+                obj = result;
+                obj_is_base_local = false;
+                continue;
+            }
+
             // Get next token — after '.' it can be an identifier OR any keyword
             // (ES5 §11.2.1: property name must be an IdentifierName)
             Token? prop_name_opt = self.lexer.next_token();
@@ -2007,6 +2096,7 @@ fn ushort? CompilerContext.member_expr(&self) {
             // no-op for registers below the top.
             self.last_was_member = true;
             self.last_member_is_super = false;
+            self.last_member_is_private = false;
             self.last_member_obj_reg = obj;
             self.last_member_prop_reg = prop_reg;
             self.last_member_obj_is_local = obj_is_base_local;
@@ -2273,6 +2363,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // When 'arguments' is referenced inside a non-arrow function body,
                 // set the uses_arguments flag so the VM creates the arguments object.
                 if (str_eq(id_tok.str_value, "arguments") && !self.is_global) {
+                    if (self.forbid_arguments) {
+                        return self.fail("'arguments' is not allowed in class field initializer")~;
+                    }
                     self.uses_arguments = true;
                 }
 
@@ -2592,6 +2685,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     }
                 }
                 if (str_eq(id_tok.str_value, "arguments") && !self.is_global) {
+                    if (self.forbid_arguments) {
+                        return self.fail("'arguments' is not allowed in class field initializer")~;
+                    }
                     self.uses_arguments = true;
                 }
                 uint name_idx = self.add_string_constant(id_tok.str_value);
@@ -2691,6 +2787,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
                     }
                 }
                 if (str_eq(id_tok.str_value, "arguments") && !self.is_global) {
+                    if (self.forbid_arguments) {
+                        return self.fail("'arguments' is not allowed in class field initializer")~;
+                    }
                     self.uses_arguments = true;
                 }
                 uint name_idx = self.add_string_constant(id_tok.str_value);

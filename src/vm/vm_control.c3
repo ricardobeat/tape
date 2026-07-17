@@ -1054,6 +1054,96 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             return (TVal){};
         }
 
+        case Opcode.NEW_PRIV_SYM: {
+            // A=dst register, BC=constant pool index of the description string.
+            // dst := a fresh hidden symbol, unique per execution of this
+            // instruction (per §6.2.4 each class evaluation creates a fresh
+            // PrivateEnvironment).
+            uint bc = insn.get_bc();
+            char[] desc = {};
+            if (bc < vm.current_func.const_count) {
+                TVal desc_tv = ds.constants[bc];
+                if (desc_tv.is_string()) {
+                    HString* desc_hs = (HString*)desc_tv.get_heapptr();
+                    desc = desc_hs.get_data();
+                }
+            }
+            HString* sym = builtins::create_hidden_symbol(vm.heap, desc);
+            if (sym == null) { ra.set_undefined(); return (TVal){}; }
+            ra.set_string(sym);
+            track_heap_store(ds.act, ra, (uint)insn.a);
+            return (TVal){};
+        }
+
+        case Opcode.ADD_BRAND: {
+            // A=object, B=register holding the brand symbol.
+            // obj[brand_sym] = true as a non-writable, non-enumerable,
+            // non-configurable own property, bypassing the extensibility
+            // check (PrivateBrandAdd has no [[Extensible]] gate).
+            if (ra.is_object() && rb.is_string()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                void* key = rb.get_heapptr();
+                if (hobj != null && key != null) {
+                    TVal true_tv;
+                    true_tv.set_boolean(true);
+                    hobj.put_prop(key, true_tv, hobject::PROP_FLAGS_NNC);
+                }
+            }
+            return (TVal){};
+        }
+
+        case Opcode.CHK_BRAND: {
+            // A=object, B=register holding the brand symbol, C=constant pool
+            // index of the private name (0xFF = unknown — not encodable in
+            // 8 bits). Throws TypeError unless A is an object AND has the
+            // brand symbol as an OWN property (own-only: must not walk the
+            // prototype chain, or Object.create(instance).#x would falsely pass).
+            bool ok = false;
+            if (ra.is_object() && rb.is_string()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                void* key = rb.get_heapptr();
+                if (hobj != null && key != null) {
+                    ok = hobj.find_prop_idx(key) >= 0;
+                }
+            }
+            if (!ok) {
+                char[] priv_name = "?";
+                uint c = insn.c;
+                if (c != 0xFF && c < vm.current_func.const_count) {
+                    TVal name_tv = ds.constants[c];
+                    if (name_tv.is_string()) {
+                        HString* name_hs = (HString*)name_tv.get_heapptr();
+                        priv_name = name_hs.get_data();
+                    }
+                }
+                char[160] msg_buf;
+                int len = libc::snprintf(&msg_buf, msg_buf.len,
+                    "Cannot access private member #%.*s from an object whose class did not declare it",
+                    (int)priv_name.len, priv_name.ptr);
+                char[] msg = len > 0 && (usz)len < msg_buf.len ? msg_buf[:(usz)len] : (char[])"Cannot access private member from an object whose class did not declare it";
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, msg,
+                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+            }
+            return (TVal){};
+        }
+
+        case Opcode.INITPROP_PRIV: {
+            // A=object, B=key register (private symbol), C=value register.
+            // Define an own data property {writable:true, enumerable:false,
+            // configurable:false}, bypassing setters, proxies, and the
+            // extensibility check (spec PrivateFieldAdd).
+            if (ra.is_object() && rb.is_string()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                void* key = rb.get_heapptr();
+                if (hobj != null && key != null) {
+                    hobj.put_prop(key, *rc, hobject::PROP_FLAGS_WENC);
+                }
+            }
+            return (TVal){};
+        }
+
         default:
             return (TVal){};
     }

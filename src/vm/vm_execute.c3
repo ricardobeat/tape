@@ -2599,13 +2599,14 @@ fn TVal? Vm.run(Vm* vm) {
             // initialize the derived constructor's this_binding with the constructed object.
             // This is §9.2.2's "initialized" state — subsequent LDTHIS will succeed.
             bool super_already_bound = false;
+            Activation* super_bound_act = null;
             if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
                     && vm.activation_count > 0
                     && callee_result != null && callee_result.is_object()) {
                 // The result of super() is in callee_result (already written
                 // above). The immediate caller may be an arrow or a method the
                 // arrow was invoked through — walk up to the derived ctor.
-                super_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                super_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result, &super_bound_act);
             }
 
             // ES2015 §9.2.2 step 13.c: now in the caller's context, throw TypeError.
@@ -2628,6 +2629,16 @@ fn TVal? Vm.run(Vm* vm) {
                         "Super constructor may only be called once",
                         ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return vm_uncaught_error(vm, &vm.throw_value);
+                }
+                continue;
+            }
+            // Private class fields (ES2022 §9.2.2 step 8 InitializeInstanceElements,
+            // called for DERIVED constructors right after `this` is bound by super()).
+            if (super_bound_act != null) {
+                CompiledFunction* super_bound_target = (CompiledFunction*)super_bound_act.func;
+                if (catch verr = vm_init_private_members(vm, super_bound_act.lex_env, super_bound_act.var_env,
+                        super_bound_target, super_bound_act.this_binding, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
                 }
             }
             continue;
@@ -2720,7 +2731,8 @@ fn TVal? Vm.run(Vm* vm) {
             if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
                     && vm.activation_count > 0
                     && callee_result != null && callee_result.is_object()) {
-                bool su_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result);
+                Activation* su_bound_act = null;
+                bool su_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result, &su_bound_act);
                 // §8.1.1.3.1 BindThisValue step 3: a second super() call — the
                 // superclass constructor already ran (side effects above), but
                 // binding its result to `this` again is a ReferenceError.
@@ -2729,6 +2741,14 @@ fn TVal? Vm.run(Vm* vm) {
                             "Super constructor may only be called once",
                             ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                } else if (su_bound_act != null) {
+                    // Private class fields (ES2022 §9.2.2 step 8) for DERIVED
+                    // constructors, right after `this` is bound by super().
+                    CompiledFunction* su_bound_target = (CompiledFunction*)su_bound_act.func;
+                    if (catch verr2 = vm_init_private_members(vm, su_bound_act.lex_env, su_bound_act.var_env,
+                            su_bound_target, su_bound_act.this_binding, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
                     }
                 }
             }
@@ -3354,6 +3374,10 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.ITER_CLOSE:
         case Opcode.CHKCTOR:
         case Opcode.CHK_PROT:
+        case Opcode.NEW_PRIV_SYM:
+        case Opcode.ADD_BRAND:
+        case Opcode.CHK_BRAND:
+        case Opcode.INITPROP_PRIV:
             if (catch err = dispatch_misc(&ds, op, ra, rb, rc, insn)) { return err~; }
             continue;
 

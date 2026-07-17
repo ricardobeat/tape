@@ -27,7 +27,7 @@ import std::math;
 /// side effects (already executed by the time this runs, per §12.3.5.1 step 4
 /// Construct-before-BindThisValue) still happened; only the this-binding is
 /// left untouched here so the caller can throw.
-fn bool super_init_this_chain(Vm* vm, Activation* act, TVal* constructed) {
+fn bool super_init_this_chain(Vm* vm, Activation* act, TVal* constructed, Activation** bound_act = null) {
     // Intermediate frames with a real this (e.g. an object method that
     // invoked the super-capturing arrow) are skipped, not a stop condition;
     // the walk ends at the first derived-constructor frame — the one whose
@@ -50,10 +50,74 @@ fn bool super_init_this_chain(Vm* vm, Activation* act, TVal* constructed) {
             vm.heap.tval_copy_ref(&a.this_binding, constructed);
             a.flags |= ACT_FLAG_THIS_OWNED;
         }
-        if ((a.flags & ACT_FLAG_DERIVED) != 0) return !is_tdz;
+        if ((a.flags & ACT_FLAG_DERIVED) != 0) {
+            if (bound_act != null) *bound_act = a;
+            return !is_tdz;
+        }
         a = a.parent;
     }
     return false;
+}
+
+/// Private class fields (ES2022): stamp the class brand and run
+/// `__field_init__(this)` at the spec-mandated point — right after `this` is
+/// bound (base constructor: NEW_OBJ; derived constructor: super_init_this_chain).
+/// `ctor_lex_env`/`ctor_var_env` are the CONSTRUCTOR ACTIVATION's own
+/// environments (not the closure template's captured ones) — these are what
+/// GETVAR/PUTLEX inside the constructor body itself resolve private-name
+/// slots through, so using the same chain here keeps brand/field-init
+/// lookups consistent with the constructor's own view of classScope even
+/// when the activation's env was rebased (e.g. named-function-expression
+/// self-binding). `target` is the constructor's CompiledFunction template;
+/// `this_tv` is the bound instance.
+///
+/// Returns `true` on success (including "nothing to do" — no brand, no
+/// fields). Returns `false` when field-init threw and the throw was
+/// propagated via vm_throw_value/VM_ERROR — the caller must abort the
+/// construct path (mirrors every other opcode-handler error convention:
+/// `if (!vm_throw_error(...)) return VM_ERROR~;`).
+fn bool? vm_init_private_members(Vm* vm, EnvRecord* ctor_lex_env, EnvRecord* ctor_var_env,
+                                  CompiledFunction* target, TVal this_tv,
+                                  Activation* act, Instruction** curr_pc, bool* needs_restart) {
+    if (target == null) return true;
+    if (target.brand_name_hstr == null && target.field_init_func == null) {
+        return true;
+    }
+    if (!this_tv.is_object() || this_tv.get_heapptr() == null) return true;
+    HObject* this_hobj = (HObject*)this_tv.get_heapptr();
+
+    if (target.brand_name_hstr != null) {
+        if (try brand_sym = env::env_get(ctor_lex_env, target.brand_name_hstr)) {
+            if (brand_sym.is_string()) {
+                void* brand_key = brand_sym.get_heapptr();
+                if (brand_key != null) {
+                    TVal true_tv;
+                    true_tv.set_boolean(true);
+                    this_hobj.put_prop(brand_key, true_tv, hobject::PROP_FLAGS_NNC);
+                }
+            }
+        }
+    }
+
+    if (target.field_init_func != null) {
+        CompiledFunction* field_init_template = target.field_init_func;
+        HObject* field_init_fn = instantiate_closure(vm, field_init_template,
+            ctor_var_env, ctor_lex_env, null);
+        if (field_init_fn != null) {
+            TVal field_init_tv;
+            field_init_tv.set_object(field_init_fn);
+            vm.heap.call_fn(vm, field_init_tv, null, 0, this_tv);
+            if (vm.heap.has_error) {
+                vm.heap.has_error = false;
+                TVal err_val = vm.heap.error_value;
+                if (!vm_throw_value(vm, err_val, act, curr_pc, needs_restart)) {
+                    return VM_ERROR~;
+                }
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 /// Resolve an arrow's live lexical `this` when its CLOSURE-time captured
@@ -1503,13 +1567,18 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     // object returned by the builtin super constructor (§9.2.2).
                     TVal* sc_result_lf = ds.regs_base + result_reg;
                     bool sc_already_bound = false;
+                    Activation* sc_bound_act_lf = null;
                     if (sc_result_lf.is_object()) {
-                        sc_already_bound = super_init_this_chain(vm, ds.act, sc_result_lf);
+                        sc_already_bound = super_init_this_chain(vm, ds.act, sc_result_lf, &sc_bound_act_lf);
                     }
                     if (sc_already_bound) {
                         // §8.1.1.3.1 BindThisValue step 3: the derived-ctor
                         // frame this walk resolved to was already initialized.
                         vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
+                    } else if (sc_bound_act_lf != null) {
+                        CompiledFunction* sc_target_lf = (CompiledFunction*)sc_bound_act_lf.func;
+                        vm_init_private_members(vm, sc_bound_act_lf.lex_env, sc_bound_act_lf.var_env,
+                            sc_target_lf, sc_bound_act_lf.this_binding, ds.act, &ds.curr_pc, &ds.needs_restart)!;
                     }
                 } else {
                     // §8.1.1.3.1 BindThisValue step 3: this_binding is already
@@ -1595,12 +1664,17 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         if (env::is_tdz_sentinel(&ds.act.this_binding)) {
                             TVal* sc_bound_result = ds.regs_base + result_reg;
                             bool sc_bound_already_bound = false;
+                            Activation* sc_bound_act_bd = null;
                             if (sc_bound_result.is_object()) {
-                                sc_bound_already_bound = super_init_this_chain(vm, ds.act, sc_bound_result);
+                                sc_bound_already_bound = super_init_this_chain(vm, ds.act, sc_bound_result, &sc_bound_act_bd);
                             }
                             if (sc_bound_already_bound) {
                                 // §8.1.1.3.1 BindThisValue step 3: already initialized.
                                 vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
+                            } else if (sc_bound_act_bd != null) {
+                                CompiledFunction* sc_target_bd = (CompiledFunction*)sc_bound_act_bd.func;
+                                vm_init_private_members(vm, sc_bound_act_bd.lex_env, sc_bound_act_bd.var_env,
+                                    sc_target_bd, sc_bound_act_bd.this_binding, ds.act, &ds.curr_pc, &ds.needs_restart)!;
                             }
                         } else {
                             // §8.1.1.3.1 BindThisValue step 3: already initialized.
@@ -1643,12 +1717,17 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 } else if (env::is_tdz_sentinel(&ds.act.this_binding)) {
                     TVal* sc_lf_result = ds.regs_base + result_reg;
                     bool sc_lf_already_bound = false;
+                    Activation* sc_lf_bound_act = null;
                     if (sc_lf_result.is_object()) {
-                        sc_lf_already_bound = super_init_this_chain(vm, ds.act, sc_lf_result);
+                        sc_lf_already_bound = super_init_this_chain(vm, ds.act, sc_lf_result, &sc_lf_bound_act);
                     }
                     if (sc_lf_already_bound) {
                         // §8.1.1.3.1 BindThisValue step 3: already initialized.
                         vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
+                    } else if (sc_lf_bound_act != null) {
+                        CompiledFunction* sc_lf_target = (CompiledFunction*)sc_lf_bound_act.func;
+                        vm_init_private_members(vm, sc_lf_bound_act.lex_env, sc_lf_bound_act.var_env,
+                            sc_lf_target, sc_lf_bound_act.this_binding, ds.act, &ds.curr_pc, &ds.needs_restart)!;
                     }
                 } else {
                     // §8.1.1.3.1 BindThisValue step 3: already initialized.
@@ -1684,12 +1763,17 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         // object returned by the builtin super constructor (§9.2.2).
                         TVal* sc_result_bi = ds.regs_base + result_reg;
                         bool sc_bi_already_bound = false;
+                        Activation* sc_bi_bound_act = null;
                         if (sc_result_bi.is_object()) {
-                            sc_bi_already_bound = super_init_this_chain(vm, ds.act, sc_result_bi);
+                            sc_bi_already_bound = super_init_this_chain(vm, ds.act, sc_result_bi, &sc_bi_bound_act);
                         }
                         if (sc_bi_already_bound) {
                             // §8.1.1.3.1 BindThisValue step 3: already initialized.
                             vm_throw_error(vm, vm.heap.ref_err_proto, "Super constructor may only be called once", ds.act, &ds.curr_pc, &ds.needs_restart);
+                        } else if (sc_bi_bound_act != null) {
+                            CompiledFunction* sc_bi_target = (CompiledFunction*)sc_bi_bound_act.func;
+                            vm_init_private_members(vm, sc_bi_bound_act.lex_env, sc_bi_bound_act.var_env,
+                                sc_bi_target, sc_bi_bound_act.this_binding, ds.act, &ds.curr_pc, &ds.needs_restart)!;
                         }
                     } else {
                         // §8.1.1.3.1 BindThisValue step 3: already initialized.
@@ -2128,6 +2212,15 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     }
                 }
                 this_tval.set_object(new_obj);
+
+                // Private class fields (ES2022 §9.2.2 step 8 InitializeInstanceElements,
+                // called for BASE constructors right after `this` is created).
+                if (!vm_init_private_members(vm, (*hobj.extra_ptr()).func.lex_env, (*hobj.extra_ptr()).func.var_env,
+                        target, this_tval, ds.act, &ds.curr_pc, &ds.needs_restart)!) {
+                    return (TVal){};
+                }
+                ds.regs_base = ds.act.bottom;
+                func_slot = ds.regs_base + callee_reg;
             }
             vm.heap.tval_copy_ref(&ds.regs_base[callee_reg + 1], &this_tval);
             uint frame_start = callee_reg + 2;

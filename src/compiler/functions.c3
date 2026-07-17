@@ -2320,6 +2320,10 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     def_ctx.has_super_binding = self.has_super_binding;
     def_ctx.super_is_home_object = self.super_is_home_object;
     def_ctx.super_is_static_method = self.super_is_static_method;
+    def_ctx.private_names = self.private_names;
+    def_ctx.private_name_count = self.private_name_count;
+    def_ctx.private_scope_start = self.private_scope_start;
+    def_ctx.private_scope_depth = self.private_scope_depth;
 
     // Per ES2015 §13.3.3.7 step 3 (NamedEvaluation), if the default is an
     // anonymous function/arrow/class/generator expression, the resulting
@@ -2428,6 +2432,14 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     inner_ctx.super_is_static_method = self.super_is_static_method;
     // Propagate constructable flag: super() only valid in constructors
     inner_ctx.is_constructable = self.is_constructable;
+    // Propagate private-name declarations (ES2022): a method/getter/setter
+    // body compiled here must resolve `this.#x` against the enclosing class
+    // body's declared names — resolve_private_name reads these fields
+    // directly, so they must be copied (not just in_class_body).
+    inner_ctx.private_names = self.private_names;
+    inner_ctx.private_name_count = self.private_name_count;
+    inner_ctx.private_scope_start = self.private_scope_start;
+    inner_ctx.private_scope_depth = self.private_scope_depth;
 
     // Parse parameter list
     inner_ctx.expect(TokenType.LPAREN)!;
@@ -3050,6 +3062,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     arrow_ctx.super_is_home_object = self.super_is_home_object;
     arrow_ctx.super_is_static_method = self.super_is_static_method;
     arrow_ctx.is_constructable = self.is_constructable;
+    arrow_ctx.private_names = self.private_names;
+    arrow_ctx.private_name_count = self.private_name_count;
+    arrow_ctx.private_scope_start = self.private_scope_start;
+    arrow_ctx.private_scope_depth = self.private_scope_depth;
 
     // Parse parameter list from source (including defaults and rest)
     // Note: lexer is already past '(' when called from parse_arrow_function_reparse
@@ -3503,6 +3519,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     arrow_ctx.super_is_home_object = self.super_is_home_object;
     arrow_ctx.super_is_static_method = self.super_is_static_method;
     arrow_ctx.is_constructable = self.is_constructable;
+    arrow_ctx.private_names = self.private_names;
+    arrow_ctx.private_name_count = self.private_name_count;
+    arrow_ctx.private_scope_start = self.private_scope_start;
+    arrow_ctx.private_scope_depth = self.private_scope_depth;
 
     // Register parameters
     ushort formal_count = param_count;

@@ -302,12 +302,48 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // but in_class_body = true allows super.x / super[x] syntax.
     }
 
+    // Private class members (ES2022): push a fresh private-name scope and
+    // pre-declare every `#name` in the class body (Phase A, plan 054 §2a)
+    // BEFORE any member body compiles, so a field initializer may reference
+    // a `#name` declared later in the same class. The lexer is currently
+    // positioned right before the body's `{`, which prescan_private_names
+    // expects; it fully restores lexer state on return.
+    self.push_private_scope();
+    self.prescan_private_names()!;
+
+    // The class's brand: stamped on every instance (base ctor / super() —
+    // see vm_calls.c3 / vm_execute.c3) whenever the class declares any
+    // private member. Declared right after the pre-scan (if it found any
+    // names) so every PrivateNameEntry in this scope can be backfilled with
+    // brand_name_idx before any member body — which may reference an entry —
+    // compiles.
+    bool has_brand = false;
+    uint brand_name_idx = 0xFFFFFFFF;
+    {
+        uint priv_scope_begin0 = self.private_scope_depth > 0
+            ? self.private_scope_start[self.private_scope_depth - 1] : 0;
+        if (self.private_name_count > priv_scope_begin0) {
+            has_brand = true;
+            brand_name_idx = self.declare_class_brand();
+            for (uint pbi = priv_scope_begin0; pbi < self.private_name_count; pbi++) {
+                self.private_names[pbi].brand_name_idx = brand_name_idx;
+            }
+        }
+    }
+
     // Parse class body
     self.expect(TokenType.LBRACE)!;
 
     // Track methods found in the class body
     ClassMethod[MAX_CLASS_METHODS] methods;
     ushort method_count = 0;
+
+    // Instance field initializers compile into one hidden __field_init__
+    // function, in source order (plan 054 §2d). Created lazily on the first
+    // `#name = expr;` / `#name;` field so classes without fields pay no cost.
+    CompilerContext field_init_ctx;
+    bool has_field_init = false;
+    uint field_count = 0;
 
     // Track constructor
     uint ctor_inner_idx = 0xFFFFFFFF;  // sentinel
@@ -348,6 +384,69 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         uint class_elem_src_start = self.lexer.token_start;
         if (is_static && self.static_elem_src_start != 0xFFFFFFFF) {
             class_elem_src_start = self.static_elem_src_start;
+        }
+
+        // Private instance field: `#name = expr;` or `#name;` (P2 scope —
+        // private methods/accessors/static members are not yet supported).
+        if (self.check(TokenType.HASH_IDENT)) {
+            if (is_static) {
+                return self.fail("static private class members are not supported")~;
+            }
+            Token priv_tok = self.advance()!;
+            char[] priv_name = priv_tok.str_value;
+            PrivateNameEntry* entry = self.resolve_private_name(priv_name)!;
+
+            ushort init_reg;
+            if (self.match(TokenType.ASSIGN)) {
+                if (!has_field_init) {
+                    has_field_init = true;
+                    field_init_ctx.init(self.lexer, self.heap);
+                    field_init_ctx.lexer.set_strict(true);
+                    field_init_ctx.in_class_body = self.in_class_body;
+                    field_init_ctx.has_super_binding = self.has_super_binding;
+                    field_init_ctx.super_is_home_object = self.super_is_home_object;
+                    field_init_ctx.super_is_static_method = false;
+                    field_init_ctx.is_constructable = false;  // super() forbidden in initializers
+                    field_init_ctx.forbid_arguments = true;
+                    field_init_ctx.emit_simple(Opcode.PUSH_LEX);
+                }
+                init_reg = field_init_ctx.assignment_expr()!;
+            } else {
+                if (!has_field_init) {
+                    has_field_init = true;
+                    field_init_ctx.init(self.lexer, self.heap);
+                    field_init_ctx.lexer.set_strict(true);
+                    field_init_ctx.in_class_body = self.in_class_body;
+                    field_init_ctx.has_super_binding = self.has_super_binding;
+                    field_init_ctx.super_is_home_object = self.super_is_home_object;
+                    field_init_ctx.super_is_static_method = false;
+                    field_init_ctx.is_constructable = false;
+                    field_init_ctx.forbid_arguments = true;
+                    field_init_ctx.emit_simple(Opcode.PUSH_LEX);
+                }
+                init_reg = field_init_ctx.alloc_reg();
+                field_init_ctx.emit_abc(Opcode.LDUNDEF, (uint)init_reg, 0, 0);
+            }
+
+            // Optional semicolon between field declarations; a missing one is
+            // ASI (the outer loop's `while` condition/`RBRACE` check and the
+            // next iteration's own token dispatch tolerate the omission the
+            // same way method declarations do).
+            field_init_ctx.match(TokenType.SEMICOLON);
+
+            // this[#name_sym] = init_reg — PrivateFieldAdd bypasses setters,
+            // proxies, and the extensibility check (INITPROP_PRIV).
+            ushort this_reg = field_init_ctx.alloc_reg();
+            field_init_ctx.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)this_reg, 0));
+            ushort key_reg = field_init_ctx.alloc_reg();
+            field_init_ctx.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg, entry.name_idx));
+            field_init_ctx.emit_abc(Opcode.INITPROP_PRIV, (uint)this_reg, (uint)key_reg, (uint)init_reg);
+            field_init_ctx.free_reg(key_reg);
+            field_init_ctx.free_reg(this_reg);
+            field_init_ctx.free_reg(init_reg);
+
+            field_count++;
+            continue;
         }
 
         // ES2015 §14.4: generator-method shorthand — `*m() { yield ... }`.
@@ -631,6 +730,22 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         }
     }
 
+    // Finish __field_init__: implicit `return;` after the last field. The
+    // resulting CompiledFunction is stored as a raw pointer on the
+    // constructor (below) rather than an inner_funcs index — it was compiled
+    // in THIS (class-enclosing) context, a different inner-function table
+    // than the constructor's own, so an index would be meaningless there.
+    CompiledFunction* field_init_func = null;
+    if (has_field_init) {
+        field_init_ctx.emit_simple(Opcode.POP_LEX);
+        field_init_ctx.emit_simple(Opcode.RETUNDEF);
+        field_init_func = field_init_ctx.finish()!;
+        // Track for heap cleanup alongside the constructor/method inner funcs.
+        heap::Heap* fi_hp = (heap::Heap*)self.heap;
+        fi_hp.track_compiled_func((void*)field_init_func);
+    }
+    (void)field_count;
+
     self.expect(TokenType.RBRACE)!;
     // A `}` closing a ClassBody is a statement/declaration boundary only for
     // class declarations. Class expressions (`x = class {}/re/`) sit inside a
@@ -670,6 +785,13 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         if (self.has_super_binding) {
             self.inner_funcs[ctor_inner_idx].flags.is_derived_ctor = true;
         }
+        // Private class fields (ES2022): record where the VM construct path
+        // finds __field_init__ and the brand's lex-scope binding name, as
+        // raw pointers (self-contained — see the CompiledFunction field docs
+        // in bytecode.c3 for why these are not pool indices).
+        self.inner_funcs[ctor_inner_idx].field_init_func = field_init_func;
+        self.inner_funcs[ctor_inner_idx].brand_name_hstr = has_brand
+            ? self.intern_private_binding_name("#priv:brand") : null;
     }
 
     // Retain the entire class source text on the constructor function so that
@@ -719,6 +841,32 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     if (base_reg == MAX_REGISTERS) {
         self.emit_abc(Opcode.LDREG, (uint)super_reg, (uint)proto_reg, 0);
         self.emit_a_bc(Opcode.PUTLEX, (uint)super_reg, super_name_idx);
+    }
+
+    // Private class fields (ES2022): allocate a fresh hidden symbol for every
+    // private name declared in this class body (own scope only — nested
+    // classes push/pop their own), and the class brand if any private member
+    // exists. Each NEW_PRIV_SYM result is stored into its compiler-managed
+    // lexical slot (declared during the pre-scan) so method/field-init
+    // bodies resolve it via GETVAR, exactly like __super__.  Fresh per class
+    // *evaluation* — this is what gives per-evaluation-freshness for free.
+    {
+        uint priv_scope_begin = self.private_scope_depth > 0
+            ? self.private_scope_start[self.private_scope_depth - 1] : 0;
+        for (uint pi = priv_scope_begin; pi < self.private_name_count; pi++) {
+            uint desc_idx = self.add_string_constant(self.private_names[pi].name);
+            ushort sym_reg = self.alloc_reg();
+            self.emit_a_bc(Opcode.NEW_PRIV_SYM, (uint)sym_reg, desc_idx);
+            self.emit_a_bc(Opcode.PUTLEX, (uint)sym_reg, self.private_names[pi].name_idx);
+            self.free_reg(sym_reg);
+        }
+        if (has_brand) {
+            uint brand_desc_idx = self.add_string_constant("brand");
+            ushort brand_reg = self.alloc_reg();
+            self.emit_a_bc(Opcode.NEW_PRIV_SYM, (uint)brand_reg, brand_desc_idx);
+            self.emit_a_bc(Opcode.PUTLEX, (uint)brand_reg, brand_name_idx);
+            self.free_reg(brand_reg);
+        }
     }
 
     // If extends, set proto.__proto__ = Base.prototype (or null for `extends null`).
@@ -821,6 +969,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     self.in_class_body = saved_in_class_body;
     self.has_super_binding = saved_has_super;
     self.super_is_home_object = saved_super_is_home;
+    self.pop_private_scope();
 
     return ctor_reg;
 }

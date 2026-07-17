@@ -257,6 +257,12 @@ struct CompilerContext {
     /// True when the recorded member expression is a `super.x` / `super[x]`
     /// reference — its store form must use PUTPROP_SUPER (receiver = this).
     bool last_member_is_super;
+    /// True when the recorded member expression is `obj.#name` — a CHK_BRAND
+    /// (own-only presence check) must run before the GETPROP/PUTPROP that
+    /// reads/writes last_member_prop_reg (which holds the resolved private
+    /// symbol, not a plain string key). `delete obj.#x` is a SyntaxError and
+    /// never reaches this flag.
+    bool last_member_is_private;
 
     /// Set when the current expression used optional chaining (?.).
     /// Results of optional chains are never valid assignment targets.
@@ -316,6 +322,19 @@ struct CompilerContext {
     /// .prototype — so `super.x` there must resolve against __static_super__
     /// (always via GETPROTO on the constructor) rather than __super__.
     bool super_is_static_method;
+
+    // Private class members (ES2022) — name resolution.  Stack of declared
+    // private names across nested class bodies; private_scope_start marks
+    // where each class body's names begin so pop_private_scope can trim
+    // back to the enclosing class's names on exit.
+    PrivateNameEntry[MAX_PRIVATE_NAMES] private_names;
+    uint private_name_count;
+    uint[MAX_CLASS_NESTING] private_scope_start;
+    uint private_scope_depth;
+    /// True while compiling a private field initializer body (__field_init__).
+    /// `arguments` is a SyntaxError there (ES2022 §15.7.14): the initializer
+    /// is its own function body but has no arguments object of its own.
+    bool forbid_arguments;
 
     // Generator tracking
     bool is_generator;          // true when compiling a generator function (function*)
@@ -1488,4 +1507,45 @@ struct ClassMethod {
     // Sentinel value 0xFFFFFFFE means "key expression compiled inline;
     // computed_key_reg holds the result register."
     uint   computed_key_reg;        // register holding inline key result (0xFFFF = none)
+}
+
+// ============================================================================
+// Private class members (ES2022) — name resolution scope
+// ============================================================================
+
+/// Maximum number of distinct private names (across all nested class
+/// bodies) tracked in a single function/program compile.
+const uint MAX_PRIVATE_NAMES = 64;
+
+/// Maximum nesting depth of class bodies (for private-name scoping).
+const uint MAX_CLASS_NESTING = 16;
+
+/// One declared private name (`#foo`) within a class body. `slot` is the
+/// compiler-managed lexical variable (declared like `__super__`) that holds
+/// the runtime hidden-symbol value for this name, fresh per class evaluation.
+struct PrivateNameEntry {
+    char[] name;         // e.g. "foo" (without '#')
+    uint   name_idx;     // string constant index of the lexical slot's binding name
+    // String constant index of the OWNING class's brand lexical slot
+    // ("#priv:brand"). Own-property presence of the brand — not of this
+    // name's own key — is what CHK_BRAND verifies for `obj.#foo` accesses
+    // (the brand is unforgeable and shared by every field on the class;
+    // the field's own key is only used for the GETPROP/PUTPROP that follows).
+    uint   brand_name_idx;
+    bool   is_method;    // declared as a method/accessor (affects write errors) — P3/P4
+    bool   has_getter;   // P4
+    bool   has_setter;   // P4
+}
+
+/// One instance-field declaration (`#x = expr;` or `#x;`) collected during
+/// class-body parsing, to be compiled into the class's `__field_init__`
+/// function in source order once the whole body has been scanned.
+struct ClassFieldInit {
+    char[] name;          // private name text (without '#')
+    uint   name_idx;      // string constant index of the private slot's binding name
+    // Lexer position of the initializer expression (0xFFFFFFFF = no initializer,
+    // field inits to `undefined`). Re-parsed when compiling __field_init__.
+    uint   init_src_pos;
+    uint   init_src_line;
+    uint   init_src_col;
 }
