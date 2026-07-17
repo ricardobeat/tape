@@ -49,7 +49,13 @@ fn int main(String[] args) {
     lex.skip_hashbang();
     CompiledFunction*? func = compiler::compile(&lex, hp);
     CompiledFunction* f;
-    if (try ff = func) { f = ff; } else { io::eprintfn("Compile failed"); return 1; }
+    if (try ff = func) {
+        f = ff;
+    } else {
+        ZString msg = (ZString)compiler::last_error_msg();
+        io::eprintfn("SyntaxError: %s (line %d, col %d)", msg, compiler::last_error_line(), compiler::last_error_col());
+        return 1;
+    }
 
     TVal? result = v.execute(f);
     if (catch err = result) {
