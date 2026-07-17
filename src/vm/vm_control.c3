@@ -639,7 +639,17 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     TVal* initget_props = hobj.prop_values();
-                    if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable) {
+                    // A private get/set pair (`get #x` + `set #x`) shares one
+                    // hidden-symbol key and is installed non-configurable —
+                    // merging the other half of the pair into the SAME
+                    // accessor cell must take precedence over the
+                    // non-configurable rejection below (which exists to catch
+                    // genuine PUBLIC-key redefinition attempts, e.g. a
+                    // non-configurable `.prototype`).
+                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
+                        // Update existing accessor's getter
+                        hobject::hobject_set_access_getter(initget_props[idx], getter_val, vm.heap);
+                    } else if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable) {
                         // Non-configurable: DefinePropertyOrThrow throws TypeError
                         // (e.g. redefining the class constructor's non-configurable
                         // .prototype via `static get ['prototype']() {}`).
@@ -650,19 +660,24 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                             return VM_ERROR~;
                         }
                         return (TVal){};
-                    } else if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
-                        // Update existing accessor's getter
-                        hobject::hobject_set_access_getter(initget_props[idx], getter_val, vm.heap);
                     } else {
-                        // Create new accessor property with class flags
+                        // Create new accessor property. Private accessors
+                        // (hidden-symbol key — ES2022 §7.3.28) are
+                        // non-configurable; public class accessors remain
+                        // configurable per §14.5.14 step 9.
                         TVal undef;
                         undef.set_undefined();
-                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, getter_val, undef), hobject::PROP_FLAGS_CLASS_ACCESSOR);
+                        HString* key_hs_g = (HString*)key;
+                        hobject::PropFlags initget_flags = key_hs_g.is_hidden()
+                            ? hobject::PROP_FLAGS_PRIVATE_ACCESSOR : hobject::PROP_FLAGS_CLASS_ACCESSOR;
+                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, getter_val, undef), initget_flags);
                     }
                 }
                 // ES2015 §14.5.14 + §9.2.11 SetFunctionName: for computed-key
                 // accessors the compiler leaves the function name empty; set it
                 // to "get <key>" or "get [desc]" (symbol) at class evaluation time.
+                // Private accessors have their "get #name" set at compile time
+                // (non-empty), so this is a no-op for them.
                 if (rc.is_object() && key != null) {
                     class_initaccessor_set_name(vm, (HObject*)rc.get_heapptr(), rb, "get ");
                 }
@@ -690,7 +705,12 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     // Check if property already exists as accessor
                     int idx = hobj.find_prop_idx(key);
                     TVal* initset_props = hobj.prop_values();
-                    if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable) {
+                    // See CLASS_INITGET: a private get/set pair merge must be
+                    // checked before the non-configurable rejection.
+                    if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
+                        // Update existing accessor's setter
+                        hobject::hobject_set_access_setter(initset_props[idx], setter_val, vm.heap);
+                    } else if (idx >= 0 && !hobj.get_prop_flags((uint)idx).configurable) {
                         // Non-configurable: DefinePropertyOrThrow throws TypeError
                         // (e.g. redefining the class constructor's non-configurable
                         // .prototype via `static set ['prototype'](_) {}`).
@@ -701,14 +721,16 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                             return VM_ERROR~;
                         }
                         return (TVal){};
-                    } else if (idx >= 0 && hobj.get_prop_flags((uint)idx).is_accessor) {
-                        // Update existing accessor's setter
-                        hobject::hobject_set_access_setter(initset_props[idx], setter_val, vm.heap);
                     } else {
-                        // Create new accessor property with class flags
+                        // Create new accessor property. Private accessors
+                        // (hidden-symbol key) are non-configurable; public
+                        // class accessors remain configurable (§14.5.14 step 9).
                         TVal undef;
                         undef.set_undefined();
-                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, undef, setter_val), hobject::PROP_FLAGS_CLASS_ACCESSOR);
+                        HString* key_hs_s = (HString*)key;
+                        hobject::PropFlags initset_flags = key_hs_s.is_hidden()
+                            ? hobject::PROP_FLAGS_PRIVATE_ACCESSOR : hobject::PROP_FLAGS_CLASS_ACCESSOR;
+                        hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, undef, setter_val), initset_flags);
                     }
                 }
                 // ES2015 §14.5.14 + §9.2.11 SetFunctionName: for computed-key
@@ -763,7 +785,13 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                             return (TVal){};
                         }
                     } else {
-                        hobj.put_prop(key, *rc, hobject::PROP_FLAGS_CLASS_METHOD);
+                        // Private methods (hidden-symbol key) are non-writable
+                        // per ES2022 §7.3.28 PrivateMethodOrAccessorAdd; public
+                        // class methods remain writable (§14.5.14 step 9).
+                        HString* key_hs_m = (HString*)key;
+                        hobject::PropFlags initprop_flags = key_hs_m.is_hidden()
+                            ? hobject::PROP_FLAGS_NNC : hobject::PROP_FLAGS_CLASS_METHOD;
+                        hobj.put_prop(key, *rc, initprop_flags);
                     }
                 }
                 // ES2015 §9.2.11 SetFunctionName for computed-key methods:

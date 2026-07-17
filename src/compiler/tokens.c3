@@ -180,6 +180,20 @@ fn bool CompilerContext.is_at_end(&self) {
     return self.peek_type() == TokenType.EOF_TOKEN;
 }
 
+/// Peek two tokens ahead: true if the token AFTER the current (unconsumed)
+/// token is `(`. Used to distinguish a private method (`#m(...)`) from a
+/// private field (`#m = expr` / `#m;`) — both start with the same
+/// HASH_IDENT current token. Non-destructive: the current token remains
+/// unconsumed on return.
+fn bool CompilerContext.peek2_is_lparen(&self) {
+    Token? cur_opt = self.advance();
+    if (catch _e = cur_opt) return false;
+    Token cur = cur_opt;
+    TokenType next_tt = self.peek_type();
+    self.pushback(cur);
+    return next_tt == TokenType.LPAREN;
+}
+
 /// Push a token back into the input stream for backtracking.
 /// The next call to advance() will return this token.
 /// Supports up to 4 tokens of lookback.
@@ -315,6 +329,7 @@ fn bool CompilerContext.match_async_method_prefix(&self) {
         || next_tok.type == TokenType.NUMBER
         || next_tok.type == TokenType.LBRACKET
         || next_tok.type == TokenType.STAR
+        || next_tok.type == TokenType.HASH_IDENT
         || lexer::keyword_to_string(next_tok.type).len > 0;
     if (!starts_name) {
         self.pushback(cur);
@@ -420,6 +435,7 @@ fn bool CompilerContext.match_static_modifier(&self) {
         || next_tok.type == TokenType.NUMBER
         || next_tok.type == TokenType.LBRACKET
         || next_tok.type == TokenType.STAR
+        || next_tok.type == TokenType.HASH_IDENT
         || lexer::keyword_to_string(next_tok.type).len > 0;
     if (!starts_name) {
         self.pushback(cur);

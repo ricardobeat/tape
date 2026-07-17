@@ -131,6 +131,21 @@ fn char[] CompilerContext.declare_class_brand(&self) {
     return brand_name;
 }
 
+/// Declare the class's STATIC brand (P5) — a symbol distinct from the
+/// instance brand, stamped on the constructor object rather than instances.
+/// Uses a source-illegal name ("#priv:<id>:sbrand") so it can never be
+/// resolved via `resolve_private_name`.
+fn char[] CompilerContext.declare_class_static_brand(&self) {
+    uint class_id = self.private_scope_depth > 0
+        ? self.private_class_id[self.private_scope_depth - 1] : 0;
+    char[96] sbrand_name_buf;
+    char[] sbrand_name = self.intern_slot_name(
+        format_private_slot_name(sbrand_name_buf[..], class_id, "sbrand"));
+    ushort slot_reg = self.declare_var(sbrand_name, LET);
+    (void)slot_reg;
+    return sbrand_name;
+}
+
 /// Return the interned HString* for a lexical binding name (e.g.
 /// "#priv:brand" or a private name's own "#priv:foo" slot name), as a raw
 /// void* independent of any particular CompilerContext's constant pool.
@@ -169,6 +184,12 @@ fn PrivateNameEntry*? CompilerContext.resolve_private_name(&self, char[] name) {
 /// (i.e. `#name` as a class-element key, not `this.#name` or `obj?.#name`
 /// inside a method body, which never appear at brace-depth 0 relative to
 /// the class body's own `{`).
+///
+/// Also classifies each declaration (P3/P4/P5): whether `static` precedes
+/// it, whether it is immediately followed by `(` (a method), and whether it
+/// is preceded by a bare `get`/`set` modifier token (an accessor). A
+/// `get #x` + `set #x` pair for the same name merges into one entry; any
+/// other re-declaration of the same name is a SyntaxError.
 fn void? CompilerContext.prescan_private_names(&self) {
     uint saved_pos    = self.lexer.pos;
     uint saved_line    = self.lexer.line;
@@ -193,7 +214,14 @@ fn void? CompilerContext.prescan_private_names(&self) {
 
     uint depth = 1;  // inside the class body's own braces
     uint template_depth = 0;  // open template substitution levels
-    TokenType prev_tt = TokenType.EOF_TOKEN;
+
+    // Rolling state for the CURRENT class element, reset at every element
+    // boundary (`;` at depth 1, or depth returning to 1 after a nested
+    // `{`/`(`/`[`, i.e. after a previous element's body/computed-key/params
+    // closed). `elem_saw_static` / `elem_get_set` describe modifiers seen
+    // for THIS element so far; a HASH_IDENT at depth==1 consumes them.
+    bool elem_saw_static = false;
+    char elem_get_set = 0;  // 'g', 's', or 0 (none)
     while (depth > 0) {
         Token? tok_opt = self.lexer.next_token();
         if (catch _e2 = tok_opt) break;
@@ -214,7 +242,37 @@ fn void? CompilerContext.prescan_private_names(&self) {
             depth++;
         } else if (tok.type == TokenType.RBRACE) {
             depth--;
-        } else if (tok.type == TokenType.HASH_IDENT && depth == 1) {
+            if (depth == 1) {
+                // Closed a method body / computed-key function: element done.
+                elem_saw_static = false;
+                elem_get_set = 0;
+            }
+        } else if (depth == 1 && tok.type == TokenType.SEMICOLON) {
+            // Empty class element / end of a field declaration.
+            elem_saw_static = false;
+            elem_get_set = 0;
+        } else if (depth == 1 && tok.type == TokenType.STATIC) {
+            elem_saw_static = true;
+        } else if (depth == 1 && tok.type == TokenType.IDENTIFIER
+                   && (str_eq(tok.str_value, "get") || str_eq(tok.str_value, "set"))) {
+            // Only a modifier if NOT immediately followed by `(` or `=`/`;`
+            // (i.e. `get` / `set` used as an ordinary member name). Peek
+            // without consuming.
+            Token? next_opt = self.lexer.peek();
+            bool is_modifier = true;
+            if (try nxt = next_opt) {
+                if (nxt.type == TokenType.LPAREN || nxt.type == TokenType.ASSIGN
+                    || nxt.type == TokenType.SEMICOLON) {
+                    is_modifier = false;
+                }
+            }
+            if (is_modifier) {
+                elem_get_set = tok.str_value[0];
+            } else {
+                elem_saw_static = false;
+                elem_get_set = 0;
+            }
+        } else if (depth == 1 && tok.type == TokenType.HASH_IDENT) {
             // A HASH_IDENT at the class body's own nesting level is always a
             // declaration (method bodies/computed keys/initializers push
             // depth past 1 via their own `{`/`(`/`[`; `this.#x` accesses
@@ -226,16 +284,76 @@ fn void? CompilerContext.prescan_private_names(&self) {
                 self.restore_prescan_lexer(saved_pos, saved_line, saved_col, saved_cur, saved_look, saved_haslk, saved_push, saved_haspb, saved_slt);
                 return self.fail("#constructor is not allowed as a private name")~;
             }
-            if (catch derr = self.declare_private_name(name)) {
-                self.restore_prescan_lexer(saved_pos, saved_line, saved_col, saved_cur, saved_look, saved_haslk, saved_push, saved_haspb, saved_slt);
-                return self.fail("duplicate private name declaration")~;
+
+            bool is_method_decl = false;
+            Token? follow_opt = self.lexer.peek();
+            if (try flw = follow_opt) {
+                if (flw.type == TokenType.LPAREN) is_method_decl = true;
             }
+
+            bool is_getter = elem_get_set == 'g';
+            bool is_setter = elem_get_set == 's';
+            bool is_static_decl = elem_saw_static;
+            // Reset for the next element — a HASH_IDENT always starts a new
+            // class element (method/accessor bodies/params follow as nested
+            // depth, and field declarations end at the next `;`/RBRACE).
+            elem_saw_static = false;
+            elem_get_set = 0;
+
+            if (is_getter || is_setter) {
+                if (catch derr = self.declare_or_merge_private_accessor(name, is_getter, is_setter, is_static_decl)) {
+                    self.restore_prescan_lexer(saved_pos, saved_line, saved_col, saved_cur, saved_look, saved_haslk, saved_push, saved_haspb, saved_slt);
+                    return self.fail("duplicate private name declaration")~;
+                }
+            } else {
+                if (catch derr = self.declare_private_name(name)) {
+                    self.restore_prescan_lexer(saved_pos, saved_line, saved_col, saved_cur, saved_look, saved_haslk, saved_push, saved_haspb, saved_slt);
+                    return self.fail("duplicate private name declaration")~;
+                }
+                PrivateNameEntry* e = self.resolve_private_name(name)!;
+                e.is_method = is_method_decl;
+                e.is_static = is_static_decl;
+            }
+        } else if (depth == 1 && tok.type != TokenType.STAR
+                   && !(tok.type == TokenType.IDENTIFIER && str_eq(tok.str_value, "async"))) {
+            // Any other token at depth 1 (identifiers, strings, numbers,
+            // `[` computed-key openers not yet at depth 2, etc.) means we
+            // are no longer at the start of an element's modifier prefix —
+            // but `*`/`async` are themselves modifiers, so they don't reset.
+            // Non-modifier tokens (e.g. a plain method/field name) DO belong
+            // to the current element and must not clear static/get/set that
+            // were already seen for it.
         }
-        prev_tt = tok.type;
     }
-    (void)prev_tt;
 
     self.restore_prescan_lexer(saved_pos, saved_line, saved_col, saved_cur, saved_look, saved_haslk, saved_push, saved_haspb, saved_slt);
+}
+
+/// Declare a private accessor name, or merge into an existing entry of the
+/// same name IF the existing entry is itself an accessor (getter XOR
+/// setter) and this declaration supplies the other half (`get #x` + `set
+/// #x`). Any other re-use of the name (field, method, or a second getter/
+/// setter of the same kind) is a duplicate-declaration error.
+fn void? CompilerContext.declare_or_merge_private_accessor(&self, char[] name, bool is_getter, bool is_setter, bool is_static_decl) {
+    uint scope_begin = self.private_scope_depth > 0
+        ? self.private_scope_start[self.private_scope_depth - 1] : 0;
+    for (uint i = scope_begin; i < self.private_name_count; i++) {
+        if (str_eq(self.private_names[i].name, name)) {
+            PrivateNameEntry* e = &self.private_names[i];
+            bool mergeable = e.is_method
+                && ((is_getter && e.has_getter == false && e.has_setter)
+                    || (is_setter && e.has_setter == false && e.has_getter));
+            if (!mergeable) return COMPILE_ERROR~;
+            if (is_getter) e.has_getter = true;
+            if (is_setter) e.has_setter = true;
+            return;
+        }
+    }
+    PrivateNameEntry* entry = self.declare_private_name(name)!;
+    entry.is_method = true;
+    entry.has_getter = is_getter;
+    entry.has_setter = is_setter;
+    entry.is_static = is_static_decl;
 }
 
 /// Restore lexer state captured before prescan_private_names ran.

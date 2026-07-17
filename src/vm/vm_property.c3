@@ -257,6 +257,30 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     }
                     hobject::PropLookupResult res = hobj.get_prop_or_accessor_proto(key, true);
                     if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                        // ES2022 §7.3.25 PrivateGet: a set-only private
+                        // accessor throws TypeError on read (unlike a public
+                        // set-only accessor, which reads as undefined —
+                        // §10.1.9.2 OrdinaryGet returns undefined when no
+                        // [[Get]]). Hidden-symbol keys are exclusively used
+                        // for private members, so this check never fires for
+                        // public accessors.
+                        HString* key_hs_get = (HString*)key;
+                        if ((!res.acc.accessor_fn.is_object() || res.acc.accessor_fn.get_heapptr() == null)
+                            && key_hs_get.is_hidden()) {
+                            char[] priv_desc = key_hs_get.blen > 2 ? key_hs_get.get_data()[2..] : (char[])"?";
+                            char[160] set_only_buf;
+                            int set_only_len = libc::snprintf(&set_only_buf, set_only_buf.len,
+                                "Cannot read private member #%.*s from an object because it only has a setter",
+                                (int)priv_desc.len, priv_desc.ptr);
+                            char[] set_only_msg = set_only_len > 0 && (usz)set_only_len < set_only_buf.len
+                                ? set_only_buf[:(usz)set_only_len]
+                                : (char[])"Cannot read private member from an object because it only has a setter";
+                            if (!vm_throw_error(vm, vm.heap.type_err_proto, set_only_msg,
+                                    ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            return (TVal){};
+                        }
                         TVal obj_val;
                         obj_val.set_object(hobj);
                         if (invoke_getter(vm, &res.acc, &obj_val, (uint)insn.a,

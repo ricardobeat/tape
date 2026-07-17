@@ -311,21 +311,36 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     self.push_private_scope();
     self.prescan_private_names()!;
 
-    // The class's brand: stamped on every instance (base ctor / super() —
+    // The class's brand(s): stamped on every instance (base ctor / super() —
     // see vm_calls.c3 / vm_execute.c3) whenever the class declares any
-    // private member. Declared right after the pre-scan (if it found any
-    // names) so every PrivateNameEntry in this scope can be backfilled with
-    // its brand binding name before any member body — which may reference
-    // an entry — compiles.
+    // INSTANCE private member, and on the constructor object itself (emitted
+    // directly in this class's own bytecode, below) whenever it declares any
+    // STATIC private member (P5) — a distinct symbol, so `C.#m` never
+    // succeeds on an instance and `instance.#staticThing` never succeeds on
+    // the class (test: p5-static-brand-separate-from-instance). Declared
+    // right after the pre-scan (which already classified is_static per
+    // entry) so every PrivateNameEntry can be backfilled with the RIGHT
+    // brand binding name before any member body — which may reference an
+    // entry — compiles.
     bool has_brand = false;
     char[] brand_slot_name = "";
+    bool has_static_brand = false;
+    char[] static_brand_slot_name = "";
     {
         uint priv_scope_begin0 = self.private_scope_depth > 0
             ? self.private_scope_start[self.private_scope_depth - 1] : 0;
-        if (self.private_name_count > priv_scope_begin0) {
-            has_brand = true;
-            brand_slot_name = self.declare_class_brand();
-            for (uint pbi = priv_scope_begin0; pbi < self.private_name_count; pbi++) {
+        for (uint pbi = priv_scope_begin0; pbi < self.private_name_count; pbi++) {
+            if (self.private_names[pbi].is_static) {
+                if (!has_static_brand) {
+                    has_static_brand = true;
+                    static_brand_slot_name = self.declare_class_static_brand();
+                }
+                self.private_names[pbi].brand_slot_name = static_brand_slot_name;
+            } else {
+                if (!has_brand) {
+                    has_brand = true;
+                    brand_slot_name = self.declare_class_brand();
+                }
                 self.private_names[pbi].brand_slot_name = brand_slot_name;
             }
         }
@@ -344,6 +359,14 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     CompilerContext field_init_ctx;
     bool has_field_init = false;
     uint field_count = 0;
+
+    // Static private field initializers (P5) compile into a second hidden
+    // function, __static_init__, run once right after class evaluation with
+    // `this` = the constructor (spec: static field initializers run at
+    // ClassDefinitionEvaluation time, not per-instance).
+    CompilerContext static_init_ctx;
+    bool has_static_init = false;
+    uint static_field_count = 0;
 
     // Track constructor
     uint ctor_inner_idx = 0xFFFFFFFF;  // sentinel
@@ -386,67 +409,59 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             class_elem_src_start = self.static_elem_src_start;
         }
 
-        // Private instance field: `#name = expr;` or `#name;` (P2 scope —
-        // private methods/accessors/static members are not yet supported).
-        if (self.check(TokenType.HASH_IDENT)) {
-            if (is_static) {
-                return self.fail("static private class members are not supported")~;
-            }
+        // Private instance/static field: `#name = expr;` or `#name;` — but
+        // NOT when followed by `(`, which is a private method (P3, handled
+        // below alongside public methods so generator/async modifiers and
+        // compile_inner_function are shared).
+        if (self.check(TokenType.HASH_IDENT) && !self.peek2_is_lparen()) {
             Token priv_tok = self.advance()!;
             char[] priv_name = priv_tok.str_value;
             PrivateNameEntry* entry = self.resolve_private_name(priv_name)!;
 
+            CompilerContext* target_ctx = is_static ? &static_init_ctx : &field_init_ctx;
+            bool* target_has_init = is_static ? &has_static_init : &has_field_init;
+            if (!*target_has_init) {
+                *target_has_init = true;
+                target_ctx.init(self.lexer, self.heap);
+                target_ctx.lexer.set_strict(true);
+                target_ctx.in_class_body = self.in_class_body;
+                target_ctx.has_super_binding = self.has_super_binding;
+                target_ctx.super_is_home_object = self.super_is_home_object;
+                target_ctx.super_is_static_method = is_static;
+                target_ctx.is_constructable = false;  // super() forbidden in initializers
+                target_ctx.forbid_arguments = true;
+                target_ctx.emit_simple(Opcode.PUSH_LEX);
+            }
+
             ushort init_reg;
             if (self.match(TokenType.ASSIGN)) {
-                if (!has_field_init) {
-                    has_field_init = true;
-                    field_init_ctx.init(self.lexer, self.heap);
-                    field_init_ctx.lexer.set_strict(true);
-                    field_init_ctx.in_class_body = self.in_class_body;
-                    field_init_ctx.has_super_binding = self.has_super_binding;
-                    field_init_ctx.super_is_home_object = self.super_is_home_object;
-                    field_init_ctx.super_is_static_method = false;
-                    field_init_ctx.is_constructable = false;  // super() forbidden in initializers
-                    field_init_ctx.forbid_arguments = true;
-                    field_init_ctx.emit_simple(Opcode.PUSH_LEX);
-                }
-                init_reg = field_init_ctx.assignment_expr()!;
+                init_reg = target_ctx.assignment_expr()!;
             } else {
-                if (!has_field_init) {
-                    has_field_init = true;
-                    field_init_ctx.init(self.lexer, self.heap);
-                    field_init_ctx.lexer.set_strict(true);
-                    field_init_ctx.in_class_body = self.in_class_body;
-                    field_init_ctx.has_super_binding = self.has_super_binding;
-                    field_init_ctx.super_is_home_object = self.super_is_home_object;
-                    field_init_ctx.super_is_static_method = false;
-                    field_init_ctx.is_constructable = false;
-                    field_init_ctx.forbid_arguments = true;
-                    field_init_ctx.emit_simple(Opcode.PUSH_LEX);
-                }
-                init_reg = field_init_ctx.alloc_reg();
-                field_init_ctx.emit_abc(Opcode.LDUNDEF, (uint)init_reg, 0, 0);
+                init_reg = target_ctx.alloc_reg();
+                target_ctx.emit_abc(Opcode.LDUNDEF, (uint)init_reg, 0, 0);
             }
 
             // Optional semicolon between field declarations; a missing one is
             // ASI (the outer loop's `while` condition/`RBRACE` check and the
             // next iteration's own token dispatch tolerate the omission the
             // same way method declarations do).
-            field_init_ctx.match(TokenType.SEMICOLON);
+            target_ctx.match(TokenType.SEMICOLON);
 
             // this[#name_sym] = init_reg — PrivateFieldAdd bypasses setters,
-            // proxies, and the extensibility check (INITPROP_PRIV).
-            ushort this_reg = field_init_ctx.alloc_reg();
-            field_init_ctx.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)this_reg, 0));
-            ushort key_reg = field_init_ctx.alloc_reg();
-            field_init_ctx.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg,
-                field_init_ctx.add_string_constant(entry.slot_name)));
-            field_init_ctx.emit_abc(Opcode.INITPROP_PRIV, (uint)this_reg, (uint)key_reg, (uint)init_reg);
-            field_init_ctx.free_reg(key_reg);
-            field_init_ctx.free_reg(this_reg);
-            field_init_ctx.free_reg(init_reg);
+            // proxies, and the extensibility check (INITPROP_PRIV). For a
+            // static field, `this` inside __static_init__ is bound to the
+            // constructor (see __static_init__'s CALL emission below).
+            ushort this_reg = target_ctx.alloc_reg();
+            target_ctx.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)this_reg, 0));
+            ushort key_reg = target_ctx.alloc_reg();
+            target_ctx.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg,
+                target_ctx.add_string_constant(entry.slot_name)));
+            target_ctx.emit_abc(Opcode.INITPROP_PRIV, (uint)this_reg, (uint)key_reg, (uint)init_reg);
+            target_ctx.free_reg(key_reg);
+            target_ctx.free_reg(this_reg);
+            target_ctx.free_reg(init_reg);
 
-            field_count++;
+            if (is_static) { static_field_count++; } else { field_count++; }
             continue;
         }
 
@@ -473,6 +488,11 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         bool is_constructor = false;
         bool is_getter = false;
         bool is_setter = false;
+        // Private method/accessor (P3/P4): `#m()`, `get #x()`, `set #x(v)`.
+        // The key is loaded from the private name's own symbol slot instead
+        // of a string/computed-key constant — see the install loop below.
+        bool is_private_member = false;
+        char[] priv_member_name = {};
 
         // Track when method_name comes from a NUMBER token so the key constant
         // uses the numeric value (converted to string at runtime) instead of the
@@ -522,6 +542,14 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                 }
                 method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
             }
+        } else if (self.check(TokenType.HASH_IDENT)) {
+            // Private method: `#m() {}` (accessors — `get #x`/`set #x` — are
+            // detected below via the `get`/`set` IDENTIFIER branch, which
+            // also accepts a following HASH_IDENT as the accessor's name).
+            Token priv_name_tok = self.advance()!;
+            is_private_member = true;
+            priv_member_name = priv_name_tok.str_value;
+            method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
         } else if (self.check(TokenType.IDENTIFIER)
                || lexer::keyword_to_string(self.peek_type()).len > 0) {
             // IDENTIFIER or any keyword (extends, class, if, return, etc.) as method name
@@ -556,6 +584,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                             computed_key_inner_idx = self.add_inner_func(accessor_key_func);
                         }
                         method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
+                    } else if (self.check(TokenType.HASH_IDENT)) {
+                        // `get #x() {}` / `set #x(v) {}`
+                        Token acc_priv_tok = self.advance()!;
+                        is_private_member = true;
+                        priv_member_name = acc_priv_tok.str_value;
+                        method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
                     } else if (self.check(TokenType.IDENTIFIER) || self.check(TokenType.STRING)
                                || lexer::keyword_to_string(self.peek_type()).len > 0) {
                         method_name = self.advance()!;
@@ -567,7 +601,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                         return COMPILE_ERROR~;
                     }
                     // Early error: getter/setter named "constructor" (non-static only)
-                    if (!is_static && method_name.str_value.len == 11
+                    if (!is_private_member && !is_static && method_name.str_value.len == 11
                         && method_name.str_value[0] == 'c'
                         && method_name.str_value[1] == 'o'
                         && method_name.str_value[2] == 'n'
@@ -673,7 +707,17 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // class, that means the constructor's name is "" (per spec).
         char[128] method_name_buf;
         usz method_name_len = 0;
-        if (is_constructor) {
+        if (is_private_member) {
+            // Private methods/accessors: `.name` is "#foo" / "get #foo" /
+            // "set #foo" (the hash is part of the name — P3/P4).
+            char[] priv_prefix = is_getter ? "get #" : (is_setter ? "set #" : "#");
+            usz priv_name_len = priv_member_name.len;
+            if (priv_prefix.len + priv_name_len < 128) {
+                for (usz i = 0; i < priv_prefix.len; i++) method_name_buf[i] = priv_prefix[i];
+                for (usz i = 0; i < priv_name_len; i++) method_name_buf[priv_prefix.len + i] = priv_member_name[i];
+                method_name_len = priv_prefix.len + priv_name_len;
+            }
+        } else if (is_constructor) {
             // Constructor's name = className (empty for anonymous class)
             if (class_name.len < 128 && !class_has_static_name) {
                 for (usz i = 0; i < class_name.len; i++) method_name_buf[i] = class_name[i];
@@ -724,7 +768,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             methods[method_count].name_num_value = method_name_num_value;
             methods[method_count].computed_key_inner_idx = computed_key_inner_idx;
             methods[method_count].computed_key_reg = (uint)computed_key_reg;
-            if (is_static && method_name.str_value == "name") {
+            methods[method_count].is_private = is_private_member;
+            if (is_private_member) {
+                PrivateNameEntry* pe = self.resolve_private_name(priv_member_name)!;
+                methods[method_count].priv_slot_name = pe.slot_name;
+            }
+            if (is_static && !is_private_member && method_name.str_value == "name") {
                 class_has_static_name = true;
             }
             method_count++;
@@ -745,6 +794,19 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         field_init_func = field_init_ctx.finish()!;
     }
     (void)field_count;
+
+    // Finish __static_init__ (P5): implicit `return;` after the last static
+    // field. Compiled the same way as __field_init__, but invoked directly
+    // by COMPILER-EMITTED bytecode right after class evaluation (below) with
+    // `this` = the constructor — no VM construct-path hook is needed since
+    // static fields initialize once, not per instance.
+    CompiledFunction* static_init_func = null;
+    if (has_static_init) {
+        static_init_ctx.emit_simple(Opcode.POP_LEX);
+        static_init_ctx.emit_simple(Opcode.RETUNDEF);
+        static_init_func = static_init_ctx.finish()!;
+    }
+    (void)static_field_count;
 
     self.expect(TokenType.RBRACE)!;
     // A `}` closing a ClassBody is a statement/declaration boundary only for
@@ -869,6 +931,20 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                 self.add_string_constant(brand_slot_name));
             self.free_reg(brand_reg);
         }
+        if (has_static_brand) {
+            // P5: the static brand is stamped on the CONSTRUCTOR object
+            // itself, right here in the class-evaluation bytecode (ctor_reg
+            // is already live) — unlike the instance brand, which the VM
+            // construct path stamps per-instance, the static brand only
+            // needs to be set once, now.
+            uint sbrand_desc_idx = self.add_string_constant("sbrand");
+            ushort sbrand_reg = self.alloc_reg();
+            self.emit_a_bc(Opcode.NEW_PRIV_SYM, (uint)sbrand_reg, sbrand_desc_idx);
+            self.emit_a_bc(Opcode.PUTLEX, (uint)sbrand_reg,
+                self.add_string_constant(static_brand_slot_name));
+            self.emit_abc(Opcode.ADD_BRAND, (uint)ctor_reg, (uint)sbrand_reg, 0);
+            self.free_reg(sbrand_reg);
+        }
     }
 
     // If extends, set proto.__proto__ = Base.prototype (or null for `extends null`).
@@ -917,9 +993,14 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
 
         ushort target_reg = methods[mi].is_static ? ctor_reg : proto_reg;
 
-        // Get the key register — either from computed key expression or static name
+        // Get the key register — either from computed key expression, static
+        // name, or (P3/P4) the private name's own runtime symbol slot.
         ushort key_reg;
-        if (methods[mi].computed_key_inner_idx == 0xFFFFFFFE) {
+        if (methods[mi].is_private) {
+            key_reg = self.alloc_reg();
+            self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg,
+                self.add_string_constant(methods[mi].priv_slot_name)));
+        } else if (methods[mi].computed_key_inner_idx == 0xFFFFFFFE) {
             // Inline-compiled computed key (yield/await in generator/async).
             // The expression was compiled inline during parsing and the result
             // register was stored in computed_key_reg.
@@ -956,8 +1037,11 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         } else {
             // Both static and instance methods use CLASS_INITPROP
             // (DefinePropertyOrThrow semantics with non-enumerable flags).
-            // Per ES2015 §14.5.14 step 9, all class methods are
-            // {writable:true, enumerable:false, configurable:true}.
+            // Per ES2015 §14.5.14 step 9, public class methods are
+            // {writable:true, enumerable:false, configurable:true}; private
+            // methods (hidden-symbol key) are additionally non-writable and
+            // non-configurable per ES2022 §7.3.28 — the CLASS_INITPROP
+            // handler picks the flag set from key.is_hidden().
             self.emit_abc(Opcode.CLASS_INITPROP, (uint)target_reg, (uint)key_reg, (uint)method_reg);
         }
 
@@ -966,6 +1050,25 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     }
 
     self.free_reg(proto_reg);
+
+    // P5: run __static_init__ once, right after class evaluation, with
+    // `this` = the constructor (spec: static field initializers evaluate
+    // during ClassDefinitionEvaluation, not per-instance — unlike instance
+    // fields, this needs no VM construct-path hook; it's plain
+    // compiler-emitted bytecode using the already-live ctor_reg).
+    if (has_static_init) {
+        // finish() already registers static_init_func with the heap's
+        // teardown tracking — no extra track_compiled_func here (double-free
+        // if called twice, see field_init_func above).
+        uint static_init_idx = self.add_inner_func(static_init_func);
+        ushort si_reg = self.alloc_reg();
+        self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)si_reg, static_init_idx));
+        ushort si_this_slot = self.alloc_reg();  // must be si_reg + 1
+        self.emit_abc(Opcode.LDREG, (uint)si_this_slot, (uint)ctor_reg, 0);
+        self.emit_abc(Opcode.CALL, (uint)si_reg, (uint)si_reg, 0);
+        self.free_reg(si_this_slot);
+        self.free_reg(si_reg);
+    }
 
     // Restore class body state
     self.in_class_body = saved_in_class_body;

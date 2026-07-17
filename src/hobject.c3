@@ -326,6 +326,17 @@ const PropFlags PROP_FLAGS_CLASS_METHOD = {
     .is_accessor  = false
 };
 
+/// Private accessor property: non-enumerable, non-configurable.
+/// Per ES2022 §7.3.28 PrivateMethodOrAccessorAdd (via PrivateElement),
+/// private accessors are not configurable — unlike public class accessors
+/// (PROP_FLAGS_CLASS_ACCESSOR), which remain configurable.
+const PropFlags PROP_FLAGS_PRIVATE_ACCESSOR = {
+    .writable     = false,
+    .enumerable   = false,
+    .configurable = false,
+    .is_accessor  = true
+};
+
 /// Convenience constant: non-writable, non-enumerable, configurable.
 /// Used for .name and .length properties of built-in functions.
 const PropFlags PROP_FLAGS_NWC = {

@@ -1511,6 +1511,11 @@ struct ClassMethod {
     // Sentinel value 0xFFFFFFFE means "key expression compiled inline;
     // computed_key_reg holds the result register."
     uint   computed_key_reg;        // register holding inline key result (0xFFFF = none)
+    // Private method/accessor (P3/P4): the key register is loaded via GETVAR
+    // from this compiler-managed slot binding name (the private symbol),
+    // instead of LDCONST from `name`/`computed_key_*`.
+    bool   is_private;
+    char[] priv_slot_name;          // e.g. "#priv:3:foo" — the name's own symbol
 }
 
 // ============================================================================
@@ -1545,4 +1550,5 @@ struct PrivateNameEntry {
     bool   is_method;    // declared as a method/accessor (affects write errors) — P3/P4
     bool   has_getter;   // P4
     bool   has_setter;   // P4
+    bool   is_static;    // P5: static private member — brand_slot_name is the STATIC brand
 }
