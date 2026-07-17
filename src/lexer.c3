@@ -80,6 +80,7 @@ enum TokenType : ushort {
     LOG_AND_ASSIGN, LOG_OR_ASSIGN, NULLISH_ASSIGN,
     ARROW,
     OPT_CHAIN,
+    HASH_IDENT,   // #name — private identifier (text excludes the '#')
 }
 
 // ============================================================================
@@ -283,6 +284,7 @@ fn char[] token_type_name(TokenType tt) {
         case TokenType.NULLISH_ASSIGN:  return "??=";
         case TokenType.ARROW:           return "=>";
         case TokenType.OPT_CHAIN:       return "?.";
+        case TokenType.HASH_IDENT:      return "#<identifier>";
         default:                        return "<unknown>";
     }
 }
@@ -1539,6 +1541,23 @@ fn Token? Lexer.scan_punctuator(&self) {
         case '~': return make_token(TokenType.BIT_NOT, start_line, start_col);
         case '?': return make_token(TokenType.QUESTION, start_line, start_col);
         case ':': return make_token(TokenType.COLON, start_line, start_col);
+        case '#':
+            // Private identifier: #name. The '#' is already consumed; scan
+            // the identifier body and return HASH_IDENT with the text
+            // *excluding* the '#'. Bypasses keyword lookup by construction.
+            if (self.at_end()) return LEX_ERROR~;
+            uint cp2 = self.peek_codepoint();
+            if (!is_identifier_start(cp2)) return LEX_ERROR~;
+            uint name_start = self.pos;
+            self.read_codepoint();
+            while (!self.at_end()) {
+                uint cp3 = self.peek_codepoint();
+                if (!is_identifier_part(cp3)) break;
+                self.read_codepoint();
+            }
+            Token tok = make_token(TokenType.HASH_IDENT, start_line, start_col);
+            tok.str_value = self.source[name_start..self.pos-1];
+            return tok;
         default:  return LEX_ERROR~;
     }
 }

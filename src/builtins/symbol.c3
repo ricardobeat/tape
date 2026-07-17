@@ -42,6 +42,34 @@ fn HString* create_symbol_string(Heap* heap, char[] desc) {
     return null;
 }
 
+/// Create a new hidden Symbol HString with 0xFF 0xFF prefix.
+/// Hidden symbols back private class members: hstring_alloc's prefix
+/// detection sets is_symbol + is_hidden automatically, and enumeration
+/// paths filter them out. NOT inserted into the string table (unique).
+fn HString* create_hidden_symbol(Heap* heap, char[] desc) {
+    uint counter = g_symbol_counter;
+    g_symbol_counter++;
+
+    char[256] buf;
+    buf[0] = (char)0xFF;
+    buf[1] = (char)0xFF;
+    int pos = 2;
+
+    for (int i = 0; i < desc.len && pos < 255; i++) {
+        buf[pos] = desc[i];
+        pos++;
+    }
+
+    uint hash = heap.hash_seed ^ counter;  // Simple unique hash
+
+    HString*? sym = hstring::hstring_alloc(heap, buf[:(uint)pos], hash);
+    if (try s = sym) {
+        // Don't intern in string table — hidden symbols are unique
+        return s;
+    }
+    return null;
+}
+
 /// Check if a TVal is a Symbol (STRING tag with is_symbol flag)
 fn bool is_symbol_val(TVal val) {
     if (!val.is_string()) return false;

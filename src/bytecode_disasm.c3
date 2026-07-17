@@ -242,6 +242,10 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.ITER_CLOSE.ordinal]  = "ITER_CLOSE",
     [Opcode.CHKCTOR.ordinal]     = "CHKCTOR",
     [Opcode.CHK_PROT.ordinal]    = "CHK_PROT",
+    [Opcode.NEW_PRIV_SYM.ordinal] = "NEW_PRIV_SYM",
+    [Opcode.ADD_BRAND.ordinal]   = "ADD_BRAND",
+    [Opcode.CHK_BRAND.ordinal]   = "CHK_BRAND",
+    [Opcode.INITPROP_PRIV.ordinal] = "INITPROP_PRIV",
     [Opcode.LAST_OP.ordinal]     = "LAST_OP",
 };
 

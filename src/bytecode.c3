@@ -608,6 +608,34 @@ enum Opcode : char {
     /// step 5.g.ii-iv).  A-only format: A=value_reg, B=0, C=0.
     CHK_PROT,
 
+    // ---- Private class members (ES2022) ------------------------------------
+
+    /// Allocate a fresh hidden symbol at class-evaluation time.
+    /// A=dst register, BC=constant pool index of the description string
+    /// (debugging only). dst := new hidden symbol, unique per execution of
+    /// this instruction (per §6.2.4 each class evaluation creates a fresh
+    /// PrivateEnvironment).
+    NEW_PRIV_SYM,
+
+    /// Stamp brand: A=object, B=register holding the brand symbol.
+    /// obj[brand_sym] = true as a non-enumerable own property, bypassing
+    /// the extensibility check (PrivateFieldAdd/PrivateBrandAdd have no
+    /// [[Extensible]] gate). ABC format.
+    ADD_BRAND,
+
+    /// Check brand: A=object, B=register holding the brand symbol,
+    /// C=constant pool index of the private name (for the error message).
+    /// Throws TypeError unless obj has brand_sym as an OWN property.
+    /// Own-only: must NOT walk the prototype chain, otherwise
+    /// Object.create(instance).#x would falsely pass. ABC format.
+    CHK_BRAND,
+
+    /// Define an own data property bypassing setters AND the extensibility
+    /// check (CreateDataProperty semantics without the [[Extensible]] gate,
+    /// for private field installation per PrivateFieldAdd).
+    /// ABC format: A=object_reg, B=key_reg, C=value_reg.
+    INITPROP_PRIV,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -667,6 +695,10 @@ case PUTLEX:     return A_BC;
         case SUPER_CALL: return ABC;
         case SUPER_CALL_S: return ABC;
         case NEWTARGET:  return ABC;
+        case NEW_PRIV_SYM: return A_BC;
+        case ADD_BRAND:  return ABC;
+        case CHK_BRAND:  return ABC;
+        case INITPROP_PRIV: return ABC;
 
         case LOAD_RESUME:  return ABC;
         case YIELD:      return ABC;

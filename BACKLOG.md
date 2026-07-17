@@ -82,7 +82,7 @@ Plan 052 (`plans/052-road-to-zero.md`) remains the strategic roadmap.
   `subclass/private-class-field-on-nonextensible-return-override`. Root
   cause: `#x` syntax entirely unimplemented at lexer level (blocked by
   `unexpected character '#'`). 4272 test262 tests reference this feature —
-  much bigger than the 2 named. Own workstream.
+  much bigger than the 2 named. Own workstream: `plans/054-private-class-fields.md`.
 
 - [ ] **C8 — Arrow-function lexical `this` capture bug** (1 test named,
   broader impact). `subclass/class-definition-null-proto-this` failure
