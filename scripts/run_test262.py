@@ -149,10 +149,13 @@ UNSUPPORTED_PATTERN = re.compile(
     # iteration family (async function*, for-await-of). Tests that exercise
     # only async-iteration were producing ~1,249 unintended CEs.
     r"async-iteration|Symbol\.asyncIterator|"
-    # Class features not yet implemented
-    r"class-methods-private|class-static-methods-private|"
-    r"class-fields-private|class-fields-public|"
-    r"class-static-fields-private|class-static-fields-public|"
+    # Class features not yet implemented (private fields/methods/accessors/
+    # static private landed in plan 054 P2-P5; still missing: the `#x in obj`
+    # operator (P6), public fields (P7), and static blocks — note
+    # class-fields-private-in must stay listed explicitly now that the
+    # broader class-fields-private pattern is gone)
+    r"class-fields-private-in|class-fields-public|"
+    r"class-static-fields-public|"
     r"class-static-block|"
     # Other unimplemented ES features
     r"object-rest|logical-assignment|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
