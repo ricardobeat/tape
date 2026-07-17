@@ -1,8 +1,10 @@
 # Duktape C3 — Backlog
 
-Baseline: **session 284, `out/main_after_regexp.tsv` (2026-07-16)** —
-20,273 PASS / 876 NONPASS across 21,149 executable test262 tests =
-**95.86% pass, 876 to close**.
+Baseline: **session 286, `out/s286.tsv` (2026-07-17)** —
+32,222 PASS / 1,155 NONPASS (incl. 42 unexpected CE) across 33,377
+executable test262 tests = **96.5% pass** (variant-counted; the private
+class member suites — ~1,372 tests — are enabled as of plan 054 P2-P5 and
+pass at ~89%).
 
 Regenerate with:
 ```
@@ -77,12 +79,22 @@ Plan 052 (`plans/052-road-to-zero.md`) remains the strategic roadmap.
 
 ## Priority 3b — Remaining Class semantics (3)
 
-- [ ] **C7 — Private class fields** (2 tests):
-  `elements/private-class-field-on-nonextensible-objects`,
-  `subclass/private-class-field-on-nonextensible-return-override`. Root
-  cause: `#x` syntax entirely unimplemented at lexer level (blocked by
-  `unexpected character '#'`). 4272 test262 tests reference this feature —
-  much bigger than the 2 named. Own workstream: `plans/054-private-class-fields.md`.
+- [x] **C7 — Private class members P2-P5 landed** (plan 054, session 286):
+  fields, methods, accessors, static private all work; suites enabled in
+  the runner. Remaining follow-ups from the s286 run (~106 fails + 40 CE):
+  - [ ] **C7a — Unicode escapes in private names** (~40 CE): `#℘`,
+    ZWJ/ZWNJ, non-ASCII `#names` — lexer HASH_IDENT scanner only takes
+    ASCII identifier chars (`language/identifiers/*class-escaped*`,
+    `*/private-accessor-name/*escape-sequence*`).
+  - [ ] **C7b — Private names visible to direct eval** (~9):
+    `*visible-to-direct-eval` — eval bodies compile fresh contexts without
+    the enclosing private_names scope.
+  - [ ] **C7c — double-initialisation TypeError** (4): stamping the brand
+    on an object that already has it (return-override trick) must throw.
+  - [ ] **C7d — misc**: proxy interaction (3), PUTPROP evaluation order (2),
+    getter/setter own-property asserts (2), newtarget-in-eval errors (3).
+  - [ ] **P6 `#x in obj`** and **P7 public fields** still pending
+    (plan 054); their suites remain skipped.
 
 - [ ] **C8 — Arrow-function lexical `this` capture bug** (1 test named,
   broader impact). `subclass/class-definition-null-proto-this` failure
