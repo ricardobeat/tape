@@ -708,6 +708,7 @@ fn void builtin_object_getOwnPropertySymbols(BuiltinContext* ctx) {
         if (obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_symbol()) {
+                if (key.is_hidden()) continue;
                 TVal key_tv;
                 key_tv.set_string(key);
                 array_set_elem(arr, idx, key_tv, ctx.heap);
@@ -864,6 +865,7 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
         if (obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_symbol()) {
+                if (key.is_hidden()) continue;
                 key_buf[key_count++] = key;
             }
         }
@@ -3966,6 +3968,7 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
                 HString* key = (HString*)src_obj.prop_key_at(i);
                 bool is_sym = key.flags.is_symbol;
                 if ((pass == 0 && is_sym) || (pass == 1 && !is_sym)) continue;
+                if (is_sym && key.is_hidden()) continue;
                 // ES2015 §19.1.2.2 step 5.c: propValue = ? Get(from, nextKey).
                 // Use [[Get]] so source getters are invoked (the raw prop slot
                 // holds the GetterSetter object, not the getter's return value).

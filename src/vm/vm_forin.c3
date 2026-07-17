@@ -213,6 +213,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             if (cur.get_prop_flags(i).enumerable && cur.prop_key_at(i) != null) {
                 HString* k = (HString*)cur.prop_key_at(i);
                 if (!k.is_symbol()) continue;
+                if (k.is_hidden()) continue;
                 if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
                     h.free_func(h.heap_udata, keys);
                     h.free_func(h.heap_udata, seen);

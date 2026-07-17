@@ -879,7 +879,10 @@ fn uint ordinary_own_keys(Heap* heap, HObject* obj, HString*** buf_out) {
     // Symbols (insertion order)
     for (uint i = 0; i < obj.prop_count && n < cap; i++) {
         HString* k = (HString*)obj.prop_key_at(i);
-        if (k != null && k.is_symbol()) buf[n++] = k;
+        if (k != null && k.is_symbol()) {
+            if (k.is_hidden()) continue;
+            buf[n++] = k;
+        }
     }
     *buf_out = buf;
     return n;
@@ -1072,6 +1075,7 @@ fn bool proxy_filtered_own_keys(void* vm, Heap* heap, HObject* proxy, int mode,
         bool is_sym = k.is_symbol();
         if (mode == 2) {
             if (!is_sym) continue;
+            if (k.is_hidden()) continue;
         } else {
             if (is_sym) continue;
         }
