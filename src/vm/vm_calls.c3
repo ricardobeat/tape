@@ -1821,6 +1821,24 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 sc_this_tval.set_object(sc_new_obj);
                 // Place in callee_reg+1 (the this-slot for SUPER_CALL's base constructor).
                 vm.heap.tval_copy_ref(&ds.regs_base[callee_reg + 1], &sc_this_tval);
+
+                // Private class fields (ES2022 §9.2.2 step 8
+                // InitializeInstanceElements): a BASE superclass invoked via
+                // super() runs its OWN brand stamp + field init right after
+                // creating `this`, exactly like the direct-`new` path in
+                // NEW_OBJ. The RET-side hook only covers the DERIVED caller's
+                // members after `this` binds — without this call, a base
+                // class's private members never initialize on super()
+                // construction (e.g. `class D extends B {}` with B's fields).
+                if (!vm_init_private_members(vm,
+                        (*super_hobj.extra_ptr()).func.lex_env,
+                        (*super_hobj.extra_ptr()).func.var_env,
+                        super_target, sc_this_tval, ds.act, &ds.curr_pc, &ds.needs_restart)!) {
+                    return (TVal){};
+                }
+                // Field init re-enters the VM; refresh the frame base in case
+                // the value stack was reallocated.
+                ds.regs_base = ds.act.bottom;
             }
 
             // Set up activation frame for superclass constructor
