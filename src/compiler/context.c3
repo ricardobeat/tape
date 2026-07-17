@@ -330,6 +330,10 @@ struct CompilerContext {
     PrivateNameEntry[MAX_PRIVATE_NAMES] private_names;
     uint private_name_count;
     uint[MAX_CLASS_NESTING] private_scope_start;
+    /// Compile-time class id per open class body (parallel to
+    /// private_scope_start) — makes each class's slot binding names unique
+    /// ("#priv:<id>:foo") so sibling/nested classes never share bindings.
+    uint[MAX_CLASS_NESTING] private_class_id;
     uint private_scope_depth;
     /// True while compiling a private field initializer body (__field_init__).
     /// `arguments` is a SyntaxError there (ES2022 §15.7.14): the initializer
@@ -1525,27 +1529,20 @@ const uint MAX_CLASS_NESTING = 16;
 /// the runtime hidden-symbol value for this name, fresh per class evaluation.
 struct PrivateNameEntry {
     char[] name;         // e.g. "foo" (without '#')
-    uint   name_idx;     // string constant index of the lexical slot's binding name
-    // String constant index of the OWNING class's brand lexical slot
-    // ("#priv:brand"). Own-property presence of the brand — not of this
-    // name's own key — is what CHK_BRAND verifies for `obj.#foo` accesses
-    // (the brand is unforgeable and shared by every field on the class;
-    // the field's own key is only used for the GETPROP/PUTPROP that follows).
-    uint   brand_name_idx;
+    // Lexical binding name of this name's symbol slot, e.g. "#priv:3:foo"
+    // (unique per class body via a compile-time class id, so sibling and
+    // nested classes never collide). Points at interned HString data —
+    // stable storage — so any CompilerContext (method body, __field_init__)
+    // can add it to its OWN constant pool: constant indices are context-
+    // relative and must never cross function boundaries.
+    char[] slot_name;
+    // Binding name of the OWNING class's brand slot ("#priv:<id>:brand").
+    // Own-property presence of the brand — not of this name's own key — is
+    // what CHK_BRAND verifies for `obj.#foo` accesses (the brand is
+    // unforgeable and shared by every field on the class; the field's own
+    // key is only used for the GETPROP/PUTPROP that follows).
+    char[] brand_slot_name;
     bool   is_method;    // declared as a method/accessor (affects write errors) — P3/P4
     bool   has_getter;   // P4
     bool   has_setter;   // P4
-}
-
-/// One instance-field declaration (`#x = expr;` or `#x;`) collected during
-/// class-body parsing, to be compiled into the class's `__field_init__`
-/// function in source order once the whole body has been scanned.
-struct ClassFieldInit {
-    char[] name;          // private name text (without '#')
-    uint   name_idx;      // string constant index of the private slot's binding name
-    // Lexer position of the initializer expression (0xFFFFFFFF = no initializer,
-    // field inits to `undefined`). Re-parsed when compiling __field_init__.
-    uint   init_src_pos;
-    uint   init_src_line;
-    uint   init_src_col;
 }

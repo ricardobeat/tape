@@ -20,10 +20,45 @@ import std::io;
 // an undeclared name is a compile-time SyntaxError.
 // ============================================================================
 
+/// Monotonic compile-time id handed to each class body, embedded in its
+/// slot binding names ("#priv:<id>:foo") so that sibling classes in the
+/// same scope and nested classes never share a binding. Per-EVALUATION
+/// freshness of the symbols themselves comes from NEW_PRIV_SYM at runtime;
+/// this id only keeps compile-time bindings distinct.
+uint g_private_class_id = 0;
+
+/// Build the lexical binding name for a private slot into `buf`:
+/// "#priv:<id>:<name>". Returns the filled prefix of `buf`.
+fn char[] format_private_slot_name(char[] buf, uint class_id, char[] name) {
+    char[] prefix = "#priv:";
+    usz pos = 0;
+    for (usz i = 0; i < prefix.len && pos < buf.len; i++) buf[pos++] = prefix[i];
+    char[12] digits;
+    usz dcount = 0;
+    do {
+        digits[dcount++] = (char)('0' + class_id % 10);
+        class_id /= 10;
+    } while (class_id > 0);
+    while (dcount > 0 && pos < buf.len) buf[pos++] = digits[--dcount];
+    if (pos < buf.len) buf[pos++] = ':';
+    for (usz i = 0; i < name.len && pos < buf.len; i++) buf[pos++] = name[i];
+    return buf[:pos];
+}
+
+/// Intern a slot binding name and return its stable byte slice. Interned
+/// HString data outlives every CompilerContext, so the slice is safe to
+/// store in PrivateNameEntry and to pass to declare_var's scope stack.
+fn char[] CompilerContext.intern_slot_name(&self, char[] slot_name) {
+    Heap* hp = (Heap*)self.heap;
+    HString* hstr = hp.str_intern(slot_name);
+    return hstr.get_data();
+}
+
 /// Push a fresh private-name scope for a class body about to be parsed.
 fn void CompilerContext.push_private_scope(&self) {
     if (self.private_scope_depth < MAX_CLASS_NESTING) {
         self.private_scope_start[self.private_scope_depth] = self.private_name_count;
+        self.private_class_id[self.private_scope_depth] = g_private_class_id++;
         self.private_scope_depth++;
     }
 }
@@ -61,36 +96,39 @@ fn PrivateNameEntry*? CompilerContext.declare_private_name(&self, char[] name) {
     self.private_names[idx].has_getter = false;
     self.private_names[idx].has_setter = false;
 
-    // Lexical binding name for the runtime symbol slot, e.g. "#priv:foo".
+    // Lexical binding name for the runtime symbol slot, e.g. "#priv:3:foo".
     // The '#' prefix is source-illegal as an identifier start (HASH_IDENT
     // tokens never include it), so user code can never collide with this
-    // binding by name.
-    char[80] slot_name_buf;
-    char[] prefix = "#priv:";
-    usz total_len = prefix.len + name.len;
-    if (total_len > slot_name_buf.len) total_len = slot_name_buf.len;
-    usz copy_name_len = total_len > prefix.len ? total_len - prefix.len : 0;
-    for (usz i = 0; i < prefix.len; i++) slot_name_buf[i] = prefix[i];
-    for (usz i = 0; i < copy_name_len; i++) slot_name_buf[prefix.len + i] = name[i];
+    // binding by name. Interned first: declare_var's scope stack and the
+    // PrivateNameEntry both keep the slice, which must outlive this frame.
+    uint class_id = self.private_scope_depth > 0
+        ? self.private_class_id[self.private_scope_depth - 1] : 0;
+    char[96] slot_name_buf;
+    char[] slot_name = self.intern_slot_name(
+        format_private_slot_name(slot_name_buf[..], class_id, name));
 
-    ushort slot_reg = self.declare_var(slot_name_buf[:total_len], LET);
+    ushort slot_reg = self.declare_var(slot_name, LET);
     (void)slot_reg;
-    self.private_names[idx].name_idx = self.add_string_constant(slot_name_buf[:total_len]);
+    self.private_names[idx].slot_name = slot_name;
 
     self.private_name_count++;
     return &self.private_names[idx];
 }
 
 /// Declare the class brand (one per class body that has any private member).
-/// Uses a source-illegal name distinct from any user private name so it can
-/// never be resolved via `resolve_private_name`.  Returns the string
-/// constant index of the brand's lexical binding name (for this context's
-/// own NEW_PRIV_SYM/PUTLEX emission — see class.c3).
-fn uint CompilerContext.declare_class_brand(&self) {
-    char[] brand_name = "#priv:brand";
+/// Uses a source-illegal name ("#priv:<id>:brand") distinct from any user
+/// private name so it can never be resolved via `resolve_private_name`.
+/// Returns the interned binding-name slice — callers add it to whichever
+/// constant pool needs it (constant indices are context-relative).
+fn char[] CompilerContext.declare_class_brand(&self) {
+    uint class_id = self.private_scope_depth > 0
+        ? self.private_class_id[self.private_scope_depth - 1] : 0;
+    char[96] brand_name_buf;
+    char[] brand_name = self.intern_slot_name(
+        format_private_slot_name(brand_name_buf[..], class_id, "brand"));
     ushort slot_reg = self.declare_var(brand_name, LET);
     (void)slot_reg;
-    return self.add_string_constant(brand_name);
+    return brand_name;
 }
 
 /// Return the interned HString* for a lexical binding name (e.g.
@@ -224,14 +262,20 @@ fn void CompilerContext.restore_prescan_lexer(&self, uint pos, uint line, uint c
 /// GETPROP/PUTPROP with it.
 fn ushort? CompilerContext.emit_private_access(&self, char[] name, ushort obj_reg) {
     PrivateNameEntry* entry = self.resolve_private_name(name)!;
+    // The binding-name constants go into THIS context's pool — entry only
+    // carries the stable name text, never a pool index, because this runs
+    // inside method/initializer bodies whose pools differ from the
+    // class-enclosing context that declared the entry.
+    uint brand_bind_idx = self.add_string_constant(entry.brand_slot_name);
     ushort brand_reg = self.alloc_reg();
-    self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)brand_reg, entry.brand_name_idx));
+    self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)brand_reg, brand_bind_idx));
     uint name_const_idx = self.add_string_constant(name);
     uint name_c = name_const_idx <= 0xFE ? name_const_idx : 0xFF;
     self.emit_abc(Opcode.CHK_BRAND, (uint)obj_reg, (uint)brand_reg, name_c);
     self.free_reg(brand_reg);
 
     ushort key_reg = self.alloc_reg();
-    self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg, entry.name_idx));
+    uint slot_bind_idx = self.add_string_constant(entry.slot_name);
+    self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg, slot_bind_idx));
     return key_reg;
 }

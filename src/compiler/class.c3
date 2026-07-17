@@ -315,18 +315,18 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     // see vm_calls.c3 / vm_execute.c3) whenever the class declares any
     // private member. Declared right after the pre-scan (if it found any
     // names) so every PrivateNameEntry in this scope can be backfilled with
-    // brand_name_idx before any member body — which may reference an entry —
-    // compiles.
+    // its brand binding name before any member body — which may reference
+    // an entry — compiles.
     bool has_brand = false;
-    uint brand_name_idx = 0xFFFFFFFF;
+    char[] brand_slot_name = "";
     {
         uint priv_scope_begin0 = self.private_scope_depth > 0
             ? self.private_scope_start[self.private_scope_depth - 1] : 0;
         if (self.private_name_count > priv_scope_begin0) {
             has_brand = true;
-            brand_name_idx = self.declare_class_brand();
+            brand_slot_name = self.declare_class_brand();
             for (uint pbi = priv_scope_begin0; pbi < self.private_name_count; pbi++) {
-                self.private_names[pbi].brand_name_idx = brand_name_idx;
+                self.private_names[pbi].brand_slot_name = brand_slot_name;
             }
         }
     }
@@ -439,7 +439,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             ushort this_reg = field_init_ctx.alloc_reg();
             field_init_ctx.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)this_reg, 0));
             ushort key_reg = field_init_ctx.alloc_reg();
-            field_init_ctx.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg, entry.name_idx));
+            field_init_ctx.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg,
+                field_init_ctx.add_string_constant(entry.slot_name)));
             field_init_ctx.emit_abc(Opcode.INITPROP_PRIV, (uint)this_reg, (uint)key_reg, (uint)init_reg);
             field_init_ctx.free_reg(key_reg);
             field_init_ctx.free_reg(this_reg);
@@ -739,10 +740,9 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     if (has_field_init) {
         field_init_ctx.emit_simple(Opcode.POP_LEX);
         field_init_ctx.emit_simple(Opcode.RETUNDEF);
+        // finish() already registers the CompiledFunction with the heap's
+        // teardown tracking — no extra track_compiled_func here.
         field_init_func = field_init_ctx.finish()!;
-        // Track for heap cleanup alongside the constructor/method inner funcs.
-        heap::Heap* fi_hp = (heap::Heap*)self.heap;
-        fi_hp.track_compiled_func((void*)field_init_func);
     }
     (void)field_count;
 
@@ -791,7 +791,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // in bytecode.c3 for why these are not pool indices).
         self.inner_funcs[ctor_inner_idx].field_init_func = field_init_func;
         self.inner_funcs[ctor_inner_idx].brand_name_hstr = has_brand
-            ? self.intern_private_binding_name("#priv:brand") : null;
+            ? self.intern_private_binding_name(brand_slot_name) : null;
     }
 
     // Retain the entire class source text on the constructor function so that
@@ -857,14 +857,16 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             uint desc_idx = self.add_string_constant(self.private_names[pi].name);
             ushort sym_reg = self.alloc_reg();
             self.emit_a_bc(Opcode.NEW_PRIV_SYM, (uint)sym_reg, desc_idx);
-            self.emit_a_bc(Opcode.PUTLEX, (uint)sym_reg, self.private_names[pi].name_idx);
+            self.emit_a_bc(Opcode.PUTLEX, (uint)sym_reg,
+                self.add_string_constant(self.private_names[pi].slot_name));
             self.free_reg(sym_reg);
         }
         if (has_brand) {
             uint brand_desc_idx = self.add_string_constant("brand");
             ushort brand_reg = self.alloc_reg();
             self.emit_a_bc(Opcode.NEW_PRIV_SYM, (uint)brand_reg, brand_desc_idx);
-            self.emit_a_bc(Opcode.PUTLEX, (uint)brand_reg, brand_name_idx);
+            self.emit_a_bc(Opcode.PUTLEX, (uint)brand_reg,
+                self.add_string_constant(brand_slot_name));
             self.free_reg(brand_reg);
         }
     }

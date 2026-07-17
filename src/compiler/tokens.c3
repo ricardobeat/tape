@@ -407,18 +407,12 @@ fn bool CompilerContext.match_static_modifier(&self) {
                 }
                 after_accessor = peek2_opt;
             }
-            bool accessor_has_prop_name = after_accessor.type == TokenType.IDENTIFIER
-                || after_accessor.type == TokenType.STRING
-                || after_accessor.type == TokenType.NUMBER
-                || after_accessor.type == TokenType.LBRACKET
-                || lexer::keyword_to_string(after_accessor.type).len > 0;
-            if (!accessor_has_prop_name) {
-                // `get()` or `set()` — accessor prefix with NO property name,
-                // so `static` is a method name, not a modifier.
-                self.pushback(cur);
-                return false;
-            }
-            // `static get foo()` — `static` is a modifier.  Fall through.
+            // Whether `get`/`set` turns out to be an accessor prefix
+            // (`static get foo()`) or a plain method name (`static get()`),
+            // `static` itself is a modifier either way — the method name
+            // position after `static` is occupied by `get`/`set`, so
+            // `static` cannot be the member name here. Fall through.
+            (void)after_accessor;
         }
     }
     bool starts_name = next_tok.type == TokenType.IDENTIFIER
