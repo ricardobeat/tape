@@ -641,6 +641,13 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
             continue;
         }
 
+        // Only a FunctionDeclaration (statement position) binds a lexical name;
+        // a function *expression* like `x = function f(){}` or `(function f(){})`
+        // binds nothing in the enclosing block. Same statement-position rule as
+        // classes — `prev_tt` must be `;`/`{`/`}`. Capture it before the async
+        // lookahead consumes prev_tt.
+        bool fn_at_stmt_pos = class_is_declaration(prev_tt);
+
         // async function [*] Name (...) { ... } — only when "async" is
         // immediately followed by "function" (contextual keyword check).
         if (tt == TokenType.IDENTIFIER &&
@@ -663,6 +670,12 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
             tt = TokenType.FUNCTION;
         } else if (tt != TokenType.FUNCTION) {
             prev_tt = tt;
+            continue;
+        }
+
+        // A function expression (not at statement position) binds no block name.
+        if (!fn_at_stmt_pos) {
+            prev_tt = TokenType.FUNCTION;
             continue;
         }
 
