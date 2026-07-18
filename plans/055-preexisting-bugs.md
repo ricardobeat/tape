@@ -95,13 +95,32 @@ RHS evaluation. Blocks 3 Number/toFixed tests (S15.7.4.5_A1.3/A1.4) and likely
 others that assign a throwing-RHS to an undeclared var in a try. Reporter: N1.
 Overlaps PB8's expressions.c3 ownership — coordinate (do after PB8 lands).
 
-## Session regressions (found by reliable s288 baseline) — IN PROGRESS
-Status: 55 → 30 remaining. Fixed: 15 async-thenable (`4e23453`), 10 eval/Array
-(`89698d3` — var-init-drop from PB8's env_declare_var skip + strict-eval-leak +
-block-fn-leak). Remaining: ~14 async arrow-capture (agent running, culprit P2
-34a5269), ~11 class/fn-name/private (agent running, culprit C7a-cap a7f171e),
-5 `super-prop`-in-direct-eval (DEFER — compile_eval lacks home-object context,
-a genuine feature gap PB8 flagged, not a quick fix).
+## Session regressions (found by reliable s288 baseline) — RESOLVED (55 → 6)
+Fixed:
+- 15 async-thenable adoption (`4e23453`) — async RET must adopt returned promise.
+- 10 eval/Array (`89698d3`) — var-init-drop (PB8 env_declare_var skip) +
+  strict-eval-leak + block-fn-leak.
+- 9 class/fn-name/private (`f2176f5`) — THREE separate bugs, NOT a7f171e:
+  symbol-desc marker byte in method .name (4538dc7), class-name TDZ span OOB on
+  escaped idents (ed0db46), var-hoisting walking into class bodies (4ff3485).
+- arrow lexical `arguments` + `new.target` capture (`867e48c`) — 48/48 async
+  class tests, +18 class improvements. NOTE: P2 (34a5269) didn't CAUSE these —
+  arrow capture was always broken; P2's correct microtask fix stopped the old
+  draining order from spuriously passing them.
+
+Remaining 6 (documented, not hidden):
+- 5 `super-prop`-in-direct-eval — DEFER: compile_eval lacks home-object context
+  (feature gap PB8 flagged). See PB5.
+- 1 `Promise/prototype/finally/rejected-observable-then-calls-argument.js` —
+  async harness-mode discrepancy: PASS via `--debug` (concat harness), FAIL via
+  `--worker`. Ambiguous; likely a runner-mode async-completion quirk not a real
+  fail. Investigate if it persists in s289.
+
+**Bisect lesson:** my own bisects were repeatedly corrupted by (a) uncommitted
+plans/055 blocking `git checkout`, and (b) stale binaries after checkout. Both
+agents re-bisected with `rm -rf build out` fresh builds and CORRECTED my culprit
+attributions (a7f171e was innocent; the real culprits were 3 other commits).
+Always commit WIP + `rm -rf build/obj` before comparative bisect runs.
 
 ### PB12 — P2 broke async-method return handling (PARTIAL FIX `4e23453`)
 P2 (`34a5269`, Promise microtask/vm.has_error change) regressed 29 `[async]`
