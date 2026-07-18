@@ -87,7 +87,8 @@ fn PrivateNameEntry*? CompilerContext.declare_private_name(&self, char[] name) {
             return COMPILE_ERROR~;  // duplicate declaration
         }
     }
-    if (self.private_name_count >= MAX_PRIVATE_NAMES) {
+    self.ensure_private_name_cap();
+    if (self.private_name_count >= self.private_name_cap) {
         return COMPILE_ERROR~;
     }
     uint idx = self.private_name_count;

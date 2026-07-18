@@ -326,9 +326,16 @@ struct CompilerContext {
     // Private class members (ES2022) — name resolution.  Stack of declared
     // private names across nested class bodies; private_scope_start marks
     // where each class body's names begin so pop_private_scope can trim
-    // back to the enclosing class's names on exit.
-    PrivateNameEntry[MAX_PRIVATE_NAMES] private_names;
+    // back to the enclosing class's names on exit. Growable (a class body
+    // may declare arbitrarily many distinct private names).
+    PrivateNameEntry* private_names;
     uint private_name_count;
+    uint private_name_cap;
+    /// False when private_names was adopted (borrowed) from an enclosing
+    /// context via adopt_private_names — such a context only resolves
+    /// private names, never declares into the table, so cleanup() must not
+    /// free a buffer it doesn't own.
+    bool owns_private_names;
     uint[MAX_CLASS_NESTING] private_scope_start;
     /// Compile-time class id per open class body (parallel to
     /// private_scope_start) — makes each class's slot binding names unique
@@ -495,6 +502,9 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     }
     self.inner_func_cap = INITIAL_INNER_FUNCS;
     self.inner_funcs = (CompiledFunction**)h.alloc_func(h.heap_udata, (usz)(INITIAL_INNER_FUNCS * CompiledFunction*::size));
+    self.private_name_cap = INITIAL_PRIVATE_NAMES;
+    self.private_names = (PrivateNameEntry*)h.alloc_func(h.heap_udata, (usz)(INITIAL_PRIVATE_NAMES * PrivateNameEntry::size));
+    self.owns_private_names = true;
 
     // Strict-only engine: lexer always in strict mode (affects FutureReservedWord
     // keyword recognition — implements/interface/package/private/protected/public).
@@ -508,6 +518,27 @@ fn void CompilerContext.cleanup(&self) {
     if (self.constants != null) { h.free_func(h.heap_udata, self.constants); self.constants = null; }
     if (self.const_hash != null) { h.free_func(h.heap_udata, self.const_hash); self.const_hash = null; }
     if (self.inner_funcs != null) { h.free_func(h.heap_udata, self.inner_funcs); self.inner_funcs = null; }
+    if (self.owns_private_names && self.private_names != null) {
+        h.free_func(h.heap_udata, self.private_names);
+        self.private_names = null;
+    }
+}
+
+/// Borrow the private-names table from an enclosing context (a method,
+/// default-parameter thunk, or arrow body compiled for a class element only
+/// resolves private names, never declares into the table — see
+/// declare_private_name's call sites, all of which are reached through
+/// class.c3's own `self`, never a propagated child context). Frees this
+/// context's own (still-empty) buffer first so it isn't leaked.
+fn void CompilerContext.adopt_private_names(&self, CompilerContext* parent) {
+    if (self.owns_private_names && self.private_names != null) {
+        Heap* h = (Heap*)self.heap;
+        h.free_func(h.heap_udata, self.private_names);
+    }
+    self.private_names = parent.private_names;
+    self.private_name_count = parent.private_name_count;
+    self.private_name_cap = parent.private_name_cap;
+    self.owns_private_names = false;
 }
 
 /// Grow code buffer to accommodate more instructions.
@@ -560,6 +591,18 @@ fn void CompilerContext.ensure_inner_func_cap(&self) {
     if (p == null) return;
     self.inner_funcs = (CompiledFunction**)p;
     self.inner_func_cap = new_cap;
+}
+
+/// Grow the private-names table.
+fn void CompilerContext.ensure_private_name_cap(&self) {
+    if (self.private_name_count < self.private_name_cap) return;
+    uint new_cap = self.private_name_cap * 2;
+    if (new_cap > MAX_PRIVATE_NAMES_HARD) return;
+    Heap* h = (Heap*)self.heap;
+    void* p = h.realloc_func(h.heap_udata, self.private_names, (usz)(new_cap * PrivateNameEntry::size));
+    if (p == null) return;
+    self.private_names = (PrivateNameEntry*)p;
+    self.private_name_cap = new_cap;
 }
 
 /// Register an inner function and return its index.
@@ -1522,9 +1565,14 @@ struct ClassMethod {
 // Private class members (ES2022) — name resolution scope
 // ============================================================================
 
-/// Maximum number of distinct private names (across all nested class
-/// bodies) tracked in a single function/program compile.
-const uint MAX_PRIVATE_NAMES = 64;
+/// Initial capacity of the growable private-names table (across all nested
+/// class bodies) tracked in a single function/program compile; grows via
+/// ensure_private_name_cap as classes declare more names.
+const uint INITIAL_PRIVATE_NAMES = 64;
+
+/// Hard upper bound on distinct private names, mirroring the other growable
+/// compiler tables' *_HARD caps.
+const uint MAX_PRIVATE_NAMES_HARD = 1 << 20;
 
 /// Maximum nesting depth of class bodies (for private-name scoping).
 const uint MAX_CLASS_NESTING = 16;
