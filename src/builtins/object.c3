@@ -215,13 +215,25 @@ fn void builtin_object(BuiltinContext* ctx) {
     ctx.result.set_object(obj);
 }
 
-/// Collects an object's own enumerable String-keyed property names into
-/// `key_buf` in spec order (EnumerableOwnPropertyNames / OrdinaryOwnPropertyKeys):
-/// integer indices ascending, then String keys in insertion order.  Symbol keys
-/// are excluded.  Returns the number of keys written.  `key_buf` must have room
-/// for at least `obj.prop_count + obj.array_size + string_char_length` entries.
-/// Shared by Object.keys/values/entries so their orderings stay identical.
-fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString** key_buf) {
+/// Collects an object's own String-keyed property names into `key_buf` in
+/// spec order (OrdinaryOwnPropertyKeys): integer indices ascending, then
+/// String keys in insertion order.  Symbol keys are excluded.  Returns the
+/// number of keys written.  `key_buf` must have room for at least
+/// `obj.prop_count + obj.array_size + string_char_length` entries.
+///
+/// When `require_enumerable` is true, only currently-enumerable keys are
+/// collected (used by Object.keys, where EnumerableOwnPropertyNames' kind
+/// is "key" and no [[Get]] is ever performed, so a single filtered pass is
+/// spec-equivalent to the interleaved algorithm).  When false, ALL own
+/// string keys are returned regardless of enumerability — Object.entries/
+/// values must call this with `require_enumerable = false` and then, for
+/// each key, re-check `[[GetOwnProperty]]`'s enumerable attribute
+/// immediately before performing `[[Get]]` on that key, since a getter
+/// invoked earlier in the walk may have changed a later key's
+/// enumerability (EnumerableOwnPropertyNames interleaves the descriptor
+/// check and the value fetch per key, it does not snapshot enumerability
+/// for the whole list up front).
+fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString** key_buf, bool require_enumerable = true) {
     uint key_count = 0;
 
     // STRING exotic: integer indices [0, clen) are enumerable own properties
@@ -322,7 +334,7 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
                     if (src_type == 0) {
                         // Named property — check enumerable
                         uint prop_idx = sort_buf[i * 3 + 1];
-                        if (obj.get_prop_flags(prop_idx).enumerable) {
+                        if (!require_enumerable || obj.get_prop_flags(prop_idx).enumerable) {
                             HString* key = (HString*)obj.prop_key_at(prop_idx);
                             key_buf[key_count++] = key;
                         }
@@ -339,7 +351,7 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
     }
     // Phase 2: non-index named properties (insertion order)
     for (uint i = 0; i < obj.prop_count; i++) {
-        if (obj.get_prop_flags(i).enumerable && obj.prop_key_at(i) != null) {
+        if ((!require_enumerable || obj.get_prop_flags(i).enumerable) && obj.prop_key_at(i) != null) {
             HString* key = (HString*)obj.prop_key_at(i);
             if (key.is_symbol()) continue;  // only String keys
             if (key.is_arridx()) continue;
@@ -1994,6 +2006,23 @@ fn bool desc_get(BuiltinContext* ctx, HObject* obj, hstring::HString* key, TVal*
     // PROP_DATA
     *out = res.data_val;
     return true;
+}
+
+/// Re-checks whether `key` — already known to be an own String-keyed
+/// property of `obj` (as produced by collect_own_enum_string_keys with
+/// require_enumerable = false) — is *currently* enumerable.  Object.entries/
+/// values must call this immediately before [[Get]]ing each key, since an
+/// earlier key's getter may have changed a later key's enumerability
+/// in-between the snapshot and the fetch (EnumerableOwnPropertyNames
+/// interleaves [[GetOwnProperty]] and [[Get]] per key, not once up front).
+/// Dense array indices, String-exotic character indices, and TypedArray
+/// indices are always enumerable by spec and can't be redefined non-
+/// enumerable without leaving the property table, so only named
+/// properties need a fresh flags lookup.
+fn bool key_is_currently_enumerable(HObject* obj, hstring::HString* key) {
+    int idx = obj.find_prop_idx(key);
+    if (idx < 0) return true;
+    return obj.get_prop_flags((uint)idx).enumerable;
 }
 
 /// [[Get]] for Object.values/entries enumeration: like desc_get, but also serves
@@ -3825,14 +3854,19 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
             idx++;
         }
     } else {
-        // Non-proxy: snapshot keys first, then get each value.
+        // Non-proxy: snapshot ALL own string keys first (regardless of
+        // enumerability), then re-check each key's enumerable attribute
+        // immediately before its [[Get]] (EnumerableOwnPropertyNames
+        // interleaves the two per key, so a getter earlier in the walk can
+        // make a later key non-enumerable before that key is reached).
         uint max_keys = obj.prop_count + obj.array_size + 32;
         HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
         if (key_buf == null) { ctx.result.set_undefined(); return; }
         defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
-        uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+        uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf, false);
         for (uint i = 0; i < key_count; i++) {
             HString* key = key_buf[i];
+            if (!key_is_currently_enumerable(obj, key)) continue;
             TVal val;
             if (!desc_get_enum(ctx, obj, key, &val)) {
                 if (ctx.should_throw) { return; }
@@ -3909,14 +3943,18 @@ fn void builtin_object_values(BuiltinContext* ctx) {
             idx++;
         }
     } else {
+        // Snapshot ALL own string keys, then re-check enumerability per key
+        // right before its [[Get]] — see the comment in builtin_object_entries.
         uint max_keys = obj.prop_count + obj.array_size + 32;
         HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
         if (key_buf == null) { ctx.result.set_undefined(); return; }
         defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
-        uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+        uint key_count = collect_own_enum_string_keys(ctx, obj, key_buf, false);
         for (uint i = 0; i < key_count; i++) {
+            HString* key = key_buf[i];
+            if (!key_is_currently_enumerable(obj, key)) continue;
             TVal val;
-            if (!desc_get_enum(ctx, obj, key_buf[i], &val)) {
+            if (!desc_get_enum(ctx, obj, key, &val)) {
                 if (ctx.should_throw) { return; }
                 continue;
             }
