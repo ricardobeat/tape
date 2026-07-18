@@ -343,6 +343,16 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         new_act.flags |= ACT_FLAG_ASYNC;
                         new_act.async_promise = async_prom;
                     }
+                    // A regular (non-construct) call has no [[NewTarget]]. The
+                    // activation slot is pooled, so clear the stale value left
+                    // by a prior `new` on the same slot; otherwise `new.target`
+                    // inside a method called on a freshly-constructed object
+                    // spuriously observes that constructor. Arrow functions
+                    // instead resolve new.target lexically, from the value
+                    // captured at their closure creation (§9.2.1).
+                    new_act.new_target = target_fast.is_arrow()
+                        ? (*hobj_fast.extra_ptr()).func.captured_new_target
+                        : null;
                     new_act.max_heap_reg = 0;
                     new_act.caller_valstack_top = vm.valstack_top;
                     // Arrow functions use lexical this — captured once at
@@ -1306,6 +1316,12 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             }
             new_act.async_promise = null;
             new_act.async_gen_state = null;
+            // A regular (non-construct) call has no [[NewTarget]]; clear the
+            // stale value from a prior `new` that reused this pooled slot.
+            // Arrows resolve new.target lexically from their captured value.
+            new_act.new_target = target.is_arrow()
+                ? (*hobj.extra_ptr()).func.captured_new_target
+                : null;
             if (async_prom != null) {
                 // Async function entered from the generator block above
                 new_act.flags |= ACT_FLAG_ASYNC;

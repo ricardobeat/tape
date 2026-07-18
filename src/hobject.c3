@@ -475,6 +475,13 @@ struct HObjectFunction {
     /// HObjectProxy's builtin_fn_index (which overlays this struct) keeps
     /// the same offset.
     TVal              captured_this;
+    /// Arrow functions only (ES2015 §9.2.1 [[NewTarget]] = lexical): the
+    /// enclosing function's new.target at CLOSURE-creation time. Like
+    /// captured_this it must survive the enclosing frame returning, so a
+    /// runtime activation-chain walk cannot recover it. null when the
+    /// enclosing invocation had no new.target (plain/method call) or for
+    /// non-arrow functions.
+    HObject*          captured_new_target;
 }
 
 /// Primitive wrapper (Boolean, Number, String objects).

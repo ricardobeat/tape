@@ -3442,6 +3442,16 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
 
     CompiledFunction* func = arrow_ctx.finish()!;
 
+    // `arguments` in an arrow body refers lexically to the enclosing ordinary
+    // function's arguments object. Clear the arrow's own flag so the VM does
+    // not create a fresh (empty) arguments object that shadows the parent's,
+    // and propagate the requirement to the enclosing function so it creates
+    // and env-declares the object the arrow's GETVAR "arguments" resolves to.
+    if (arrow_ctx.uses_arguments) {
+        func.flags.uses_arguments = false;
+        self.uses_arguments = true;
+    }
+
     // Retain source text for Function.prototype.toString (ES2019 §19.2.3.5).
     // See compile_inner_function for rationale. We use `body_end_pos` (captured
     // right after the last body token) as src_end so trailing whitespace and
@@ -3669,6 +3679,16 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     arrow_ctx.num_args = param_count;
 
     CompiledFunction* func = arrow_ctx.finish()!;
+
+    // `arguments` in an arrow body refers lexically to the enclosing ordinary
+    // function's arguments object. Clear the arrow's own flag so the VM does
+    // not create a fresh (empty) arguments object that shadows the parent's,
+    // and propagate the requirement to the enclosing function so it creates
+    // and env-declares the object the arrow's GETVAR "arguments" resolves to.
+    if (arrow_ctx.uses_arguments) {
+        func.flags.uses_arguments = false;
+        self.uses_arguments = true;
+    }
 
     // Retain source text for Function.prototype.toString (ES2019 §19.2.3.5).
     // See compile_inner_function for rationale. We use `body_end_pos` (captured

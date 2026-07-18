@@ -1712,6 +1712,9 @@ fn void Heap.drain_gray(&self) {
                     self.mark_hobject((*obj.extra_ptr()).func.lex_env.bindings);
                 }
                 self.mark_tval(&(*obj.extra_ptr()).func.captured_this);
+                if ((*obj.extra_ptr()).func.captured_new_target != null) {
+                    self.mark_hobject((*obj.extra_ptr()).func.captured_new_target);
+                }
                 // Async/await resume/reject builtins stash their GeneratorState
                 // in var_env; keep it alive so suspended async functions are
                 // not collected while waiting for their Promise to settle.
