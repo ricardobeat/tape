@@ -260,6 +260,16 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
         func_obj.put_prop((HString*)vm.heap.strs[heap::BuiltinStr.NAME], name_tv, hobject::PROP_FLAGS_NWC);
     }
 
+    // `is_generator()` is overloaded at compile time (compile_inner_function /
+    // arrow contexts): async functions also set it so the body can use the
+    // same YIELD/LOAD_RESUME suspend machinery as real generators via AWAIT.
+    // `is_generator() && !is_async()` is the idiom used elsewhere in the VM
+    // (see the CALL_FN generator-init check in vm_execute.c3) to mean "really
+    // is a spec GeneratorFunction" — async generators aren't supported by
+    // this engine (rejected at parse time), so a true generator never has
+    // is_async() set.
+    bool is_true_generator = template.is_generator() && !template.is_async();
+
     // Constructable functions, plus generator functions (which are never
     // constructable but still expose a `.prototype` used as the generator
     // instance's prototype per ES2015 §14.4 GeneratorFunction), get a
@@ -267,7 +277,7 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
     // generator) methods/accessors are not constructable and must not have
     // .prototype (ES6 §14.2.16, ES2017 §14.7.5, ES2015 §14.3.9 —
     // DefineMethod creates functions without .prototype).
-    if (template.is_constructable() || template.is_generator()) {
+    if (template.is_constructable() || is_true_generator) {
         // ES5 §13.2.2 step 15: create .prototype property on the function
         // (plain object with .constructor).  For regular functions the
         // flags are {writable:true, enumerable:false, configurable:false}.
@@ -279,7 +289,7 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
             : hobject::PROP_FLAGS_WENC;  // writable, non-enumerable, non-configurable
         HObject*? proto_obj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
         if (try proto_obj = proto_obj_raw) {
-            if (template.is_generator() && vm.heap.generator_proto != null) {
+            if (is_true_generator && vm.heap.generator_proto != null) {
                 // Generator function .prototype inherits from Generator.prototype
                 proto_obj.prototype = vm.heap.generator_proto;
                 // .constructor is inherited from Generator.prototype,
