@@ -187,6 +187,24 @@ fn void load_test_includes(Vm* v, Heap* hp, char[] src) {
         for (usz k = start; k < end && p < 127; k++) { path_buf[p++] = src[k]; }
         path_buf[p] = 0;
         char[] path = path_buf[:p];
+        // nativeFunctionMatcher.js is pre-loaded in simplified form as
+        // NFM_HARNESS (it avoids \uXXXX regex escapes). Loading the on-disk
+        // copy again would re-declare its top-level `const` bindings over the
+        // already-installed ones, a genuine GlobalDeclarationInstantiation
+        // SyntaxError — so skip it, exactly as assert.js/propertyHelper.js are
+        // never re-loaded from an `includes:` list.
+        {
+            char[] want = "nativeFunctionMatcher.js";
+            usz flen = end - start;
+            if (flen == want.len) {
+                bool same = true;
+                for (usz k = 0; k < flen; k++) {
+                    if (src[start + k] != want[k]) { same = false; break; }
+                }
+                if (same) continue;
+            }
+        }
+
         char[]? h_opt = file::load_temp((String)path);
         if (try h = h_opt) {
             exec_js(v, hp, h);

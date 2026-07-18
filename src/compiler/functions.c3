@@ -1398,7 +1398,7 @@ fn void CompilerContext.skip_expression(&self) {
 
 /// Pre-scan function body for var and function declarations and emit hoisted
 /// bytecode so they are available before any statements run.
-fn void? CompilerContext.hoist_decls(&self, bool is_global) {
+fn void? CompilerContext.hoist_decls(&self, bool is_global, bool checks_only = false) {
     // self.is_async doubles as the "saw `async function`" latch between loop
     // iterations below. It must start clear — otherwise, inside an async
     // function's body, the enclosing flag would mark every hoisted plain
@@ -1532,6 +1532,24 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             // class bodies inside a nested function are already unreachable
             // here because that function was skipped wholesale above.
             self.skip_class_body();
+            continue;
+        }
+
+        // A `function` nested inside a block (if/for/try/plain `{}`) at global
+        // scope — a function expression (`x = function(){ var y }`) or a
+        // block-scoped function declaration — is its own VarDeclaredNames
+        // scope. Skip its body wholesale so its inner `var`s don't leak into
+        // the Program's global scope. (At own_depth the handler below does the
+        // hoist-aware skip; deeper functions only need to be skipped.)
+        if (is_global && brace_depth > own_depth && tt == TokenType.FUNCTION) {
+            self.is_async = false;
+            Token? nstar = self.lexer.next_token();
+            if (catch _errn = nstar) continue;
+            if (nstar.type != TokenType.STAR) { self.lexer.pushback(nstar); }
+            Token? nname = self.lexer.next_token();
+            if (catch _errn2 = nname) continue;
+            if (nname.type != TokenType.IDENTIFIER) { self.lexer.pushback(nname); }
+            self.skip_function_body();
             continue;
         }
 
@@ -1680,6 +1698,33 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                 Token name_tok2 = name_opt2;
                 if (name_tok2.type != TokenType.IDENTIFIER) break;
 
+                // Check-prologue pass: emit CanDeclareGlobalVar for each
+                // top-level var name (Script only) and skip its binding.
+                if (checks_only) {
+                    if (is_global && !self.is_module) {
+                        uint chk_idx = self.add_string_constant(name_tok2.str_value);
+                        self.emit_a_bc(Opcode.CHKGLOBALVAR, 0, chk_idx);
+                    }
+                    // Consume initializer / comma so the scan advances the same
+                    // way the real pass does, without emitting any binding.
+                    Token? sep_opt_c = self.lexer.next_token();
+                    if (catch _errc = sep_opt_c) break;
+                    TokenType sepc = sep_opt_c.type;
+                    if (sepc == TokenType.ASSIGN) {
+                        self.skip_expression();
+                        Token? sep_opt_c2 = self.lexer.next_token();
+                        if (catch _errc2 = sep_opt_c2) break;
+                        if (sep_opt_c2.type != TokenType.COMMA) {
+                            self.lexer.pushback(sep_opt_c2);
+                            break;
+                        }
+                    } else if (sepc != TokenType.COMMA) {
+                        self.lexer.pushback(sep_opt_c);
+                        break;
+                    }
+                    continue;
+                }
+
                 ushort var_reg = self.declare_var(name_tok2.str_value, VAR);
                 self.has_local_bindings = true;
                 self.emit_abc(Opcode.LDUNDEF, (uint)var_reg, 0, 0);
@@ -1747,7 +1792,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
 /// Pre-scan function declarations at the top level (global scope) and hoist them
 /// before any statements are compiled. This implements function declaration
 /// hoisting as per ES5 §10.2.1.1.
-fn void? CompilerContext.hoist_global_fn_decls(&self) {
+///
+/// `checks_only`: emit just the GlobalDeclarationInstantiation CanDeclare
+/// checks (CHKGLOBALFUNC) for each top-level function name and skip all
+/// binding instantiation / inner compilation. Used for a Script's up-front
+/// check prologue, which must precede every var/function/lexical binding so a
+/// collision throws with no observable side effects (ES2015 §15.1.11).
+fn void? CompilerContext.hoist_global_fn_decls(&self, bool checks_only = false) {
     // See hoist_decls: self.is_async is the between-iteration `async function`
     // latch; start it clear and restore the enclosing value (e.g. a module
     // body's top-level-await flag set by compile_module) on exit.
@@ -1910,7 +1961,13 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
             char[] fn_name = name_opt.str_value;
             if (fn_name.len == 0) continue;
 
-            // Check if already hoisted
+            // Record as hoisted so the statement parser skips every like-named
+            // declaration on its own pass. Every occurrence is still compiled
+            // and emitted below: GlobalDeclarationInstantiation (§15.1.11 step
+            // 10, reverse list order) makes the LAST FunctionDeclaration the
+            // surviving one, so emitting a CLOSURE+DECLVAR per occurrence in
+            // source order lets the final DECLVAR overwrite the earlier
+            // global-object bindings at runtime.
             bool already = false;
             for (ushort hi = 0; hi < self.hoisted_fn_count; hi++) {
                 if (str_eq(self.hoisted_fn_names[hi], fn_name)) {
@@ -1918,16 +1975,22 @@ fn void? CompilerContext.hoist_global_fn_decls(&self) {
                     break;
                 }
             }
-            if (already) {
-                // Skip the rest of the function body
-                self.skip_function_body();
-                continue;
-            }
-
-            // Record as hoisted
-            if (self.hoisted_fn_count < 256) {
+            if (!already && self.hoisted_fn_count < 256) {
                 self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
                 self.hoisted_fn_count++;
+            }
+
+            // Check-prologue pass: emit CanDeclareGlobalFunction for each
+            // unique top-level function name (Script only) and skip the body.
+            if (checks_only) {
+                if (!already && self.is_global && !self.is_module) {
+                    uint chk_idx = self.add_string_constant(fn_name);
+                    self.emit_a_bc(Opcode.CHKGLOBALFUNC, 0, chk_idx);
+                }
+                self.skip_function_body();
+                prev_toplevel = TokenType.RBRACE;
+                has_prev = true;
+                continue;
             }
 
             // Restore lexer to before 'function' so we can re-consume it properly

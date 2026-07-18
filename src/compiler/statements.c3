@@ -318,29 +318,6 @@ fn void? CompilerContext.parse_directives(&self) {
 /// afterwards.
 ///
 /// Returns the number of variable names found (0 to MAX_PRESCAN_NAMES).
-/// TDZ-initialize top-level let/const declarations at program/eval scope so
-/// that accessing or assigning to them before their declaration throws a
-/// ReferenceError, matching block scope. Mirrors the INITTZ pass in block().
-/// Names of "restricted global" properties: they exist on the global object
-/// as non-configurable, non-writable bindings. Per ES6+ §15.1.8
-/// (GlobalDeclarationInstantiation) step 5.c-d, a top-level `let`/`const`
-/// declaration whose name collides with one of these must throw a
-/// SyntaxError — HasRestrictedGlobalProperty(name) is true for them.
-const String[3] RESTRICTED_GLOBAL_NAMES = { "undefined", "NaN", "Infinity" };
-
-fn bool is_restricted_global_name(char[] name) {
-    foreach (String restricted : RESTRICTED_GLOBAL_NAMES) {
-        if (name.len == restricted.len) {
-            bool eq = true;
-            for (usz i = 0; i < name.len; i++) {
-                if (name[i] != restricted[i]) { eq = false; break; }
-            }
-            if (eq) return true;
-        }
-    }
-    return false;
-}
-
 /// Record a prescanned binding name into `spans[idx]`. A plain identifier's
 /// str_value points into the source buffer, so it is stored as a (pos, len)
 /// span reconstructed later from `lexer.source`. An identifier that contained
@@ -384,32 +361,34 @@ fn bool class_is_declaration(TokenType prev_tt) {
     }
 }
 
+/// TDZ-initialize top-level let/const declarations at program/eval scope so
+/// that accessing or assigning to them before their declaration throws a
+/// ReferenceError, matching block scope. Mirrors the INITTZ pass in block().
 fn void CompilerContext.hoist_lexical_tdz(&self) {
     NameSpan[MAX_PRESCAN_NAMES] spans;
     uint n = self.pre_scan_lexical_decls(&spans, MAX_PRESCAN_NAMES);
     for (uint i = 0; i < n; i++) {
         char[] name = self.name_span_text(spans[i]);
-        // Only Script/eval top-level lexical declarations collide with the
-        // global object's restricted properties (HasRestrictedGlobalProperty,
-        // ES6+ §15.1.8). Module top-level `let`/`const` bindings instead live
-        // in the Module Environment Record, which has no such restriction —
-        // so this check is skipped for modules even though they are
-        // `is_global` (they get their own top-level env, see entry.c3).
-        //
-        // GlobalDeclarationInstantiation is a *runtime* step (it runs right
-        // before the top-level code executes, not during parsing), so a
-        // collision must be a runtime SyntaxError throw, not a compile-time
-        // failure — emit THROW_SYNTAX as the very first instruction instead
-        // of calling self.fail(). Only the first colliding name is reported
-        // (matches "throw on first collision found" semantics); no further
-        // TDZ inits are emitted since the throw preempts all of them.
-        if (self.is_global && !self.is_module && is_restricted_global_name(name)) {
-            uint msg_idx = self.add_string_constant("Identifier is a restricted global and cannot be declared with let/const");
-            self.emit_a_bc(Opcode.THROW_SYNTAX, 0, msg_idx);
-            return;
-        }
         uint name_idx = self.add_string_constant(name);
         self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+    }
+}
+
+/// Emit the GlobalDeclarationInstantiation lexName collision checks
+/// (ES2015 §15.1.11 step 5) for the top-level `let`/`const`/`class` names.
+/// Part of the check prologue that must precede every binding instantiation,
+/// so a SyntaxError (existing var/lex binding or restricted global property)
+/// throws with no observable side effects. Module top-level lexicals live in
+/// the Module Environment Record, which has no such restriction, so this is
+/// Script/eval only.
+fn void CompilerContext.hoist_lexical_tdz_checks(&self) {
+    if (self.is_module) return;
+    NameSpan[MAX_PRESCAN_NAMES] spans;
+    uint n = self.pre_scan_lexical_decls(&spans, MAX_PRESCAN_NAMES);
+    for (uint i = 0; i < n; i++) {
+        char[] name = self.name_span_text(spans[i]);
+        uint chk_idx = self.add_string_constant(name);
+        self.emit_a_bc(Opcode.CHKGLOBALLEX, 0, chk_idx);
     }
 }
 
@@ -565,6 +544,13 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
     // See pre_scan_lexical_decls: tells a class DECLARATION from an
     // expression so `case 0: var A = class B {}` doesn't leak `B`.
     TokenType prev_tt = TokenType.SEMICOLON;
+    // A `case`/`default` label ends at its `:`, which opens statement
+    // position — a FunctionDeclaration or `class` there is a lexical
+    // CaseBlock binding. Distinguish that label colon from a ternary
+    // `?:` colon by tracking whether an unmatched `?` is still open, and
+    // from a colon nested in parens/brackets via paren_depth.
+    uint     paren_depth = 0;
+    uint     question_depth = 0;
 
     while (count < capacity) {
         Token? tok_opt = self.lexer.next_token();
@@ -595,6 +581,37 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
 
         if (brace_depth != 0) {
             prev_tt = tt;
+            continue;
+        }
+
+        // Track paren/bracket nesting and open ternary `?` so that only a
+        // top-level case/default label colon (not a ternary or subscript
+        // colon) is treated as a statement-position boundary below.
+        if (tt == TokenType.LPAREN || tt == TokenType.LBRACKET) {
+            paren_depth++;
+            prev_tt = tt;
+            continue;
+        }
+        if (tt == TokenType.RPAREN || tt == TokenType.RBRACKET) {
+            if (paren_depth > 0) paren_depth--;
+            prev_tt = tt;
+            continue;
+        }
+        if (tt == TokenType.QUESTION && paren_depth == 0) {
+            question_depth++;
+            prev_tt = tt;
+            continue;
+        }
+        if (tt == TokenType.COLON && paren_depth == 0) {
+            if (question_depth > 0) {
+                // Closes a ternary — not a case label.
+                question_depth--;
+                prev_tt = tt;
+            } else {
+                // A `case <expr>:` / `default:` label colon: the following
+                // declaration is at statement position.
+                prev_tt = TokenType.SEMICOLON;
+            }
             continue;
         }
 

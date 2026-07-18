@@ -206,6 +206,13 @@ struct Vm {
     // Global environment
     EnvRecord* global_env;
 
+    // Global lexical environment — the Global Environment Record's
+    // DeclarativeRecord (ES2015 §8.1.1.4). Holds top-level `let`/`const`/
+    // `class` bindings, which are NOT properties of the global object.
+    // Declarative, parented to `global_env` (the ObjectRecord), and persists
+    // across `$262.evalScript` calls so cross-script redeclarations collide.
+    EnvRecord* global_lex_env;
+
     // Return value (for outer executor return)
     TVal return_val;
 

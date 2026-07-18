@@ -413,6 +413,21 @@ enum Opcode : char {
     /// bindings as uninitialized before their declaration is reached.
     INITTZ,
 
+    /// GlobalDeclarationInstantiation static checks (ES2015 §15.1.11),
+    /// emitted only at the top of a global Script/eval so a collision throws
+    /// before any binding is instantiated. BC indexes the declared name in
+    /// the constant pool; A is unused (A-BC format).
+    ///   CHKGLOBALLEX  — a lexical name (let/const/class): throws SyntaxError
+    ///     if the name already has a var binding, a global lexical binding,
+    ///     or a restricted (non-configurable, non-plain-data) global property.
+    ///   CHKGLOBALVAR  — a var name: throws SyntaxError if a global lexical
+    ///     binding exists; else TypeError if CanDeclareGlobalVar is false.
+    ///   CHKGLOBALFUNC — a function name: throws TypeError if
+    ///     CanDeclareGlobalFunction is false.
+    CHKGLOBALLEX,
+    CHKGLOBALVAR,
+    CHKGLOBALFUNC,
+
     /// `A = create_regexp(constants[BC])` — compile a regexp literal
     /// from the raw `/pattern/flags` string stored at constant pool index BC.
     /// Creates a new HObject of class REGEXP with compiled regexp data.
@@ -710,6 +725,9 @@ fn OpFormat get_op_format(Opcode op) {
 case PUTLEX:     return A_BC;
         case PUTLEX_C:   return A_BC;
         case INITTZ:     return A_BC;
+        case CHKGLOBALLEX:  return A_BC;
+        case CHKGLOBALVAR:  return A_BC;
+        case CHKGLOBALFUNC: return A_BC;
         case NEWREGEXP:  return A_BC;
         case ARRSPRD:    return ABC;
         case SPREAD_ARG: return ABC;

@@ -963,7 +963,7 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.func = func;
     entry_act.parent = null;
     entry_act.var_env = vm.global_env;
-    entry_act.lex_env = vm.global_env;
+    entry_act.lex_env = vm.global_lex_env != null ? vm.global_lex_env : vm.global_env;
     entry_act.cat = null;
     entry_act.curr_pc = func.code;  // Points into bytecode
     entry_act.bottom = vm.valstack;
@@ -1249,7 +1249,11 @@ fn bool? Vm.execute_module_nested(Vm* vm, CompiledFunction* func, EnvRecord* env
     act.func = func;
     act.parent = null;
     act.var_env = env;
-    act.lex_env = env;
+    // A global Script ($262.evalScript / indirect eval at global scope) runs
+    // with var_env = the global object record but lex_env = the persistent
+    // global DeclarativeRecord, so top-level let/const/class land there rather
+    // than on the global object. ESM modules pass their own combined env.
+    act.lex_env = (env == vm.global_env && vm.global_lex_env != null) ? vm.global_lex_env : env;
     act.cat = null;
     act.curr_pc = func.code;
     act.async_gen_state = null;
@@ -3420,6 +3424,103 @@ fn TVal? Vm.run(Vm* vm) {
 
                     TVal tdz = env::tdz_sentinel();
                     ds.act.lex_env.bindings.put_prop(key, tdz, hobject::PROP_FLAGS_WEC);
+                }
+            }
+            continue;
+        }
+
+        case Opcode.CHKGLOBALLEX:
+        case Opcode.CHKGLOBALVAR:
+        case Opcode.CHKGLOBALFUNC: {
+            // GlobalDeclarationInstantiation static checks (ES2015 §15.1.11),
+            // run before any binding is instantiated so a collision throws
+            // with no observable side effects.
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+                    HObject* globals = vm.global_env.bindings;
+                    HObject* lex = vm.global_lex_env != null ? vm.global_lex_env.bindings : null;
+
+                    bool has_lex = lex != null && lex.find_prop_idx(key) >= 0;
+                    int gidx = globals.find_prop_idx(key);
+                    bool has_global = gidx >= 0;
+
+                    if (op == Opcode.CHKGLOBALLEX) {
+                        // A lexical name may not collide with an existing var
+                        // binding (own global property) or global lexical
+                        // binding, nor a restricted (non-configurable) global
+                        // property (HasRestrictedGlobalProperty).
+                        bool restricted = has_global
+                            && !globals.get_prop_flags((uint)gidx).configurable;
+                        if (has_lex || restricted) {
+                            HString* nm = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.syntax_err_proto,
+                                "Identifier '%s' has already been declared", nm.get_cstr(),
+                                ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
+                    } else if (op == Opcode.CHKGLOBALVAR) {
+                        // A var name may not collide with a global lexical
+                        // binding (SyntaxError); otherwise CanDeclareGlobalVar
+                        // must hold (TypeError when the global is not
+                        // extensible and has no matching own property).
+                        if (has_lex) {
+                            HString* nm = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.syntax_err_proto,
+                                "Identifier '%s' has already been declared", nm.get_cstr(),
+                                ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
+                        if (!has_global && !globals.is_extensible()) {
+                            HString* nm = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,
+                                "Cannot declare global variable '%s'", nm.get_cstr(),
+                                ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
+                    } else {
+                        // CHKGLOBALFUNC — a function name is a var-declared
+                        // name, so it may not collide with a global lexical
+                        // binding (SyntaxError); otherwise
+                        // CanDeclareGlobalFunction must hold: definable when no
+                        // own prop and extensible, or the prop is configurable,
+                        // or it is a writable+enumerable data property; else
+                        // TypeError.
+                        if (has_lex) {
+                            HString* nm = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.syntax_err_proto,
+                                "Identifier '%s' has already been declared", nm.get_cstr(),
+                                ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
+                        bool definable;
+                        if (!has_global) {
+                            definable = globals.is_extensible();
+                        } else {
+                            hobject::PropFlags pf = globals.get_prop_flags((uint)gidx);
+                            definable = pf.configurable
+                                || (!pf.is_accessor && pf.writable && pf.enumerable);
+                        }
+                        if (!definable) {
+                            HString* nm = (HString*)key;
+                            if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,
+                                "Cannot declare global function '%s'", nm.get_cstr(),
+                                ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                return VM_ERROR~;
+                            }
+                            break;
+                        }
+                    }
                 }
             }
             continue;

@@ -60,6 +60,16 @@ fn Vm*? vm_create(Heap* heap) {
     // so that mark-and-sweep never collects the global scope.
     heap.register_gc_root(global.bindings.as_header());
 
+    // Global lexical (declarative) record for top-level let/const/class.
+    EnvRecord*? global_lex = env::env_create_declarative(heap, global);
+    if (catch err = global_lex) {
+        heap.free_func(heap.heap_udata, vs_raw);
+        heap.free_func(heap.heap_udata, raw);
+        return VM_ERROR~;
+    }
+    vm.global_lex_env = global_lex;
+    heap.register_gc_root(global_lex.bindings.as_header());
+
     // Register built-ins
     if (!builtins::register_builtins(global, heap)) {
         env::env_destroy(heap, global);
@@ -161,6 +171,11 @@ fn bool vm_reset(Vm* vm, Heap* heap) {
     vm.global_env = global;
 
     heap.register_gc_root(global.bindings.as_header());
+
+    EnvRecord*? global_lex = env::env_create_declarative(heap, global);
+    if (catch err = global_lex) { return false; }
+    vm.global_lex_env = global_lex;
+    heap.register_gc_root(global_lex.bindings.as_header());
 
     if (!builtins::register_builtins(global, heap)) { return false; }
     if (test262_host_enabled) {

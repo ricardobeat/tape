@@ -38,6 +38,24 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
     // Check for "use strict" directive prologue at program level
     ctx.parse_directives()!;
 
+    // GlobalDeclarationInstantiation static checks (ES2015 §15.1.11) must run
+    // before ANY var/function/lexical binding is instantiated, so a collision
+    // throws with no observable side effects. Emit the check prologue for
+    // top-level lexical, var, and function names first; the real hoist passes
+    // below then instantiate the bindings.
+    ctx.hoist_lexical_tdz_checks();
+    ctx.hoist_decls(true, true)!;
+    ctx.hoist_global_fn_decls(true)!;
+    lex.pos             = saved_pos;
+    lex.line            = saved_line;
+    lex.col             = saved_col;
+    lex.current         = saved_cur;
+    lex.lookahead       = saved_look;
+    lex.has_lookahead   = saved_haslk;
+    lex.pushed_back     = saved_push;
+    lex.has_pushed_back = saved_haspb;
+    lex.seen_line_term  = saved_slt;
+
     // Hoist function declarations at the global level (ES5 §10.2.1.1).
     ctx.hoist_global_fn_decls()!;
 

@@ -413,7 +413,12 @@ fn void builtin_eval(BuiltinContext* ctx) {
     vm::Vm* eval_vm = (vm::Vm*)ctx.vm;
     usz act_count = eval_vm.activation_count;
     bool is_direct_eval = false;
-    EnvRecord* lex_env_for_eval = ctx.global_env;
+    // Indirect eval's lexEnv is NewDeclarativeEnvironment(GlobalEnv), whose
+    // outer must be the global Environment Record's DeclarativeRecord (the
+    // global lexical env) so the eval sees top-level `let`/`const`/`class`
+    // bindings. varEnv stays the global object record. Direct eval overrides
+    // both with the caller's envs below.
+    EnvRecord* lex_env_for_eval = eval_vm.global_lex_env != null ? eval_vm.global_lex_env : ctx.global_env;
     EnvRecord* var_env_for_eval = ctx.global_env;
     TVal caller_this;
     caller_this.set_undefined();
