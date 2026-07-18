@@ -539,6 +539,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     HObject* tostring_obj = tostring_raw;
     (*tostring_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_NUMBER_PROTO_TOSTRING;
     tostring_obj.flags.callable = true;
+    tostring_obj.flags.constructable = false;
     tostring_obj.prototype = heap.function_proto;
     HString* tostring_name_key = builtin_intern_string(heap, "name");
     HString* tostring_name_val = builtin_intern_string(heap, "toString");
