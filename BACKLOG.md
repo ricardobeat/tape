@@ -1,5 +1,60 @@
 # Duktape C3 — Backlog
 
+## Session 287 (2026-07-18) — eight parallel-agent clusters landed
+
+**Baseline `out/s287.tsv`: 96.5% → 98.5%** (32,814 pass / 509 real-fail;
+raw 32814/463/46CE). Verified the 40 "new" fails vs s286 in isolation:
+**38 were batch-runner-segv flakes** (pass single-process — see memory
+`batch-runner-segv-under-load`), 2 were genuine regressions from this session's
+merges, both caught and being fixed before round 3:
+- TA (`25d1ad1`): `throw-type-error-before-custom-proto-access` — eager
+  `newTarget.prototype` getter access before arg-validation throw. (fix in flight)
+- O (`2916ccd`): plain async functions wrongly got a `.prototype` (the
+  `is_generator()` gate catches async — flag conflation, see
+  `ctx-is-async-conflation`); breaks `class extends asyncFn` IsConstructor
+  ordering. (fix in flight)
+
+Merged to main (`7c47e9c..6c8d663`), ~549 real tests recovered + 39 reclassified:
+- **P1 (`e40cdd9`) — the big one**: the 436 `RegExp/property-escapes` fails were
+  NOT a regexp gap. Root cause was a general compiler register-aliasing bug —
+  `assignment_expr` freed a live local var's own register (LIFO-recycled into the
+  next alloc, clobbering the variable). 18-line fix, zero regressions. See
+  memory `register-freeing-lifo` (dual-hazard note).
+- **TA (`25d1ad1`)**: TypedArray Integer-Indexed exotic
+  [[GetOwnProperty]]/[[DefineOwnProperty]]/[[Set]]/[[HasProperty]] — 46/49.
+- **J (`d6cbc2d`)**: JSON.parse/stringify proxy-trap + abrupt-completion
+  propagation — 16/19 (3 = Date.toJSON, separate builtin).
+- **O (`2916ccd`)**: fn-name inference for object-literal computed keys/methods/
+  accessors + generator `.prototype` — +24 (14 fn-name + 10 generator).
+- **H1+T (`4a4226f`)**: tagged-template raw text/TRV/site-caching/freeze — 16/16.
+  Hashbang was already implemented (28/29; last needs `with`).
+- **S (`134ded9`)**: String.prototype Symbol.iterator coercion/constructability,
+  ToInteger/ToPrimitive Symbol-throw, byte↔UTF-16 index fixes in regexp-backed
+  String methods — 11 fixed (rest BigInt-wrapper-blocked).
+- **R (`6c8d663`)**: recovered 5 STALE skip entries (top-level `this` IS global
+  now — Date/prop-desc, Map/map, Set/set, WeakMap, WeakSet); Object 9/11,
+  Promise 6/11; bonus generator/class fixes + a real object-shorthand compiler bug.
+- **F1 (`1ce9eaa`)**: 38 sloppy-`this` apply/call tests correctly skip-listed
+  (engine is strict-only by design — see memory `strict-only-engine`); deleted
+  dead `fn_to_object_for_this` helper.
+
+### Follow-ups surfaced this session
+- [ ] **Promise combinator GC-rooting** (~4): builtin-thrown error object can be
+  swept before use across a call-boundary safepoint (`any`/`race`
+  resolve-throws-*, capability-resolve-throws). Diagnosed, not fixed.
+- [ ] **Promise no-handler microtask ordering** (1): no-handler reactions settle
+  synchronously instead of via queued microtask (`race/resolved-then-catch-finally`).
+- [ ] **`arguments` has no `Symbol.iterator`** — breaks `[...arguments]`/spread.
+- [ ] **Iterators lack a shared prototype `next`** (Array/Map/Set/String): each
+  instance gets its own `next`, so `Object.getPrototypeOf(iter).next = …`
+  patching is silently ineffective across the whole iterator subsystem.
+- [ ] **Batch-runner SIGSEGV under sustained load** (heap.reset/GC) — see memory
+  `batch-runner-segv-under-load`; verify batch regressions in isolation.
+- [ ] **BigInt wrapper** (`BigInt`/`BigInt64Array`/`BigUint64Array`): blocks
+  ~14 String/Object/TypedArray tests. Large deferred feature.
+
+---
+
 Baseline: **session 286, `out/s286.tsv` (2026-07-17)** —
 32,222 PASS / 1,155 NONPASS (incl. 42 unexpected CE) across 33,377
 executable test262 tests = **96.5% pass** (variant-counted; the private
