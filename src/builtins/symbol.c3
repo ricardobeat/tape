@@ -198,7 +198,7 @@ fn HString* symbol_registry_get_key(Heap* heap, HString* sym) {
 /// Ensure the well-known @@toStringTag symbol exists in the global registry.
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_tostringtag_symbol(Heap* heap) {
-    char[] desc = "toStringTag";
+    char[] desc = "Symbol.toStringTag";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) return existing;
     HString* sym = create_symbol_string(heap, desc);
@@ -212,7 +212,7 @@ fn HString* ensure_tostringtag_symbol(Heap* heap) {
 fn HString* ensure_iterator_symbol(Heap* heap) {
     // Fast path: already cached on the heap
     if (heap.iterator_symbol != null) return heap.iterator_symbol;
-    char[] desc = "iterator";
+    char[] desc = "Symbol.iterator";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.iterator_symbol = existing;
@@ -231,7 +231,7 @@ fn HString* ensure_iterator_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_toprimitive_symbol(Heap* heap) {
     if (heap.toprimitive_symbol != null) return heap.toprimitive_symbol;
-    char[] desc = "toPrimitive";
+    char[] desc = "Symbol.toPrimitive";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.toprimitive_symbol = existing;
@@ -250,7 +250,7 @@ fn HString* ensure_toprimitive_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_concatspreadable_symbol(Heap* heap) {
     if (heap.concatspreadable_symbol != null) return heap.concatspreadable_symbol;
-    char[] desc = "isConcatSpreadable";
+    char[] desc = "Symbol.isConcatSpreadable";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.concatspreadable_symbol = existing;
@@ -269,7 +269,7 @@ fn HString* ensure_concatspreadable_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_hasinstance_symbol(Heap* heap) {
     if (heap.hasinstance_symbol != null) return heap.hasinstance_symbol;
-    char[] desc = "hasInstance";
+    char[] desc = "Symbol.hasInstance";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.hasinstance_symbol = existing;
@@ -288,7 +288,7 @@ fn HString* ensure_hasinstance_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_match_symbol(Heap* heap) {
     if (heap.match_symbol != null) return heap.match_symbol;
-    char[] desc = "match";
+    char[] desc = "Symbol.match";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.match_symbol = existing;
@@ -306,7 +306,7 @@ fn HString* ensure_match_symbol(Heap* heap) {
 /// Ensure the well-known @@search symbol exists in the global registry.
 fn HString* ensure_search_symbol(Heap* heap) {
     if (heap.search_symbol != null) return heap.search_symbol;
-    char[] desc = "search";
+    char[] desc = "Symbol.search";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.search_symbol = existing;
@@ -324,7 +324,7 @@ fn HString* ensure_search_symbol(Heap* heap) {
 /// Ensure the well-known @@replace symbol exists in the global registry.
 fn HString* ensure_replace_symbol(Heap* heap) {
     if (heap.replace_symbol != null) return heap.replace_symbol;
-    char[] desc = "replace";
+    char[] desc = "Symbol.replace";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.replace_symbol = existing;
@@ -342,7 +342,7 @@ fn HString* ensure_replace_symbol(Heap* heap) {
 /// Ensure the well-known @@split symbol exists in the global registry.
 fn HString* ensure_split_symbol(Heap* heap) {
     if (heap.split_symbol != null) return heap.split_symbol;
-    char[] desc = "split";
+    char[] desc = "Symbol.split";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.split_symbol = existing;
@@ -361,7 +361,7 @@ fn HString* ensure_split_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_species_symbol(Heap* heap) {
     if (heap.species_symbol != null) return heap.species_symbol;
-    char[] desc = "species";
+    char[] desc = "Symbol.species";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.species_symbol = existing;
@@ -380,7 +380,7 @@ fn HString* ensure_species_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_unscopables_symbol(Heap* heap) {
     if (heap.unscopables_symbol != null) return heap.unscopables_symbol;
-    char[] desc = "unscopables";
+    char[] desc = "Symbol.unscopables";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.unscopables_symbol = existing;
@@ -399,7 +399,7 @@ fn HString* ensure_unscopables_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_matchall_symbol(Heap* heap) {
     if (heap.matchall_symbol != null) return heap.matchall_symbol;
-    char[] desc = "matchAll";
+    char[] desc = "Symbol.matchAll";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.matchall_symbol = existing;
@@ -418,7 +418,7 @@ fn HString* ensure_matchall_symbol(Heap* heap) {
 /// Returns the symbol HString* (usable as a property key).
 fn HString* ensure_asynciterator_symbol(Heap* heap) {
     if (heap.asynciterator_symbol != null) return heap.asynciterator_symbol;
-    char[] desc = "asyncIterator";
+    char[] desc = "Symbol.asyncIterator";
     HString* existing = symbol_registry_get(heap, desc);
     if (existing != null) {
         heap.asynciterator_symbol = existing;
