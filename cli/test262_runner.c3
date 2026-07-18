@@ -79,9 +79,13 @@ fn int run_manifest_loop(char[] mpath) {
 
             bool report = (total % 100 == 0);
 
-            // Reset heap+VM — destroy+recreate VM to avoid stale-reference bugs
+            // Reset heap+VM — destroy+recreate VM to avoid stale-reference bugs.
+            // Null out `v` between destroy and a successful recreate so that a
+            // failed vm_create cannot leave `v` pointing at freed memory (which
+            // the next iteration's vm_destroy, or the final one, would double-free).
             hp.reset();
             vm::vm_destroy(v);
+            v = null;
             Vm*? v2 = vm::vm_create(hp);
             if (catch err = v2) {
                 fail++;
@@ -640,9 +644,13 @@ fn int run_worker_loop() {
             buf[len] = 0;
             if (len == 0) { continue; }
 
-            // Reset heap+VM — destroy+recreate VM to avoid stale-reference bugs
+            // Reset heap+VM — destroy+recreate VM to avoid stale-reference bugs.
+            // Null out `v` between destroy and a successful recreate so that a
+            // failed vm_create cannot leave `v` pointing at freed memory (which
+            // the next iteration's vm_destroy, or the final one, would double-free).
             hp.reset();
             vm::vm_destroy(v);
+            v = null;
             Vm*? v2 = vm::vm_create(hp);
             if (catch err = v2) {
                 io::printfn("FAIL %s", (String)buf[:len]);

@@ -345,9 +345,13 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                     ic.proto = null;  // own property
                                     ic.prop_idx = (ushort)owner_idx;
                                     ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
+                                    // incref the new key before decref-ing the old one: when the
+                                    // same string is re-cached at this slot (ic.key == key) whose
+                                    // only live reference is the IC entry itself, decref-first would
+                                    // free it and the following incref would touch freed memory.
+                                    if (key != null) { ((types::HeapHeader*)key).incref(); }
                                     if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
                                     ic.key = key;
-                                    if (key != null) { ((types::HeapHeader*)key).incref(); }
                                     ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
                                     ic.cached_prop_alloc = (void*)res.owner.prop_values();
                                     // Also populate megamorphic cache for cross-site benefit
@@ -734,9 +738,13 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                         ic.proto = is_own ? null : (void*)res.owner;
                                         ic.prop_idx = (ushort)owner_idx;
                                         ic.prop_flags = res.owner.get_prop_flags((uint)owner_idx);
+                                        // incref the new key before decref-ing the old one: when the
+                                        // same string is re-cached at this slot (ic.key == key) whose
+                                        // only live reference is the IC entry itself, decref-first would
+                                        // free it and the following incref would touch freed memory.
+                                        if (key != null) { ((types::HeapHeader*)key).incref(); }
                                         if (ic.key != null) { vm.heap.decref((types::HeapHeader*)ic.key); }
                                         ic.key = key;
-                                        if (key != null) { ((types::HeapHeader*)key).incref(); }
                                         ic.prop_value_ptr = &res.owner.prop_values()[owner_idx];
                                         ic.cached_prop_alloc = (void*)res.owner.prop_values();
                                         // Upgrade to cached variant now that IC is populated
