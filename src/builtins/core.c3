@@ -338,6 +338,13 @@ const uint BUILTIN_PROMISE_THEN_FINALLY  = 429;
 const uint BUILTIN_PROMISE_CATCH_FINALLY = 430;
 const uint BUILTIN_ARRAY_SPECIES_GETTER  = 431;
 
+/// PromiseReactionJob's Identity/Thrower closures (ES2015+ §27.2.2.1) for a
+/// reaction with no handler: the job still runs as a real queued microtask
+/// (never inline), returning the value unchanged (Identity, fulfilled
+/// passthrough) or re-throwing it (Thrower, rejected passthrough) so
+/// promise_microtask_after settles the downstream with the correct state.
+const uint BUILTIN_PROMISE_IDENTITY            = 432;
+
 const uint BUILTIN_REFLECT_GET                 = 433;
 const uint BUILTIN_REFLECT_SET                 = 434;
 const uint BUILTIN_REFLECT_HAS                 = 435;
@@ -350,8 +357,9 @@ const uint BUILTIN_REFLECT_IS_EXTENSIBLE       = 441;
 const uint BUILTIN_REFLECT_PREVENT_EXTENSIONS  = 442;
 const uint BUILTIN_REFLECT_APPLY               = 443;
 const uint BUILTIN_REFLECT_CONSTRUCT           = 444;
+const uint BUILTIN_PROMISE_THROWER             = 445;
 
-const uint BUILTIN_COUNT                       = 445;
+const uint BUILTIN_COUNT                       = 446;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -3114,6 +3122,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REFLECT_PREVENT_EXTENSIONS]  = &builtin_reflect_preventExtensions,
     [BUILTIN_REFLECT_APPLY]               = &builtin_reflect_apply,
     [BUILTIN_REFLECT_CONSTRUCT]           = &builtin_reflect_construct,
+    [BUILTIN_PROMISE_IDENTITY]            = &builtin_promise_identity,
+    [BUILTIN_PROMISE_THROWER]             = &builtin_promise_thrower,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

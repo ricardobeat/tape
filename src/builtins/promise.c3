@@ -211,44 +211,63 @@ fn void promise_trigger_reactions(HObject* promise, Heap* heap, void* vm) {
              ((HObject*)handler.get_heapptr()).is_callable());
         bool has_handler = !(handler.is_undefined() || !callable);
 
+        // Per PromiseReactionJob (ES2015+ §27.2.2.1): a reaction is ALWAYS
+        // run as a queued job, never inline — even with no handler, where
+        // the spec substitutes the Identity (fulfilled) or Thrower
+        // (rejected) abstract closure for `handler`. Using those same
+        // lightfunc sentinels here lets the no-handler case share the
+        // has-handler path's job-enqueue plumbing below instead of settling
+        // the downstream synchronously.
         if (!has_handler) {
-            // No handler — pass the result (or rejection) through.
-            if (has_cap) {
-                // Custom capability: call cap_resolve or cap_reject with the value.
-                TVal cap_fn = (state == PROMISE_FULFILLED) ? cap_resolve : cap_reject;
-                promise_call_cap_fn(heap, vm, cap_fn, result);
-            } else if (downstream != null) {
-                // Default promise: directly settle the downstream.
-                promise_settle(downstream, state, &result, heap);
-                promise_trigger_reactions(downstream, heap, vm);
+            handler = (state == PROMISE_FULFILLED)
+                ? types::make_lightfunc((void*)(usz)BUILTIN_PROMISE_IDENTITY)
+                : types::make_lightfunc((void*)(usz)BUILTIN_PROMISE_THROWER);
+        }
+
+        // Build the downstream TVal for the microtask queue: for custom
+        // capabilities, wrap the cap resolve/reject in a wrapper object so
+        // promise_microtask_after can call them.
+        TVal microtask_downstream;
+        if (has_cap) {
+            // Build the capability wrapper (cap_promise may be undefined if default)
+            HString* cp_key = builtin_intern_string(heap, "\xFFcap_promise_tv");
+            TVal cap_promise; cap_promise.set_undefined();
+            if (cp_key != null) {
+                if (try cpv = reaction.get_prop(cp_key)) cap_promise = cpv;
             }
-        } else {
-            // Has a handler — enqueue a microtask to call it.
-            // Build the downstream TVal for the microtask queue:
-            // for custom capabilities, wrap the cap resolve/reject in a wrapper object
-            // so promise_microtask_after can call them.
-            TVal microtask_downstream;
-            if (has_cap) {
-                // Build the capability wrapper (cap_promise may be undefined if default)
-                HString* cp_key = builtin_intern_string(heap, "\xFFcap_promise_tv");
-                TVal cap_promise; cap_promise.set_undefined();
-                if (cp_key != null) {
-                    if (try cpv = reaction.get_prop(cp_key)) cap_promise = cpv;
-                }
-                HObject*? wrapper_opt = promise_make_cap_wrapper(heap, cap_resolve, cap_reject, cap_promise);
-                if (try wrapper = wrapper_opt) {
-                    microtask_downstream.set_object(wrapper);
-                } else {
-                    microtask_downstream = downstream_val;
-                }
+            HObject*? wrapper_opt = promise_make_cap_wrapper(heap, cap_resolve, cap_reject, cap_promise);
+            if (try wrapper = wrapper_opt) {
+                microtask_downstream.set_object(wrapper);
             } else {
                 microtask_downstream = downstream_val;
             }
-            heap.enqueue_microtask(handler, result, microtask_downstream);
+        } else {
+            microtask_downstream = downstream_val;
         }
+        heap.enqueue_microtask(handler, result, microtask_downstream);
 
         reaction = next;
     }
+}
+
+/// PromiseReactionJob's Identity closure — the substitute handler for a
+/// fulfilled reaction with no onFulfilled: returns the argument unchanged,
+/// so the downstream is fulfilled with the same value (ES2015+ §27.2.2.1).
+fn void builtin_promise_identity(BuiltinContext* ctx) {
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    *ctx.result = arg;
+}
+
+/// PromiseReactionJob's Thrower closure — the substitute handler for a
+/// rejected reaction with no onRejected: re-throws the argument, so
+/// promise_microtask_after sees heap.has_error and rejects the downstream
+/// with the same reason (ES2015+ §27.2.2.1).
+fn void builtin_promise_thrower(BuiltinContext* ctx) {
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    ctx.should_throw = true;
+    ctx.throw_value = arg;
 }
 
 /// Call a handler function with one argument.
@@ -323,7 +342,7 @@ fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal down
 
                 if (heap.has_error) {
                     TVal err = heap.error_value;
-                    heap.has_error = false;
+                    promise_clear_error_channels(heap, vm);
                     promise_call_cap_fn(heap, vm, cap_reject, err);
                     return;
                 }
@@ -345,8 +364,9 @@ fn void promise_microtask_after(void* heap_raw, void* vm, TVal result, TVal down
 
     // If the handler threw, reject the downstream with the error
     if (heap.has_error) {
-        heap.has_error = false;
-        promise_settle(ds, PROMISE_REJECTED, &heap.error_value, heap);
+        TVal err = heap.error_value;
+        promise_clear_error_channels(heap, vm);
+        promise_settle(ds, PROMISE_REJECTED, &err, heap);
         promise_trigger_reactions(ds, heap, vm);
         return;
     }
@@ -3017,18 +3037,21 @@ fn bool promise_get_iterator(Heap* heap, void* vm, TVal iterable, TVal* out_iter
     return true;
 }
 
-/// Clear both error-propagation channels after a caller has captured
+/// Clear all error-propagation channels after a caller has captured
 /// `heap.error_value` into its own local completion. `heap.call_fn`
-/// propagates a callee's uncaught throw on two channels simultaneously
-/// (heap.has_error/heap.error_value AND vm.throw_pending/vm.throw_value —
-/// see vm_call_fn_impl); clearing only the former leaves the latter to
-/// resurface as a spurious top-level uncaught exception (and leaves its
-/// error object unrooted) the next time the interpreter checks
-/// vm.throw_pending after this builtin returns.
+/// propagates a callee's uncaught throw on three channels simultaneously
+/// (heap.has_error/heap.error_value, vm.throw_pending/vm.throw_value, and
+/// vm.has_error — see vm_call_fn_impl); clearing only some of them leaves
+/// the others to resurface as a spurious exception (e.g. the CALL opcode
+/// checking vm.has_error) the next time the interpreter or another
+/// reentrant heap.call_fn call runs after this builtin returns.
 fn void promise_clear_error_channels(Heap* heap, void* vm) {
     heap.has_error = false;
     Vm* v = (Vm*)vm;
-    if (v != null) v.throw_pending = false;
+    if (v != null) {
+        v.throw_pending = false;
+        v.has_error = false;
+    }
 }
 
 /// Call iterator.next() and return the result record.
