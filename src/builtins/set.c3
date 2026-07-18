@@ -30,7 +30,7 @@ fn void builtin_set(BuiltinContext* ctx) {
         "Set constructor argument is not an object",
         "add", "Set.prototype.add is not callable",
         "Set: iterable argument is not iterable",
-        false, true);
+        false, false);
 }
 
 // ============================================================================
@@ -114,14 +114,6 @@ fn void builtin_set_proto_values(BuiltinContext* ctx) {
 // ============================================================================
 fn void builtin_set_proto_entries(BuiltinContext* ctx) {
     create_set_iterator(ctx, 2);
-}
-
-// ============================================================================
-// Set.prototype[@@iterator] — ES6 §23.2.3.9
-// Same as values().
-// ============================================================================
-fn void builtin_set_proto_symbol_iter(BuiltinContext* ctx) {
-    create_set_iterator(ctx, 0);
 }
 
 // ============================================================================
@@ -291,6 +283,15 @@ fn void builtin_set_proto_forEach(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Set[Symbol.species] getter — ES6 §23.2.2.2. Returns the this value (the
+// constructor itself), so a subclass like `class MySet extends Set {}` gets
+// MySet back from SpeciesConstructor calls that inherit this accessor.
+// ============================================================================
+fn void builtin_set_species_getter(BuiltinContext* ctx) {
+    *ctx.result = ctx.this_val;
+}
+
+// ============================================================================
 // Set constructor registration
 // ============================================================================
 
@@ -329,33 +330,17 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "entries", BUILTIN_SET_PROTO_ENTRIES)) return false;
     // Add .forEach() method
     if (!register_string_proto_method(proto, heap, "forEach", BUILTIN_SET_PROTO_FOREACH)) return false;
-    // Add [Symbol.iterator] = values
-    HString* iter_sym = ensure_iterator_symbol(heap);
-    if (iter_sym != null) {
-        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (catch err = fn_raw) return false;
-        HObject* fn_obj = fn_raw;
-        (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SET_PROTO_SYMBOL_ITER;
-        fn_obj.flags.callable = true;
-        fn_obj.prototype = heap.function_proto;
-        // Set .name
-        HString* name_key = builtin_intern_string(heap, "name");
-        HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
-        if (name_key != null && name_val != null) {
-            TVal name_tv;
-            name_tv.set_string(name_val);
-            fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    // Set.prototype[Symbol.iterator] must be the *same function object* as
+    // .values (ES6 §23.2.3.11), not merely an equivalent implementation.
+    {
+        HString* iter_sym = ensure_iterator_symbol(heap);
+        HString* values_key = builtin_intern_string(heap, "values");
+        if (iter_sym != null && values_key != null) {
+            PropValue*? values_prop_opt = proto.find_prop(values_key);
+            if (try values_prop = values_prop_opt) {
+                proto.put_prop(iter_sym, *values_prop, hobject::PROP_FLAGS_WC);
+            }
         }
-        // Set .length = 0
-        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-        if (len_key != null) {
-            TVal len_tv;
-            len_tv.set_fastint(0);
-            fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
-        }
-        TVal iter_tv;
-        iter_tv.set_object(fn_obj);
-proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
     }
     
     // Set @@toStringTag on Set.prototype
@@ -432,6 +417,39 @@ proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
     TVal length_tv;
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
+
+    // Set[Symbol.species] accessor — ES6 §23.2.2.2: getter returns `this`.
+    {
+        HString* species_sym = ensure_species_symbol(heap);
+        if (species_sym != null) {
+            HObject*? getter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (try getter = getter_raw) {
+                getter.flags.callable = true;
+                getter.flags.constructable = false;
+                getter.prototype = heap.function_proto;
+                (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SET_SPECIES_GETTER;
+                HString* getter_name_key = builtin_intern_string(heap, "name");
+                HString* getter_name_str = builtin_intern_string(heap, "get [Symbol.species]");
+                if (getter_name_key != null && getter_name_str != null) {
+                    TVal gn_tv; gn_tv.set_string(getter_name_str);
+                    getter.put_prop(getter_name_key, gn_tv, hobject::PROP_FLAGS_NWC);
+                }
+                HString* getter_len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+                if (getter_len_key != null) {
+                    TVal gl_tv; gl_tv.set_fastint(0);
+                    getter.put_prop(getter_len_key, gl_tv, hobject::PROP_FLAGS_NWC);
+                }
+                TVal getter_tv; getter_tv.set_object(getter);
+                TVal undef_tv; undef_tv.set_undefined();
+                PropFlags acc_flags;
+                acc_flags.writable = false;
+                acc_flags.enumerable = false;
+                acc_flags.configurable = true;
+                acc_flags.is_accessor = true;
+                ctor.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef_tv), acc_flags);
+            }
+        }
+    }
 
     // Register Set constructor globally
     uint hash = heap.hash_string("Set");

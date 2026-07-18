@@ -188,8 +188,6 @@ const uint BUILTIN_ITERATOR_PROTO_SYMBOL_ITER  = 286;
 // Map/Set iterators
 const uint BUILTIN_MAP_ITERATOR_NEXT           = 287;
 const uint BUILTIN_SET_ITERATOR_NEXT           = 288;
-const uint BUILTIN_MAP_PROTO_SYMBOL_ITER       = 289;
-const uint BUILTIN_SET_PROTO_SYMBOL_ITER       = 290;
 
 const uint BUILTIN_ARRAY_PROTO_FOREACH   = 291;
 const uint BUILTIN_ARRAY_PROTO_MAP        = 292;
@@ -358,8 +356,10 @@ const uint BUILTIN_REFLECT_PREVENT_EXTENSIONS  = 442;
 const uint BUILTIN_REFLECT_APPLY               = 443;
 const uint BUILTIN_REFLECT_CONSTRUCT           = 444;
 const uint BUILTIN_PROMISE_THROWER             = 445;
+const uint BUILTIN_MAP_SPECIES_GETTER          = 446;
+const uint BUILTIN_SET_SPECIES_GETTER          = 447;
 
-const uint BUILTIN_COUNT                       = 446;
+const uint BUILTIN_COUNT                       = 448;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -1165,10 +1165,11 @@ fn void coll_throw(BuiltinContext* ctx, char[] msg) {
 ///
 /// is_pair: true for Map/WeakMap (entries are [k,v], adder called with 2 args),
 ///          false for Set/WeakSet (entries are single values, adder called with 1 arg).
-/// allow_array_fallback: true for Map/Set (fall back to array-like indexed
-///          iteration when @@iterator is missing), false for WeakMap/WeakSet
-///          (throw "iterable argument is not iterable" instead — matches
-///          V8/SpiderMonkey behavior per ES2015 §7.4.1 GetIterator).
+/// allow_array_fallback: reserved for array-like indexed iteration when
+///          @@iterator is missing. Map/Set/WeakMap/WeakSet all pass false —
+///          @@iterator must be callable or construction throws "iterable
+///          argument is not iterable" (ES2015 §7.4.1 GetIterator; matches
+///          V8/SpiderMonkey — there is no array-like fallback in the spec).
 /// requires_new_msg / arg_not_object_msg / adder_not_callable_msg / not_iterable_msg:
 ///          pre-built full error messages (avoids runtime string formatting).
 fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject* proto,
@@ -1384,19 +1385,17 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
                             return;
                         }
                     } else {
-                        if (!val_tv.is_undefined()) {
-                            TVal[1] adder_args = { val_tv };
-                            TVal coll_tv2; coll_tv2.set_object(coll);
-                            ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 1, coll_tv2);
-                            if (ctx.heap.has_error) {
-                                ctx.should_throw = true;
-                                ctx.throw_value = ctx.heap.error_value;
-                                ctx.heap.has_error = false;
-                                // adder threw — close iterator then propagate.
-                                arr_iterator_close_after_throw(ctx, iterator);
-                                ctx.result.set_undefined();
-                                return;
-                            }
+                        TVal[1] adder_args = { val_tv };
+                        TVal coll_tv2; coll_tv2.set_object(coll);
+                        ctx.heap.call_fn(ctx.vm, adder, &adder_args[0], 1, coll_tv2);
+                        if (ctx.heap.has_error) {
+                            ctx.should_throw = true;
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            // adder threw — close iterator then propagate.
+                            arr_iterator_close_after_throw(ctx, iterator);
+                            ctx.result.set_undefined();
+                            return;
                         }
                     }
                 }
@@ -2816,7 +2815,6 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_MAP_PROTO_KEYS] = &builtin_map_proto_keys,
     [BUILTIN_MAP_PROTO_SET] = &builtin_map_proto_set,
     [BUILTIN_MAP_PROTO_SIZE_GET] = &builtin_map_proto_size_get,
-    [BUILTIN_MAP_PROTO_SYMBOL_ITER] = &builtin_map_proto_symbol_iter,
     [BUILTIN_MAP_PROTO_VALUES] = &builtin_map_proto_values,
     [BUILTIN_MATH_ABS] = &builtin_math_abs,
     [BUILTIN_MATH_ACOS] = &builtin_math_acos,
@@ -2953,7 +2951,6 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_SET_PROTO_ENTRIES] = &builtin_set_proto_entries,
     [BUILTIN_SET_PROTO_FOREACH] = &builtin_set_proto_forEach,
     [BUILTIN_SET_PROTO_HAS] = &builtin_set_proto_has,
-    [BUILTIN_SET_PROTO_SYMBOL_ITER] = &builtin_set_proto_symbol_iter,
     [BUILTIN_SET_PROTO_VALUES] = &builtin_set_proto_values,
     [BUILTIN_STRING] = &builtin_string,
     [BUILTIN_STRING_FROMCHARCODE] = &builtin_string_fromcharcode,
@@ -3124,6 +3121,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_REFLECT_CONSTRUCT]           = &builtin_reflect_construct,
     [BUILTIN_PROMISE_IDENTITY]            = &builtin_promise_identity,
     [BUILTIN_PROMISE_THROWER]             = &builtin_promise_thrower,
+    [BUILTIN_MAP_SPECIES_GETTER]          = &builtin_map_species_getter,
+    [BUILTIN_SET_SPECIES_GETTER]          = &builtin_set_species_getter,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

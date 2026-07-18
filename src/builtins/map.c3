@@ -91,7 +91,7 @@ fn void builtin_map(BuiltinContext* ctx) {
         "Map constructor argument is not an object",
         "set", "Map.prototype.set is not callable",
         "Map: iterable argument is not iterable",
-        true, true);
+        true, false);
 }
 
 // ============================================================================
@@ -200,14 +200,6 @@ fn void builtin_map_proto_values(BuiltinContext* ctx) {
 // Returns a MapIterator with kind=2 (entries).
 // ============================================================================
 fn void builtin_map_proto_entries(BuiltinContext* ctx) {
-    create_map_iterator(ctx, 2);
-}
-
-// ============================================================================
-// Map.prototype[@@iterator] — ES6 §23.1.3.10
-// Same as entries().
-// ============================================================================
-fn void builtin_map_proto_symbol_iter(BuiltinContext* ctx) {
     create_map_iterator(ctx, 2);
 }
 
@@ -395,6 +387,15 @@ fn void builtin_map_proto_forEach(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Map[Symbol.species] getter — ES6 §23.1.2.2. Returns the this value (the
+// constructor itself), so a subclass like `class MyMap extends Map {}` gets
+// MyMap back from SpeciesConstructor calls that inherit this accessor.
+// ============================================================================
+fn void builtin_map_species_getter(BuiltinContext* ctx) {
+    *ctx.result = ctx.this_val;
+}
+
+// ============================================================================
 // Map constructor registration
 // ============================================================================
 
@@ -426,33 +427,17 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "entries", BUILTIN_MAP_PROTO_ENTRIES)) return false;
     // Add .forEach() method
     if (!register_string_proto_method(proto, heap, "forEach", BUILTIN_MAP_PROTO_FOREACH)) return false;
-    // Add [Symbol.iterator] = entries
-    HString* iter_sym = ensure_iterator_symbol(heap);
-    if (iter_sym != null) {
-        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (catch err = fn_raw) return false;
-        HObject* fn_obj = fn_raw;
-        (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MAP_PROTO_SYMBOL_ITER;
-        fn_obj.flags.callable = true;
-        fn_obj.prototype = heap.function_proto;
-        // Set .name
-        HString* name_key = builtin_intern_string(heap, "name");
-        HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");
-        if (name_key != null && name_val != null) {
-            TVal name_tv;
-            name_tv.set_string(name_val);
-            fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+    // Map.prototype[Symbol.iterator] must be the *same function object* as
+    // .entries (ES6 §23.1.3.10), not merely an equivalent implementation.
+    {
+        HString* iter_sym = ensure_iterator_symbol(heap);
+        HString* entries_key = builtin_intern_string(heap, "entries");
+        if (iter_sym != null && entries_key != null) {
+            PropValue*? entries_prop_opt = proto.find_prop(entries_key);
+            if (try entries_prop = entries_prop_opt) {
+                proto.put_prop(iter_sym, *entries_prop, hobject::PROP_FLAGS_WC);
+            }
         }
-        // Set .length = 0
-        HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-        if (len_key != null) {
-            TVal len_tv;
-            len_tv.set_fastint(0);
-            fn_obj.put_prop(len_key, len_tv, hobject::PROP_FLAGS_NWC);
-        }
-        TVal iter_tv;
-        iter_tv.set_object(fn_obj);
-proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
     }
     
     // Set @@toStringTag on Map.prototype
@@ -529,6 +514,39 @@ proto.put_prop(iter_sym, iter_tv, hobject::PROP_FLAGS_WC);
     TVal length_tv;
     length_tv.set_fastint(0);
     ctor.put_prop(length_key, length_tv, hobject::PROP_FLAGS_NWC);
+
+    // Map[Symbol.species] accessor — ES6 §23.1.2.2: getter returns `this`.
+    {
+        HString* species_sym = ensure_species_symbol(heap);
+        if (species_sym != null) {
+            HObject*? getter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+            if (try getter = getter_raw) {
+                getter.flags.callable = true;
+                getter.flags.constructable = false;
+                getter.prototype = heap.function_proto;
+                (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MAP_SPECIES_GETTER;
+                HString* getter_name_key = builtin_intern_string(heap, "name");
+                HString* getter_name_str = builtin_intern_string(heap, "get [Symbol.species]");
+                if (getter_name_key != null && getter_name_str != null) {
+                    TVal gn_tv; gn_tv.set_string(getter_name_str);
+                    getter.put_prop(getter_name_key, gn_tv, hobject::PROP_FLAGS_NWC);
+                }
+                HString* getter_len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+                if (getter_len_key != null) {
+                    TVal gl_tv; gl_tv.set_fastint(0);
+                    getter.put_prop(getter_len_key, gl_tv, hobject::PROP_FLAGS_NWC);
+                }
+                TVal getter_tv; getter_tv.set_object(getter);
+                TVal undef_tv; undef_tv.set_undefined();
+                PropFlags acc_flags;
+                acc_flags.writable = false;
+                acc_flags.enumerable = false;
+                acc_flags.configurable = true;
+                acc_flags.is_accessor = true;
+                ctor.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef_tv), acc_flags);
+            }
+        }
+    }
 
     // Map.prototype's [[Prototype]] is set later (to Object.prototype)
 
