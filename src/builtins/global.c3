@@ -407,35 +407,9 @@ fn void builtin_eval(BuiltinContext* ctx) {
 
     // Determine whether this is a direct eval call by checking the calling
     // activation's ACT_FLAG_DIRECT_EVAL flag (set by the compiler when the
-    // function body contains a direct eval(...) call).
-    // For direct eval, use the caller's lexical/variable environments
-    // (ES5 §10.4.2). For indirect eval, use the global environment.
-    //
-    // var_env and lex_env are handled differently (ES2015 §18.2.1.1
-    // PerformEval steps 14-19, EvalDeclarationInstantiation), but GETVAR/
-    // PUTVAR/DECLVAR only ever walk/write via lex_env (var_env is DECLVAR's
-    // write target only — see vm_execute.c3's DECLVAR case) — so whatever we
-    // use as var_env MUST also be reachable by walking lex_env's parent
-    // chain, or eval's own `var` bindings become invisible to reads in the
-    // very same eval call (they'd be a second child hanging off a common
-    // ancestor, not an ancestor of lex_env itself).
-    //
-    //   - When the caller's var-scope IS the global environment (top-level
-    //     direct eval, or any indirect eval), var_env is the real global env
-    //     itself — global `var`/`function` declarations from eval must
-    //     become persistent, non-configurable-or-configurable-per-D global
-    //     properties, not vanish with a throwaway env
-    //     (CreateGlobalVarBinding/CreateGlobalFunctionBinding). lex_env is a
-    //     fresh declarative child of the caller's actual lex_env (which
-    //     already chains up through the global env), isolating let/const/
-    //     class from the caller while still reaching the global var_env.
-    //   - When the caller's var-scope is a real function activation, a
-    //     single fresh declarative env serves as BOTH var_env and lex_env
-    //     (parented on the caller's actual lex_env, preserving any block
-    //     scopes visible at the call site) — so `var`/`function`
-    //     declarations and `let`/`const`/`class` declarations land in the
-    //     same throwaway scope, and a read immediately after a `var` write
-    //     sees it, without polluting the caller's own bindings.
+    // function body contains a direct eval(...) call). The environment the
+    // eval's own scope is parented on is the caller's lexical environment for
+    // direct eval (ES5 §10.4.2), and the global environment for indirect eval.
     vm::Vm* eval_vm = (vm::Vm*)ctx.vm;
     usz act_count = eval_vm.activation_count;
     bool is_direct_eval = false;
@@ -452,24 +426,41 @@ fn void builtin_eval(BuiltinContext* ctx) {
             caller_this = caller_act.this_binding;
         }
     }
-    if (var_env_for_eval == ctx.global_env) {
+    // Declaration-instantiation leak semantics follow the eval SOURCE's own
+    // strictness (ES2015 §18.2.1.1 PerformEval step 12), independent of the
+    // fact that this engine executes every function in strict mode.
+    //
+    //   - Strict eval source: varEnv is a FRESH declarative env. A single
+    //     fresh env serves as BOTH var_env and lex_env, so `var`/`function`
+    //     (DECLVAR) and `let`/`const`/`class` (PUTLEX) all land in one
+    //     throwaway scope and nothing escapes when the eval returns.
+    //   - Non-strict eval source: `var`/`function` bindings are instantiated
+    //     in the enclosing variable environment (the global env for indirect
+    //     eval, the caller's var_env for direct eval) so they persist per
+    //     EvalDeclarationInstantiation; lex_env is a fresh declarative child
+    //     of the call-site's lex_env (chaining through var_env so DECLVAR
+    //     writes stay visible to same-eval reads), isolating let/const/class.
+    // A direct eval inherits the calling code's strictness (§18.2.1.1 step 12:
+    // strictCaller). Every activation in this engine runs strict, so a direct
+    // eval is always strict regardless of the eval string's own prologue; an
+    // indirect eval's strictness is decided solely by that prologue.
+    bool eval_strict = is_direct_eval || func.eval_source_is_strict();
+    if (eval_strict) {
+        EnvRecord*? eval_env_raw = env::env_create_declarative(ctx.heap, lex_env_for_eval);
+        if (catch err = eval_env_raw) {
+            (*func_obj.extra_ptr()).func.var_env = lex_env_for_eval;
+            (*func_obj.extra_ptr()).func.lex_env = lex_env_for_eval;
+        } else {
+            (*func_obj.extra_ptr()).func.var_env = eval_env_raw;
+            (*func_obj.extra_ptr()).func.lex_env = eval_env_raw;
+        }
+    } else {
         (*func_obj.extra_ptr()).func.var_env = var_env_for_eval;
         EnvRecord*? lex_env_raw = env::env_create_declarative(ctx.heap, lex_env_for_eval);
         if (catch err = lex_env_raw) {
-            // Allocation failed — fall back to sharing the caller's env
-            // (preserves the old behavior on OOM rather than crashing the VM).
             (*func_obj.extra_ptr()).func.lex_env = lex_env_for_eval;
         } else {
             (*func_obj.extra_ptr()).func.lex_env = lex_env_raw;
-        }
-    } else {
-        EnvRecord*? shared_env_raw = env::env_create_declarative(ctx.heap, lex_env_for_eval);
-        if (catch err = shared_env_raw) {
-            (*func_obj.extra_ptr()).func.var_env = var_env_for_eval;
-            (*func_obj.extra_ptr()).func.lex_env = lex_env_for_eval;
-        } else {
-            (*func_obj.extra_ptr()).func.var_env = shared_env_raw;
-            (*func_obj.extra_ptr()).func.lex_env = shared_env_raw;
         }
     }
 

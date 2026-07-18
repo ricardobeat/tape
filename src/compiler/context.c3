@@ -357,7 +357,8 @@ struct CompilerContext {
     int  cur_lex_depth;
 
     // Strict mode
-    bool is_strict;             // true when "use strict" directive was found
+    bool is_strict;             // always true (strict-only engine)
+    bool saw_use_strict;        // true only when an actual "use strict" directive was parsed
 
     // arguments tracking
     bool uses_arguments;        // true when 'arguments' is referenced in function body
@@ -1486,6 +1487,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     func.flags.needs_env = !can_skip_env;
     func.flags.is_global = self.is_global;
     func.flags.is_eval = self.eval_mode;
+    func.flags.eval_src_strict = self.saw_use_strict;
     func.num_args = self.num_args;
     if (self.has_rest) {
         func.num_formals = self.rest_formal_count;

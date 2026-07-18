@@ -299,6 +299,7 @@ fn void? CompilerContext.parse_directives(&self) {
                 }
                 if (is_use_strict) {
                     self.is_strict = true;
+                    self.saw_use_strict = true;
                     if (self.current_func != null) {
                         self.current_func.flags.is_strict = true;
                     }
@@ -653,16 +654,35 @@ fn void? CompilerContext.block(&self, bool check_directives, bool suppress_regex
 
     // Pre-scan for let/const declarations at this block level so we can
     // TDZ-initialize them at block entry (before any code in the block runs).
+    // A genuine BlockStatement (check_directives==false) also lexically scopes
+    // its top-level FunctionDeclarations (ES2015 §13.2.6 / strict-mode
+    // BlockDeclarationInstantiation): they bind into the block's own lex_env
+    // via PUTLEX and vanish at POP_LEX, instead of leaking to the enclosing
+    // var_env. A function *body* (check_directives==true) keeps its top-level
+    // function declarations var-scoped, so it uses the let/const-only scan.
     NameSpan[MAX_PRESCAN_NAMES] lex_spans;
-    uint num_lex = self.pre_scan_lexical_decls(&lex_spans, MAX_PRESCAN_NAMES);
+    uint num_lex;
+    bool lexical_fns = !check_directives;
+    if (lexical_fns) {
+        num_lex = self.pre_scan_switch_lexical_decls(&lex_spans, MAX_PRESCAN_NAMES);
+    } else {
+        num_lex = self.pre_scan_lexical_decls(&lex_spans, MAX_PRESCAN_NAMES);
+    }
 
-    // Push a new lexical scope for let/const declarations inside this block.
-    // Skip when the block has no let/const — saves an allocation on every
+    // Push a new lexical scope for let/const/class/function declarations inside
+    // this block. Skip when the block has none — saves an allocation on every
     // function call (most functions have no block-scoped variables).
     bool has_lex = num_lex > 0;
     if (has_lex) {
         self.emit_simple(Opcode.PUSH_LEX);
         self.cur_lex_depth++;
+    }
+
+    // Route top-level FunctionDeclarations in this block through PUTLEX into
+    // the lex_env just pushed, rather than DECLVAR into the enclosing var_env.
+    bool saved_force_lexical_fn_decl = self.force_lexical_fn_decl;
+    if (lexical_fns && has_lex) {
+        self.force_lexical_fn_decl = true;
     }
 
     // TDZ-initialize every let/const declaration found by the pre-scan.
@@ -694,6 +714,8 @@ fn void? CompilerContext.block(&self, bool check_directives, bool suppress_regex
     while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
         self.statement()!;
     }
+
+    self.force_lexical_fn_decl = saved_force_lexical_fn_decl;
 
     self.expect(TokenType.RBRACE)!;
     // A `}` closing a BlockStatement is a statement boundary: per the
@@ -858,7 +880,20 @@ fn void? CompilerContext.var_declaration(&self) {
             // For already-declared vars, only emit store if there's an initializer
             if (!already_declared || has_init) {
                 uint name_idx = self.add_string_constant(name_tok.str_value);
-                self.emit_var_store(reg, name_idx, is_lexical, is_const);
+                if (self.is_global && !is_lexical && has_init) {
+                    // `var x = <expr>` at global scope is a declaration (already
+                    // instantiated by the hoist pass) followed by a plain
+                    // assignment. Emit the assignment as PUTVAR — a value-only
+                    // update of the existing global binding — rather than
+                    // DECLVAR: a global DECLVAR treats an undefined-valued
+                    // initializer as a bare re-declaration hoist and (per
+                    // CanDeclareGlobalVar) leaves the existing binding untouched,
+                    // silently dropping the assigned value when the initializer
+                    // happens to evaluate to undefined.
+                    self.emit_a_bc(Opcode.PUTVAR, (uint)reg, name_idx);
+                } else {
+                    self.emit_var_store(reg, name_idx, is_lexical, is_const);
+                }
             }
 
             // At global scope, free the var register and any leaked temporaries

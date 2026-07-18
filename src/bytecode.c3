@@ -982,6 +982,14 @@ bitstruct FuncFlags : uint {
     /// GlobalDeclarationInstantiation (§15.1.11 step 18.a), which installs
     /// them non-configurable via CreateGlobalVarBinding(vn, false).
     bool  is_eval          : 24;
+    /// The eval SOURCE carried its own "use strict" directive prologue. The
+    /// engine executes all code in strict mode (is_strict is always set), but
+    /// EvalDeclarationInstantiation's leak semantics depend on the *source's*
+    /// own strictness (ES2015 §18.2.1.1 PerformEval step 12): strict eval gets
+    /// a fresh varEnv (declarations never escape), non-strict indirect/global
+    /// eval installs its `var`/`function` bindings on the global object. Only
+    /// meaningful on is_eval functions.
+    bool  eval_src_strict  : 25;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -1162,6 +1170,11 @@ macro bool CompiledFunction.is_global_fn(&self) {
 /// module top-level code) — see FuncFlags.is_eval.
 macro bool CompiledFunction.is_eval_fn(&self) {
     return self.flags.is_eval;
+}
+/// Returns `true` when the eval source had its own "use strict" directive
+/// (see FuncFlags.eval_src_strict). Only meaningful on is_eval functions.
+macro bool CompiledFunction.eval_source_is_strict(&self) {
+    return self.flags.eval_src_strict;
 }
 macro bool CompiledFunction.needs_lex_bridge(&self) {
     return self.flags.needs_lex_bridge;
