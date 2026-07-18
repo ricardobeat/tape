@@ -243,6 +243,50 @@ SKIP_FILES = {
     # B46 — contradictory assertions (array[1] === 'b' plus '1' in array === false)
     # cannot both hold for any conformant [[Get]] / [[HasProperty]] implementation.
     "built-ins/Array/prototype/sort/precise-getter-deletes-predecessor.js",
+    # F1 — Function.prototype.apply/call ES5 §10.4.3 sloppy `this` substitution
+    # (undefined/null thisArg -> global object; primitives -> ToObject wrapper).
+    # Every test below calls Function("...").apply/call(...) and asserts on the
+    # resulting global `this`; our strict-only engine compiles all code
+    # (including Function()-created code) as strict, so `this` stays
+    # undefined/null and never substitutes. Unsatisfiable while strict-only.
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T1.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T2.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T3.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T4.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T5.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T6.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T7.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T8.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T9.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A3_T10.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A5_T1.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A5_T2.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A5_T3.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A5_T4.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A7_T1.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A7_T2.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A7_T5.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A7_T7.js",
+    "built-ins/Function/prototype/apply/S15.3.4.3_A7_T8.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T1.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T2.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T3.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T4.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T5.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T6.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T7.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T8.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T9.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A3_T10.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A5_T1.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A5_T2.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A5_T3.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A5_T4.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A6_T1.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A6_T2.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A6_T5.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A6_T7.js",
+    "built-ins/Function/prototype/call/S15.3.4.4_A6_T8.js",
 }
 
 PHASES = [
