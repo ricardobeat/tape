@@ -667,7 +667,12 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
     TVal this_tv;
     this_tv.set_object(new_this);
 
-    CompiledFunction* target = (*ctor.extra_ptr()).func.comp_func;
+    // HObjectProxy.target overlays HObjectFunction.comp_func (both offset 0),
+    // so reading comp_func directly on a Proxy exotic object would reinterpret
+    // its [[ProxyTarget]] pointer as a CompiledFunction*. Route Proxies (and
+    // any other BUILTIN_FN) through the builtin-dispatch branch below instead.
+    CompiledFunction* target = ctor.callable_kind() == hobject::CallableKind.BUILTIN_FN
+        ? null : (*ctor.extra_ptr()).func.comp_func;
     // Derived class constructors (`class X extends Y`) do NOT create `this`
     // here — super() creates it inside the base [[Construct]] (ES2015 §9.2.2
     // step 5). Start with an uninitialized (TDZ-sentinel) this_binding and mark
@@ -685,8 +690,11 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
     // routing it into the builtin-dispatch branch here would silently no-op
     // any user constructor with an empty or trivial body.
     if (target == null) {
-        // Built-in constructor — dispatch directly.
-        if (ctor.callable_kind() == hobject::CallableKind.BUILTIN_FN) {
+        // Built-in constructor — dispatch directly. Bound functions also
+        // dispatch through builtin_fn_index (BUILTIN_BOUND_CALL), so route
+        // them through the same builtin-dispatch path as BUILTIN_FN.
+        if (ctor.callable_kind() == hobject::CallableKind.BUILTIN_FN
+            || ctor.callable_kind() == hobject::CallableKind.BOUND_FN) {
             int builtin_idx = (*ctor.extra_ptr()).func.builtin_fn_index;
             // For Promise, allocate as PROMISE class so builtin_promise
             // initialises the right internal slots.
@@ -727,6 +735,21 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
                 vm.heap.tval_copy_ref(&vm.heap.error_value, &bctx.throw_value);
                 vm.heap.tval_copy_ref(&vm.return_val, &bctx.throw_value);
                 return undef;
+            }
+            if (bctx.needs_re_dispatch) {
+                // Bound function whose downstream target is a compiled function
+                // (or another non-directly-dispatchable callable): builtin_bound_call
+                // placed the resolved downstream callee/args in temp_regs and asked
+                // for a re-dispatch. ES2015 §9.4.1.2 BoundFunctionExoticObject.[[Construct]]:
+                // Construct(BoundTargetFunction, args, newTarget === F ? BoundTargetFunction : newTarget).
+                TVal downstream_func = temp_regs[0];
+                TVal downstream_new_target = (new_target_obj == ctor) ? downstream_func : new_target;
+                uint new_nargs = bctx.re_nargs;
+                TVal[16] fwd_args;
+                for (uint i = 0; i < new_nargs && i < 16; i++) {
+                    fwd_args[i] = temp_regs[2 + i];
+                }
+                return vm_construct_fn_impl(vm_ptr, downstream_func, &fwd_args, new_nargs, downstream_new_target);
             }
             TVal result = *bctx.result;
             if (result.is_object()) return result;

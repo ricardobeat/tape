@@ -1534,12 +1534,14 @@ fn void builtin_proxy_call(BuiltinContext* ctx) {
         // No trap: forward to the target.
         if (ctx.is_constructor) {
             if (heap.construct_fn == null) { ctx.result.set_undefined(); return; }
-            // ES2020 §10.5.2 step 5: Construct(target, args, newTarget) where newTarget is
-            // the original proxy (p). Our construct_fn does not accept a separate newTarget
-            // argument, so we must simulate GetPrototypeFromConstructor(p, "%ObjectPrototype%")
-            // here before forwarding. That step does Get(p, "prototype"), which triggers the
-            // proxy's [[Get]] trap — if that trap revokes p, the subsequent GetFunctionRealm(p)
-            // would throw (revoked proxy). We replicate that check explicitly:
+            // ES2020 §10.5.2 step 5: Construct(target, args, newTarget). newTarget
+            // is whatever the caller supplied (Reflect.construct's third argument),
+            // defaulting to the proxy itself (p) for ordinary `new P(...)` calls.
+            // Before forwarding we must simulate GetPrototypeFromConstructor(p,
+            // "%ObjectPrototype%")'s Get(p, "prototype") step, which triggers the
+            // proxy's [[Get]] trap — if that trap revokes p, the subsequent
+            // GetFunctionRealm(p) would throw (revoked proxy). We replicate that
+            // check explicitly:
             HString* proto_key_str = builtin_intern_string(heap, "prototype");
             if (proto_key_str != null) {
                 TVal proto_val; proto_val.set_undefined();
@@ -1561,7 +1563,9 @@ fn void builtin_proxy_call(BuiltinContext* ctx) {
                     }
                 }
             }
-            *ctx.result = heap.construct_fn(ctx.vm, target_tv, &ctx.regs[ctx.base_reg], ctx.argc, target_tv);
+            TVal fwd_new_target;
+            if (ctx.new_target != null) { fwd_new_target.set_object(ctx.new_target); } else { fwd_new_target.set_object(p); }
+            *ctx.result = heap.construct_fn(ctx.vm, target_tv, &ctx.regs[ctx.base_reg], ctx.argc, fwd_new_target);
         } else {
             if (heap.call_fn == null) { ctx.result.set_undefined(); return; }
             *ctx.result = heap.call_fn(ctx.vm, target_tv, &ctx.regs[ctx.base_reg], ctx.argc, ctx.this_val);
