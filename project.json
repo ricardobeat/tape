@@ -10,7 +10,8 @@
     "libregexp/unicode_wrapper.c",
     "quickjs/cutils.c",
     "quickjs/dtoa.c",
-    "src/dtoa_wrapper.c"
+    "src/dtoa_wrapper.c",
+    "src/date_math.c"
   ],
   "c-include-dirs": [
     "quickjs",

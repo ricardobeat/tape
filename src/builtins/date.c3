@@ -10,6 +10,18 @@ import duktape::hstring;
 import duktape::hobject;
 import libc;
 
+/// ES2015+ §21.4.1.14 MakeTime: ((h*msPerHour + m*msPerMinute) + s*msPerSecond) + milli,
+/// evaluated in exact left-to-right IEEE-754 order. Implemented in a separate
+/// C translation unit so it isn't affected by the engine-wide relaxed
+/// fp-math build setting (which otherwise lets the optimizer reassociate
+/// this chain and produce different rounding for huge operands).
+extern fn double duktape_date_make_time(double hour, double minute, double second, double ms);
+
+/// ES2015+ §21.4.1.15 MakeDate: day * msPerDay + timeWithinDay. Same
+/// separate-translation-unit trick as duktape_date_make_time — otherwise the
+/// multiply+add gets fused into a single-rounding FMA under relaxed fp-math.
+extern fn double duktape_date_make_date(double day, double time_within_day);
+
 // ============================================================================
 // Date constructor and methods (ES5 §15.9)
 // ============================================================================
@@ -67,36 +79,59 @@ fn double date_this_time_value(BuiltinContext* ctx, TVal* val) {
     return double::nan;  // caller should return after this
 }
 
-/// Helper: convert local time components to epoch ms using mktime.
+/// Helper: convert local time components to epoch ms.
+/// Treats the fields as a UTC civil date/time first (which is reliable for
+/// any year via the days-from-civil algorithm), then subtracts the local
+/// timezone offset sampled at that instant. This keeps every local<->UTC
+/// conversion in the module consistent with getTimezoneOffset(), instead of
+/// relying on mktime — whose -1 error sentinel is ambiguous with a
+/// legitimate result and whose historical-tzdata handling is unreliable far
+/// from the present.
 fn double date_local_to_ms(long year, long month, long day,
                            long hour, long minute, long second, long ms) {
-    Tm tm;
-    tm.tm_sec   = (int)second;
-    tm.tm_min   = (int)minute;
-    tm.tm_hour  = (int)hour;
-    tm.tm_mday  = (int)day;
-    tm.tm_mon   = (int)month;
-    tm.tm_year  = (int)year - 1900;
-    tm.tm_wday  = 0;
-    tm.tm_yday  = 0;
-    tm.tm_isdst = -1;  // let mktime determine DST
-    long epoch_sec = (long)libc::mktime(&tm);
-    if (epoch_sec == -1) {
-        // Use approximate computation as fallback
-        // 86400 seconds per day, assume no DST issues
-        // This is approximate but better than NaN
-        long days = (year - 1970) * 365 + (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400;
-        // Add months
-        long[12] days_in_months = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
-        bool leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-        for (long m = 0; m < month; m++) {
-            days += days_in_months[m];
-            if (leap && m == 1) days++;
-        }
-        days += day - 1;
-        epoch_sec = days * 86400 + hour * 3600 + minute * 60 + second;
-    }
-    return (double)epoch_sec * 1000.0 + (double)ms;
+    double utc_ms = date_utc_to_ms(year, month, day, hour, minute, second, ms);
+    long t_sec = (long)(utc_ms / 1000.0);
+    long offset = date_tz_offset_seconds(t_sec);
+    return utc_ms - (double)offset * 1000.0;
+}
+
+/// Compute the local timezone offset (in seconds, UTC minus local) for the
+/// given epoch time, i.e. how far local time is ahead of UTC. Reinterprets
+/// the localtime_r broken-down fields as a proleptic-Gregorian civil date
+/// (via the same days-from-civil algorithm as date_utc_to_ms) rather than
+/// timegm, since timegm's -1 error sentinel is ambiguous with a legitimate
+/// result and its own historical-tzdata handling is unreliable far from the
+/// present. This is correct across month/year boundaries (unlike a raw
+/// tm_mday subtraction, which breaks whenever local and UTC dates fall in
+/// different months).
+fn long date_tz_offset_seconds(long t_sec) {
+    Tm local_result;
+    libc::localtime_r(&t_sec, &local_result);
+    double local_ms = date_utc_to_ms((long)local_result.tm_year + 1900L, (long)local_result.tm_mon,
+        (long)local_result.tm_mday, (long)local_result.tm_hour, (long)local_result.tm_min,
+        (long)local_result.tm_sec, 0);
+    return (long)(local_ms / 1000.0) - t_sec;
+}
+
+/// Break a time value into local wall-clock components, applying the
+/// timezone offset arithmetically via gmtime_r rather than relying on
+/// localtime_r's tzdata lookup directly. gmtime_r's proleptic Gregorian
+/// calendar is reliable across the full date range, unlike localtime_r's
+/// historical DST database.
+fn void date_break_time_local_fields(double time_val, long* year, long* month, long* day,
+                                     long* wday, long* hour, long* minute, long* second) {
+    long t_sec = (long)(time_val / 1000.0);
+    long offset = date_tz_offset_seconds(t_sec);
+    long local_sec = t_sec + offset;
+    Tm result;
+    libc::gmtime_r(&local_sec, &result);
+    *year   = (long)(result.tm_year) + 1900L;
+    *month  = (long)(result.tm_mon);
+    *day    = (long)(result.tm_mday);
+    *wday   = (long)(result.tm_wday);
+    *hour   = result.tm_hour;
+    *minute = result.tm_min;
+    *second = result.tm_sec;
 }
 
 /// Format a Date as a string like "Mon Jan 01 2024 12:00:00 GMT+0000".
@@ -106,16 +141,10 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
         return (usz)libc::snprintf(buf, buf_size, "Invalid Date");
     }
     long t_sec = (long)(time_val / 1000.0);
-    Tm local_result;
-    libc::localtime_r(&t_sec, &local_result);
-    Tm* tm = &local_result;
+    long year_val, month, day, wday, hour, minute, second;
+    date_break_time_local_fields(time_val, &year_val, &month, &day, &wday, &hour, &minute, &second);
 
-    // Compute timezone offset using gmtime_r (more reliable than mktime for old dates)
-    Tm utc_result;
-    libc::gmtime_r(&t_sec, &utc_result);
-    long tz_seconds = (long)(local_result.tm_hour - utc_result.tm_hour) * 3600
-                    + (long)(local_result.tm_min - utc_result.tm_min) * 60
-                    - (long)(local_result.tm_mday - utc_result.tm_mday) * 86400;
+    long tz_seconds = date_tz_offset_seconds(t_sec);
     char tz_sign = '+';
     int offs_hours = (int)(tz_seconds / 3600);
     int offs_mins = (int)((tz_seconds / 60) % 60);
@@ -127,7 +156,7 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
 
     // String constants for weekday/month names
     char* wday_name;
-    switch (tm.tm_wday) {
+    switch (wday) {
         case 0: wday_name = "Sun"; break;
         case 1: wday_name = "Mon"; break;
         case 2: wday_name = "Tue"; break;
@@ -138,7 +167,7 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
         default: wday_name = "???"; break;
     }
     char* mon_name;
-    switch (tm.tm_mon) {
+    switch (month) {
         case 0: mon_name = "Jan"; break;
         case 1: mon_name = "Feb"; break;
         case 2: mon_name = "Mar"; break;
@@ -154,15 +183,9 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
         default: mon_name = "???"; break;
     }
 
-    long year_val = (long)tm.tm_year + 1900L;
     // ES6 §21.4.3.4 ToDateString: positive years use 4-digit zero-padded,
     // negative years in [-9999, 0) use "-%04d" (5 chars with sign + 4 digits).
     // For abs(year) >= 10000 use the full integer width (no padding).
-    // localtime_r may produce wrong values for years outside [1900, 2100] on
-    // some platforms; the year we use here is only valid for those ranges.
-    // For pre-1900 dates we fall back to a manual format via the break-time
-    // helper below — but in this code path we only reach format_to_string for
-    // years where localtime_r is reliable.
     char[24] year_str;
     if (year_val < 0 && year_val > -10000) {
         libc::snprintf(&year_str[0], 24, "-%04ld", -year_val);
@@ -174,8 +197,8 @@ fn usz date_format_to_string(double time_val, char* buf, usz buf_size) {
 
     return (usz)libc::snprintf(buf, buf_size, "%s %s %02d %s %02d:%02d:%02d GMT%c%02d%02d",
         wday_name, mon_name,
-        tm.tm_mday, &year_str[0],
-        tm.tm_hour, tm.tm_min, tm.tm_sec,
+        (int)day, &year_str[0],
+        (int)hour, (int)minute, (int)second,
         tz_sign, offs_hours, offs_mins);
 }
 
@@ -293,9 +316,11 @@ fn double date_parse_iso_str(char* str, usz len) {
     long minute = 0;
     long second = 0;
     long millis = 0;
+    bool has_time_part = false;
 
     // Optional time part: 'T' or space
     if (pos < len && (str[pos] == 'T' || str[pos] == ' ')) {
+        has_time_part = true;
         pos++;
 
         // Parse hour (2 digits)
@@ -377,7 +402,11 @@ fn double date_parse_iso_str(char* str, usz len) {
         return date_time_clip(local_ms - (double)offset_ms);
     }
 
-    // No timezone specified: treat as UTC (simpler for now; local tz can be added later)
+    // No timezone specified: per ES2016+ §21.4.1.15, date-time forms are
+    // local time, but date-only forms are UTC.
+    if (has_time_part) {
+        return date_time_clip(date_local_to_ms(year, month - 1, day, hour, minute, second, millis));
+    }
     return date_time_clip(date_utc_to_ms(year, month - 1, day, hour, minute, second, millis));
 }
 
@@ -561,14 +590,38 @@ fn void builtin_date(BuiltinContext* ctx) {
                     time_val = date_this_time_value(ctx, arg);
                     if (ctx.should_throw) { return; }
                 } else {
-                    // Non-Date object: call ToPrimitive via ToNumber
+                    // Non-Date object: ES6 §20.3.2.2 step 3.b.i: v = ToPrimitive(value)
+                    // (default hint). If Type(v) is String, parse it as a date
+                    // string; otherwise tv = ToNumber(v).
                     Vm* v = (Vm*)ctx.vm;
-                    time_val = vm::vm_to_number(v, arg);
+                    TVal prim = vm::to_primitive_value(v, arg);
                     if (v.throw_pending) {
                         ctx.should_throw = true;
                         ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
                         v.throw_pending = false;
                         return;
+                    }
+                    if (prim.is_string() && prim.get_heapptr() != null &&
+                        !((HString*)prim.get_heapptr()).is_symbol()) {
+                        HString* s = (HString*)prim.get_heapptr();
+                        char* str = s.get_cstr();
+                        usz slen = s.blen;
+                        time_val = date_parse_iso_str(str, slen);
+                        if (math::is_nan(time_val)) {
+                            time_val = date_parse_locale_str(str, slen);
+                        }
+                        if (math::is_nan(time_val)) {
+                            double num_val = builtin_string_to_number(s);
+                            time_val = num_val;
+                        }
+                    } else {
+                        time_val = vm::vm_to_number(v, &prim);
+                        if (v.throw_pending) {
+                            ctx.should_throw = true;
+                            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+                            v.throw_pending = false;
+                            return;
+                        }
                     }
                 }
             } else {
@@ -684,16 +737,18 @@ fn void builtin_date_now(BuiltinContext* ctx) {
     ctx.result.set_number(date_now_ms());
 }
 
-/// Date.UTC(year, month[, day, hour, minute, second, ms]) — ES5 §15.9.4.3
+/// Date.UTC(year[, month[, day, hour, minute, second, ms]]) — ES2017+ §20.3.3.4
+/// (month and later arguments default to 0/1 like the Date constructor;
+/// pre-ES2017 engines coerced a missing month to NaN, but that was fixed by
+/// https://github.com/tc39/ecma262/pull/642).
 fn void builtin_date_utc(BuiltinContext* ctx) {
-    if (ctx.argc < 2) {
+    if (ctx.argc < 1) {
         ctx.result.set_number(double::nan);
         return;
     }
     // ES5 §15.9.4.3: call ToNumber on each argument (must call valueOf)
     Vm* v = (Vm*)ctx.vm;
     TVal* year_arg  = &ctx.regs[ctx.base_reg];
-    TVal* month_arg = &ctx.regs[ctx.base_reg + 1];
     double year  = vm::vm_to_number(v, year_arg);
     if (v.throw_pending) {
         ctx.should_throw = true;
@@ -701,12 +756,15 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
         v.throw_pending = false;
         return;
     }
-    double month = vm::vm_to_number(v, month_arg);
-    if (v.throw_pending) {
-        ctx.should_throw = true;
-        ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
-        v.throw_pending = false;
-        return;
+    double month = 0.0;
+    if (ctx.argc > 1) {
+        month = vm::vm_to_number(v, &ctx.regs[ctx.base_reg + 1]);
+        if (v.throw_pending) {
+            ctx.should_throw = true;
+            ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+            v.throw_pending = false;
+            return;
+        }
     }
     double day = 1.0;
     if (ctx.argc > 2) {
@@ -784,15 +842,21 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
     }
     month = (double)(long)math::trunc(month);
     day = (double)(long)math::trunc(day);
-    hour = (double)(long)math::trunc(hour);
-    min = (double)(long)math::trunc(min);
-    sec = (double)(long)math::trunc(sec);
-    ms = (double)(long)math::trunc(ms);
+    // hour/min/sec/ms feed only MakeTime, whose inputs may be far outside the
+    // range of a 64-bit integer (ES2015+ §21.4.1.14); ToInteger must stay in
+    // double domain here rather than narrowing through (long), which would
+    // silently wrap/clamp for huge magnitudes.
+    hour = math::trunc(hour);
+    min = math::trunc(min);
+    sec = math::trunc(sec);
+    ms = math::trunc(ms);
 
     // For Date.UTC, the time is in UTC. We compute days from epoch using
-    // simple calendar math (no timezone offset).
-    long y = (long)year;
-    long m = (long)month;
+    // simple calendar math (no timezone offset). month may overflow [0,11];
+    // carry into year first (mirrors date_utc_to_ms's normalization).
+    long month_floor_div = (long)month >= 0 ? (long)month / 12 : ((long)month - 11) / 12;
+    long y = (long)year + month_floor_div;
+    long m = (long)month - month_floor_div * 12;  // now in [0, 11]
     // Adjust year: treat Jan and Feb as months 13,14 of previous year
     if (m < 2) { y--; m += 12; }
     // Computations using the formula
@@ -801,9 +865,9 @@ fn void builtin_date_utc(BuiltinContext* ctx) {
     long doy = (153 * (m - 2) + 2) / 5 + (long)day - 1;  // day of year
     long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     long epoch_day = (era * 146097 + (long)doe - 719468);
-    double t = (double)epoch_day * 86400000.0;
-    t += (double)hour * 3600000.0 + (double)min * 60000.0 + (double)sec * 1000.0 + (double)ms;
-    ctx.result.set_number(t);
+    double maketime = duktape_date_make_time(hour, min, sec, ms);
+    double t = duktape_date_make_date((double)epoch_day, maketime);
+    ctx.result.set_number(date_time_clip(t));
 }
 
 /// Date.parse(string) — ES5 §15.9.4.2
@@ -966,16 +1030,10 @@ fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
         return;
     }
     long t_sec = (long)(time_val / 1000.0);
-    Tm tm_result;
-    libc::localtime_r(&t_sec, &tm_result);
-    Tm* tm = &tm_result;
+    long year, month, day, wday, hour, minute, second;
+    date_break_time_local_fields(time_val, &year, &month, &day, &wday, &hour, &minute, &second);
 
-    // Compute timezone offset using gmtime_r (more reliable than mktime for old dates)
-    Tm utc_result;
-    libc::gmtime_r(&t_sec, &utc_result);
-    long tz_seconds = (long)(tm_result.tm_hour - utc_result.tm_hour) * 3600
-                    + (long)(tm_result.tm_min - utc_result.tm_min) * 60
-                    - (long)(tm_result.tm_mday - utc_result.tm_mday) * 86400;
+    long tz_seconds = date_tz_offset_seconds(t_sec);
     char tz_sign = '+';
     int offs_hours = (int)(tz_seconds / 3600);
     int offs_mins = (int)((tz_seconds / 60) % 60);
@@ -987,7 +1045,7 @@ fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
 
     char[types::FORMAT_BUF] buf;
     usz len = (usz)libc::snprintf(&buf, types::FORMAT_BUF, "%02d:%02d:%02d GMT%c%02d%02d",
-        tm.tm_hour, tm.tm_min, tm.tm_sec,
+        (int)hour, (int)minute, (int)second,
         tz_sign, offs_hours, offs_mins);
     HString* result = builtin_intern_string(ctx.heap, buf[:len]);
     ctx.result.set_string(result);
@@ -1007,73 +1065,64 @@ fn void builtin_date_proto_toTimeString(BuiltinContext* ctx) {
 /// step 4 calls toISOString.
 fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     TVal this_val = ctx.regs[ctx.base_reg - 1];
-    TVal object_val = this_val;
 
-    // Step 1: ToObject(this value) — VM already boxes primitives.
+    // Step 1: Let O be ? ToObject(this value). null/undefined throw
+    // TypeError; other primitives are boxed into their wrapper object.
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        if (this_val.is_null() || this_val.is_undefined()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "Date.prototype.toJSON called on null or undefined");
+            return;
+        }
+        if (!builtin_to_object(ctx, this_val)) {
+            builtin_throw(ctx, ctx.heap.type_err_proto,
+                "Date.prototype.toJSON: cannot convert to object");
+            return;
+        }
+        this_val = *ctx.result;
+    }
+    TVal object_val = this_val;
 
     // Steps 2–3: Compute ToPrimitive(O, hint Number), then check
     // "Type(tv) is Number and tv is not finite" → return null.
-    if (this_val.is_object() && this_val.get_heapptr() != null) {
-        HObject* obj = (HObject*)this_val.get_heapptr();
-        if (obj.get_class() == hobject::ObjClass.DATE) {
-            // Date object: ToPrimitive returns the internal time value.
-            double time_val;
-            if ((*obj.extra_ptr()).prim.primitive_value.is_number() ||
-                (*obj.extra_ptr()).prim.primitive_value.is_fastint()) {
-                time_val = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
-            } else {
-                time_val = double::nan;
-            }
-            // Step 3: If Type(tv) is Number and not finite → return null.
-            if (math::is_nan(time_val) || !math::is_finite(time_val)) {
-                ctx.result.set_null();
-                return;
-            }
-            // Step 4: Fall through to Invoke(O, "toISOString") below.
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (obj.get_class() == hobject::ObjClass.DATE) {
+        // Date object: ToPrimitive returns the internal time value.
+        double time_val;
+        if ((*obj.extra_ptr()).prim.primitive_value.is_number() ||
+            (*obj.extra_ptr()).prim.primitive_value.is_fastint()) {
+            time_val = (*obj.extra_ptr()).prim.primitive_value.get_number_or_fastint();
         } else {
-            // Non-Date object: call ToPrimitive via to_primitive_value.
-            // For plain objects, valueOf returns self (not primitive),
-            // then toString returns "[object Object]" (a String, NOT a Number),
-            // so Type(tv) is String → step 3 is skipped → Invoke in step 4.
-            // For objects with custom valueOf returning NaN/Infinity,
-            // the result IS a Number type and not finite → return null.
-            Vm* v = (Vm*)ctx.vm;
-            TVal prim = vm::to_primitive_value(v, &this_val);
-            if (v.throw_pending) {
-                ctx.should_throw = true;
-                ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
-                v.throw_pending = false;
-                return;
-            }
-            // Check Type(tv) is Number and not finite.
-            if ((prim.is_number() || prim.is_fastint()) &&
-                (math::is_nan(prim.get_number_or_fastint()) || !math::is_finite(prim.get_number_or_fastint()))) {
-                ctx.result.set_null();
-                return;
-            }
+            time_val = double::nan;
         }
+        // Step 3: If Type(tv) is Number and not finite → return null.
+        if (math::is_nan(time_val) || !math::is_finite(time_val)) {
+            ctx.result.set_null();
+            return;
+        }
+        // Step 4: Fall through to Invoke(O, "toISOString") below.
     } else {
-        // Primitive this: ToObject boxes it.  For Date.prototype.toJSON
-        // the VM wraps primitives before calling the builtin, so this path
-        // is rarely reached.  Handle it defensively: ToPrimitive on a boxed
-        // primitive returns the unwrapped value.
+        // Non-Date object: call ToPrimitive via to_primitive_value.
+        // For plain objects, valueOf returns self (not primitive),
+        // then toString returns "[object Object]" (a String, NOT a Number),
+        // so Type(tv) is String → step 3 is skipped → Invoke in step 4.
+        // For objects with custom valueOf returning NaN/Infinity,
+        // the result IS a Number type and not finite → return null.
         Vm* v = (Vm*)ctx.vm;
-        TVal prim = vm::to_primitive_value(v, &this_val);
+        // Step 2: ToPrimitive(O, hint Number).
+        TVal prim = vm::to_primitive_value(v, &this_val, 2);
         if (v.throw_pending) {
             ctx.should_throw = true;
             ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
             v.throw_pending = false;
             return;
         }
+        // Check Type(tv) is Number and not finite.
         if ((prim.is_number() || prim.is_fastint()) &&
             (math::is_nan(prim.get_number_or_fastint()) || !math::is_finite(prim.get_number_or_fastint()))) {
             ctx.result.set_null();
             return;
         }
-        // For primitive "this", Invoke needs an object.  The VM boxes
-        // primitives into wrapper objects before calling builtins, so this
-        // branch should not be reached.  But just in case, fall through
-        // and the TypeError from Invoke will be raised.
     }
 
     // Step 4: Return ? Invoke(O, "toISOString")
@@ -1082,59 +1131,57 @@ fn void builtin_date_proto_toJSON(BuiltinContext* ctx) {
     // Per ES6 §7.3.1 GetV, accessor properties must invoke their getter; use
     // find_accessor_proto to handle both data and accessor (getter-defined)
     // properties correctly.
-    if (object_val.is_object() && object_val.get_heapptr() != null) {
-        HObject* obj = (HObject*)object_val.get_heapptr();
-        HString* toiso_key = builtin_intern_string(ctx.heap, "toISOString");
-        hobject::AccessorResult acc = obj.find_accessor_proto(toiso_key, true);
-        TVal toiso_fn;
-        TVal call_this = object_val;
-        bool found = acc.found;
-        if (acc.found) {
-            // Accessor found: invoke the getter with the owning object as `this`
-            // to get the actual toISOString function (per ES6 §7.3.1 GetV).
+    HString* toiso_key = builtin_intern_string(ctx.heap, "toISOString");
+    hobject::AccessorResult acc = obj.find_accessor_proto(toiso_key, true);
+    TVal toiso_fn;
+    TVal call_this = object_val;
+    bool found = acc.found;
+    if (acc.found) {
+        // Accessor found: invoke the getter with the owning object as `this`
+        // to get the actual toISOString function (per ES6 §7.3.1 GetV).
+        Vm* v = (Vm*)ctx.vm;
+        TVal getter_this;
+        getter_this.set_object(acc.this_obj);
+        toiso_fn = ctx.heap.call_fn(v, acc.accessor_fn, null, 0, getter_this);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            return;
+        }
+        // For an accessor on the prototype chain, Invoke's "this" must be O,
+        // not the object that owns the accessor. acc.this_obj is the owner.
+        call_this = object_val;
+    } else {
+        // Data property or no property: fall back to get_prop_proto.
+        TVal? toiso_val = obj.get_prop_proto(toiso_key);
+        if (try tv = toiso_val) {
+            toiso_fn = tv;
+            found = true;
+        } else {
+            toiso_fn.set_undefined();
+        }
+    }
+    if (found) {
+        bool callable = false;
+        if (toiso_fn.is_object() && toiso_fn.get_heapptr() != null) {
+            HObject* fn_hobj = (HObject*)toiso_fn.get_heapptr();
+            callable = fn_hobj.is_callable();
+        } else if (toiso_fn.is_lightfunc()) {
+            callable = true;
+        }
+        if (callable) {
             Vm* v = (Vm*)ctx.vm;
-            TVal getter_this;
-            getter_this.set_object(acc.this_obj);
-            toiso_fn = ctx.heap.call_fn(v, acc.accessor_fn, null, 0, getter_this);
+            // Invoke calls with empty arguments list (per spec).
+            TVal result = ctx.heap.call_fn(v, toiso_fn, null, 0, call_this);
             if (ctx.heap.has_error) {
                 ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
                 ctx.heap.has_error = false;
                 return;
             }
-            // For an accessor on the prototype chain, Invoke's "this" must be O,
-            // not the object that owns the accessor. acc.this_obj is the owner.
-            call_this = object_val;
-        } else {
-            // Data property or no property: fall back to get_prop_proto.
-            TVal? toiso_val = obj.get_prop_proto(toiso_key);
-            if (try tv = toiso_val) {
-                toiso_fn = tv;
-                found = true;
-            } else {
-                toiso_fn.set_undefined();
-            }
-        }
-        if (found) {
-            bool callable = false;
-            if (toiso_fn.is_object() && toiso_fn.get_heapptr() != null) {
-                HObject* fn_hobj = (HObject*)toiso_fn.get_heapptr();
-                callable = fn_hobj.is_callable();
-            } else if (toiso_fn.is_lightfunc()) {
-                callable = true;
-            }
-            if (callable) {
-                Vm* v = (Vm*)ctx.vm;
-                // Invoke calls with empty arguments list (per spec).
-                TVal result = ctx.heap.call_fn(v, toiso_fn, null, 0, call_this);
-                if (ctx.heap.has_error) {
-                    ctx.should_throw = true;
-                    // The error is already set on the VM — propagate it.
-                    ctx.heap.has_error = false;
-                    return;
-                }
-                ctx.heap.tval_copy_ref(ctx.result, &result);
-                return;
-            }
+            ctx.heap.tval_copy_ref(ctx.result, &result);
+            return;
         }
     }
 
@@ -1271,16 +1318,7 @@ fn void date_break_time(double time_val, long* year, long* month, long* day,
         *year = *month = *day = *wday = *hour = *minute = *second = 0;
         return;
     }
-    long t_sec = (long)(time_val / 1000.0);
-    Tm result;
-    libc::localtime_r(&t_sec, &result);
-    *year   = (long)(result.tm_year) + 1900L;
-    *month  = (long)(result.tm_mon);
-    *day    = (long)(result.tm_mday);
-    *wday   = (long)(result.tm_wday);
-    *hour   = result.tm_hour;
-    *minute = result.tm_min;
-    *second = result.tm_sec;
+    date_break_time_local_fields(time_val, year, month, day, wday, hour, minute, second);
 }
 
 /// Date.prototype.getFullYear() — ES5 §15.9.5.10
@@ -1391,26 +1429,34 @@ fn void date_break_time_utc(double time_val, long* year, long* month, long* day,
 }
 
 /// Helper: convert UTC time components to epoch ms (no timezone adjustment).
+/// month may be any integer (not just [0,11]); overflow/underflow carries
+/// into year first, per MakeDay's YearFromTime/MonthFromTime semantics.
 fn double date_utc_to_ms(long year, long month, long day,
                          long hour, long minute, long second, long ms) {
-    long y = year;
-    long m = month;  // JS months are 0-based
+    // floor(month / 12), computed via truncating division (C3's default for
+    // integers): shifting a negative numerator down by 11 before truncating
+    // matches floor division exactly, since month is always > -12*N-11 for
+    // the shifted value to stay in the same truncation "cell".
+    long month_floor_div = month >= 0 ? month / 12 : (month - 11) / 12;
+    long y = year + month_floor_div;
+    long m = month - month_floor_div * 12;  // now in [0, 11]
     if (m < 2) { y--; m += 12; }
     long era = (y >= 0 ? y : y - 399) / 400;
     long yoe = y - era * 400;
     long doy = (153 * (m - 2) + 2) / 5 + day - 1;
     long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     long epoch_day = era * 146097 + doe - 719468;
-    double t = (double)epoch_day * 86400000.0;
-    t += (double)hour * 3600000.0 + (double)minute * 60000.0 + (double)second * 1000.0 + (double)ms;
-    return t;
+    double maketime = duktape_date_make_time((double)hour, (double)minute, (double)second, (double)ms);
+    return duktape_date_make_date((double)epoch_day, maketime);
 }
 
 /// Helper: TimeClip — clamp time value to ±8.64e15 ms per ES5 §15.9.1.14.
 fn double date_time_clip(double t) {
-    if (math::is_nan(t)) return t;
+    if (!math::is_finite(t)) return double::nan;
     if (math::abs(t) > 8.64e15) return double::nan;
-    return t + 0.0;  // converts -0 to +0
+    // ToInteger: sign(t) * floor(abs(t))
+    double clipped = t < 0 ? -math::floor(-t) : math::floor(t);
+    return clipped + 0.0;  // converts -0 to +0
 }
 
 /// Helper: set the ms value on a Date object.
@@ -1424,15 +1470,9 @@ fn void builtin_date_proto_getTimezoneOffset(BuiltinContext* ctx) {
     double tv = date_this_time_value(ctx, &this_val);
     if (ctx.should_throw) return;
     if (math::is_nan(tv)) { ctx.result.set_number(double::nan); return; }
-    // local and UTC components
-    long ly, lm, ld, lwday, lh, lmin, lsec;
-    long uy, um, ud, uwday, uh, umin, usec;
-    date_break_time(tv, &ly, &lm, &ld, &lwday, &lh, &lmin, &lsec);
-    date_break_time_utc(tv, &uy, &um, &ud, &uwday, &uh, &umin, &usec);
-    double local_ms = date_local_to_ms(ly, lm, ld, lh, lmin, lsec, 0);
-    double utc_ms   = date_utc_to_ms(uy, um, ud, uh, umin, usec, 0);
-    long offset = (long)((local_ms - utc_ms) / 60000.0);
-    ctx.result.set_fastint(offset);
+    long t_sec = (long)(tv / 1000.0);
+    long offset = date_tz_offset_seconds(t_sec);
+    ctx.result.set_fastint(-offset / 60);
 }
 
 /// Date.prototype.getUTCFullYear() — ES5 §15.9.5.41
