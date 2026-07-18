@@ -37,6 +37,19 @@ Merged to main (`7c47e9c..6c8d663`), ~549 real tests recovered + 39 reclassified
   (engine is strict-only by design — see memory `strict-only-engine`); deleted
   dead `fn_to_object_for_this` helper.
 
+### Round 3 (in progress)
+- [x] **C7a** (`afaabb7`): `\u` escapes in private names (`#name`) — wired the
+  existing identifier-escape decoder into the HASH_IDENT scanner. +31
+  (35→66/96). ZWJ/ZWNJ + ID_Start/Continue tables were already correct.
+- [ ] **C7a-residual — `MAX_PRIVATE_NAMES = 64` capacity cap** (30 tests):
+  `src/compiler/context.c3:1527` — `PrivateNameEntry[64]` is stack-allocated
+  inline in the recursively-stack-allocated `CompilerContext`. The
+  `start-unicode-*-class.js` generated tests declare 65–8327 unique private
+  fields in one class, so decl #65 collides with slot 0 → misleading "duplicate
+  private name" error. NOT a Unicode bug (repros with ASCII names). Raising the
+  cap has stack-budget implications — needs a deliberate design (heap-allocate
+  the table, or grow-on-demand). Round-4 candidate.
+
 ### Follow-ups surfaced this session
 - [ ] **Promise combinator GC-rooting** (~4): builtin-thrown error object can be
   swept before use across a call-boundary safepoint (`any`/`race`

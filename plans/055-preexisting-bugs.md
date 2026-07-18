@@ -1,0 +1,123 @@
+# Plan 055 — Pre-existing bugs surfaced by session-287/288 agents
+
+Bugs found incidentally by cluster agents, outside their assigned scope.
+Reproduced on main as of `4538dc7`. To be fixed by focused single-cause agents
+once the current round (L, P2, C7a-cap) drains. **Do not dispatch until then.**
+
+## Confirmed reproduced
+
+### PB1 — arguments object lacks `@@iterator` — REAL IN-SCOPE BUG
+RESEARCHED (not guessed): the strict `arguments` object IS a supported, first-
+class feature. Evidence: dedicated `ObjClass.ARGUMENTS` exotic object built in 6+
+VM call paths (vm_calls.c3:372 etc.) with indexed elements, `.length`, strict
+`.callee` poison-pill ("may not be accessed in strict mode"), prototype =
+Object.prototype; compiler `uses_arguments`/`forbid_arguments` (class-field-init
+SyntaxError, spec-correct); `typeof arguments === "object"` inside a function.
+My earlier "typeof undefined" probe was WRONG — it ran at global scope where
+arguments correctly doesn't exist (`!self.is_global` gate).
+
+What's OUT of scope: only the SLOPPY **mapped** arguments (arguments[i]↔named-param
+aliasing) — the `language/arguments-object/` test dir is already skip-listed
+(run_test262.py:312), which is the correct narrow exclusion.
+
+What's the BUG: the arguments object is missing `Symbol.iterator` (should be
+`%Array.prototype.values%`), so `[...arguments]`/`for-of arguments` throw. Already
+listed in BACKLOG.md:59 as a fix, not a non-goal. Fix: install `@@iterator` on the
+ARGUMENTS object (shared, not per-instance — tie to PB2's shared-iterator-proto
+work, or at minimum point it at Array.prototype.values). Small, real, in-scope.
+
+### PB2 — iterators have `next` as an OWN property, not on a shared prototype
+`Object.getPrototypeOf([1,2][Symbol.iterator]()).hasOwnProperty("next")` is
+`false`; the instance has its own `next`. So patching
+`%ArrayIteratorPrototype%.next` is silently ineffective (spec-visible).
+Affects Array/Map/Set/String iterators. Architectural — touches every iterator
+type + GC. Reporter: TA. **Subsystem change — dedicated agent, careful.**
+
+### PB6 — well-known symbol `.description` wrong / not a string
+`Symbol.iterator.description` returns `[object Object]` (should be
+`"Symbol.iterator"`). Well-known symbols' description handling is broken.
+Reporter: B. Small, localized to symbol.c3 — good focused task.
+
+### PB7 — async generators silently accepted but non-conforming
+`async function* ag(){}` parses; `typeof ag === "function"`, `ag.prototype`
+is `undefined`, calling returns a plain object not an async generator.
+Should either be supported or rejected at parse. Reporter: O. Marked deferred
+in project scope (B35) — leave unless we decide to implement.
+
+## RESOLVED
+
+### PB10 — FIXED (`9566c0c`) — bound lightfunc builtin lost its receiver
+Actual root cause (agent's re-diagnosis, NOT reentrancy): `builtin_bound_call`'s
+lightfunc-downstream branch set `inner_ctx.this_val = bound_this` but never wrote
+`bound_this` into `ctx.regs[base_reg-1]` (nor callee into `base_reg-2`). Lightfunc
+builtins read their receiver from the register, so `Promise.resolve.bind(Promise)`
+saw a stale slot → "Promise capability not initialized". Fix mirrors the object
+branch's register writes. Unblocked P2. Then P2 (`34a5269`) merged: Promise dir
+612/81 → 618/75 (chunked, apples-to-apples) = **net +6/-6**, P2 targets 10/10,
+corpus clean. Prerequisite-first approach avoided shipping the -9 regression.
+
+### PB10-history — (was) BLOCKING before P2
+P2 (agent adc1fa66) fixed two real Promise bugs (stale `vm.has_error` channel +
+no-handler microtask ordering, commit `261cfd5`, NOT merged) — but the call-timing
+change EXPOSES a dormant VM bug: a bound function's `this` is corrupted when the
+bound call happens through a nested/reentrant `heap.call_fn` boundary (e.g. a
+map/forEach/sort callback, or a combinator's own resolve re-entry). Result: 10
+Promise tests fixed but 19 newly fail → net -9 on built-ins/Promise. Agent proved
+the underlying bug exists on unmodified HEAD via a synthetic non-Promise repro.
+Lives in `vm_calls.c3`/`vm_execute.c3` bound-call dispatch or reentrant activation
+save/restore. **This is the prerequisite:** fix PB10 first (oracle = the 19
+newly-failing Promise tests + the agent's synthetic repro), THEN cherry-pick
+`261cfd5` and confirm net-positive. Do NOT merge P2 before PB10 is fixed.
+(Awaiting agent's exact repro + failing-test list.)
+
+## Needs more investigation
+
+### PB3 — batch-runner SIGSEGV under sustained load (crash, infra)
+`test262_runner --worker` crashes between tests under load (heap.reset/GC
+fragility). Does not repro via isolated run_single_test.sh. Tracked in memory
+`batch-runner-segv-under-load`. **Highest severity (a crash)** but hardest to
+pin — needs a focused GC/heap-reset investigation, likely with a stress repro.
+
+### PB5 — eval'd `super.x` in an OBJECT-LITERAL method resolves wrong super-base
+`__super__` holds either the constructor (needs `.prototype`) or the home
+object directly (needs GETPROTO) depending on compile-time context that eval
+can't see. Fix needs unifying `__super__` to always hold the home object.
+Touches shared class-compilation code. Reporter: B (2 super/*-from-eval tests).
+
+### PB8 — eval/global-code declaration fixes (L validated then REVERTED)
+L (agent a27cfd50) built + isolation-verified these fixes but reverted them to
+converge cleanly (they touch the shared, high-risk `env.c3`/`builtins/global.c3`
+eval surface). A fresh focused agent should redo — the design is proven:
+- `builtin_eval` wraps global var/function decls in a throwaway child env; global
+  eval `var`/`function` must become persistent global-object properties
+  (CreateGlobalVar/FunctionBinding). Fix: split `var_env` from `lex_env`, only
+  wrap when caller var-scope is a real function activation; companion fix in
+  `env_declare_var` (env.c3) so re-declaring a global doesn't clobber it.
+  (`global-code`, 16 tests; `script-decl-var.js` reached passing before revert.)
+- direct-eval `this` used eval's own call this-slot not caller's `this`
+  (`eval-code`: `this-value-global.js`, `this-value-func.js`).
+- `(0, eval)(...)` still flagged as DIRECT eval — `callee_is_eval` never cleared
+  when the grouping expr isn't a bare identifier. Fix: clear in expressions.c3's
+  4 grouping-return paths.
+- `typeof (x)` for undeclared parenthesized `x` threw instead of `"undefined"`.
+- global/eval top-level `return` didn't throw SyntaxError (statements.c3).
+- class-decl TDZ prescan only collected let/const, not `class` (general bug).
+- `new.target`/`super` inside eval (4 tests): genuine feature gap (compile_eval
+  lacks call-site enclosing-function/home-object context) — skip-list, don't fix.
+The committed `functions.c3`/`expressions.c3` var-hoisting fixes (in 4ff3485) are
+prerequisites these build on.
+
+### PB9 — arrow in class-field initializer accessing a private name (COMPILE bug)
+`class B { #s=5; f=(()=>this.#s); }` fails at compile with "duplicate private name
+declaration". Confirmed pre-existing (fails identically on 4ff3485, before the
+private-names-cap change — NOT a C7a-cap regression). Root cause: likely
+`compile_default_expr`/field-initializer private-name scope propagation — the
+arrow's nested context re-declares `#s` instead of borrowing. C7a-cap agent
+flagged the same shape (`add(x = this.#base)`). Localized to compiler
+field-init/private-name handling. Reporter: C7a-cap.
+
+### PB4 — lightfunc as prototype / super-target
+`super()` to a lightfunc builtin segfaulted in B's repro (reverted). Lightfuncs
+have no HObject* identity. `Object.setPrototypeOf(fn, lightfunc)` does NOT crash
+in isolation — B's crash was the more specific super-call path. Needs the exact
+repro re-derived before fixing.
