@@ -227,8 +227,40 @@ fn bool env_declare(EnvRecord* env, void* key, TVal val) @inline {
 /// remains configurable. Bindings in non-global (function-scope) var
 /// environments are never directly observable as object properties, so
 /// their configurability is immaterial; they keep the ordinary WEC flags.
-fn bool env_declare_var(EnvRecord* env, void* key, TVal val, bool is_global) @inline {
-    hobject::PropFlags flags = is_global ? hobject::PROP_FLAGS_WE : hobject::PROP_FLAGS_WEC;
+///
+/// `is_eval_code` distinguishes eval's EvalDeclarationInstantiation
+/// (§18.2.1.2 step 16.a: `CreateGlobalVarBinding(vn, true)`) from a real
+/// Script's GlobalDeclarationInstantiation (§15.1.11 step 18.a:
+/// `CreateGlobalVarBinding(vn, false)`) — the boolean is the `D`
+/// (configurable) argument in both: eval-created global var/function
+/// bindings stay configurable; script-level ones do not.
+///
+/// CreateGlobalVarBinding only installs a binding (with a fresh descriptor)
+/// when the global object doesn't already have an own property of that
+/// name; a bare `var x;` hoist stub (`val` is `undefined` — a real
+/// initializer or FunctionDeclaration closure is never `undefined`) is a
+/// pure declaration with no value to assign, so it's skipped entirely when
+/// the property already exists (CanDeclareGlobalVar step 4-5).
+///
+/// DECLVAR is shared by plain `var`/assignment-initializer declarations and
+/// FunctionDeclaration hoisting, which the runtime opcode can't tell apart
+/// (no dedicated opcode encodes it), and their existing-property rules
+/// differ: `var x = <value>` against an existing global property only
+/// performs a value-only `Set` (attributes untouched), while
+/// CreateGlobalFunctionBinding resets the whole descriptor whenever the
+/// existing property is configurable, or does a value-only update only when
+/// it's a non-configurable-but-writable-and-enumerable data property (else
+/// CanDeclareGlobalFunction should throw TypeError — not yet implemented).
+/// Resetting the descriptor unconditionally here (as done below) is correct
+/// for functions in the common case and merely too eager for a `var`
+/// re-declaration's value write, which is the narrower, less surprising
+/// side to be wrong on.
+fn bool env_declare_var(EnvRecord* env, void* key, TVal val, bool is_global, bool is_eval_code) @inline {
+    if (is_global && val.is_undefined() && env.bindings.has_prop(key)) {
+        return true;
+    }
+    hobject::PropFlags flags = !is_global ? hobject::PROP_FLAGS_WEC
+        : (is_eval_code ? hobject::PROP_FLAGS_WEC : hobject::PROP_FLAGS_WE);
     return env.bindings.put_prop(key, val, flags);
 }
 

@@ -776,6 +776,73 @@ fn ushort? CompilerContext.unary_expr(&self) {
             // dedicated TYPEOFIDENT opcode that handles the not-found case.
             // For dotted/computed/call expressions (X.y, X[y], X()), fall through
             // to normal expression parsing so the member chain is fully consumed.
+            //
+            // A parenthesized identifier (`typeof (x)`) is still an
+            // IdentifierReference for this purpose — CoverParenthesizedExpression
+            // doesn't change what gets evaluated, it only affects IsIdentifierRef
+            // for NamedEvaluation/assignment-target purposes (ES2015 §12.5.7 has
+            // no such carve-out). Detect the exact `( IDENTIFIER )` shape here (no
+            // multi-token lookahead exists, so save/restore the lexer around a
+            // speculative scan) and route it through the same fast path as a bare
+            // identifier; anything else inside the parens falls through below.
+            if (self.check(TokenType.LPAREN)) {
+                uint saved_pos    = self.lexer.pos;
+                uint saved_line   = self.lexer.line;
+                uint saved_col    = self.lexer.col;
+                Token saved_cur   = self.lexer.current;
+                Token saved_look  = self.lexer.lookahead;
+                bool  saved_haslk = self.lexer.has_lookahead;
+                Token saved_push  = self.lexer.pushed_back;
+                bool  saved_haspb = self.lexer.has_pushed_back;
+                bool  saved_slt   = self.lexer.seen_line_term;
+
+                self.advance()!;  // consume '('
+                Token? id_opt = self.lexer.next_token();
+                bool matched = false;
+                Token matched_id;
+                if (try idTok2 = id_opt) {
+                    if (idTok2.type == TokenType.IDENTIFIER &&
+                        !str_eq(idTok2.str_value, "true") &&
+                        !str_eq(idTok2.str_value, "false") &&
+                        !str_eq(idTok2.str_value, "null") &&
+                        !str_eq(idTok2.str_value, "undefined")) {
+                        Token? rparen_opt = self.lexer.next_token();
+                        if (try rp = rparen_opt) {
+                            if (rp.type == TokenType.RPAREN) {
+                                matched = true;
+                                matched_id = idTok2;
+                            }
+                        }
+                    }
+                }
+
+                if (matched) {
+                    Token idTok2 = matched_id;
+                    if (!self.is_global) {
+                        if (try local_reg = self.resolve_var(idTok2.str_value)) {
+                            ushort res_typeof = self.alloc_reg();
+                            self.emit_abc(Opcode.TYPEOF, (uint)res_typeof, (uint)local_reg, 0);
+                            return res_typeof;
+                        }
+                    }
+                    uint name_idx = self.add_string_constant(idTok2.str_value);
+                    ushort res_typeof = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.TYPEOFIDENT, (uint)res_typeof, name_idx));
+                    return res_typeof;
+                }
+
+                // Not the simple `( IDENTIFIER )` shape — restore and fall
+                // through to normal typeof expr parsing.
+                self.lexer.pos             = saved_pos;
+                self.lexer.line            = saved_line;
+                self.lexer.col             = saved_col;
+                self.lexer.current         = saved_cur;
+                self.lexer.lookahead       = saved_look;
+                self.lexer.has_lookahead   = saved_haslk;
+                self.lexer.pushed_back     = saved_push;
+                self.lexer.has_pushed_back = saved_haspb;
+                self.lexer.seen_line_term  = saved_slt;
+            }
             {
                 Token? peeked = self.lexer.peek();
                 if (try idTok = peeked) {
@@ -2518,6 +2585,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.lexer.has_pushed_back = saved_haspb;
                 self.lexer.seen_line_term  = saved_slt;
                 ushort inner2 = self.expression()!;
+                // A parenthesized expression is never a bare IdentifierReference,
+                // so `(eval)(...)`/`(0, eval)(...)` must NOT be treated as direct
+                // eval even though the innermost operand's name is "eval" (ES2015
+                // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
+                self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
                 TokenType next_tt = self.peek_type();
                 if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
@@ -2639,6 +2711,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.lexer.has_pushed_back = saved_haspb;
                 self.lexer.seen_line_term  = saved_slt;
                 ushort inner2 = self.expression()!;
+                // A parenthesized expression is never a bare IdentifierReference,
+                // so `(eval)(...)`/`(0, eval)(...)` must NOT be treated as direct
+                // eval even though the innermost operand's name is "eval" (ES2015
+                // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
+                self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
                 TokenType next_tt = self.peek_type();
                 if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
@@ -2689,6 +2766,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.lexer.has_pushed_back = saved_haspb;
                 self.lexer.seen_line_term  = saved_slt;
                 ushort inner2 = self.expression()!;
+                // A parenthesized expression is never a bare IdentifierReference,
+                // so `(eval)(...)`/`(0, eval)(...)` must NOT be treated as direct
+                // eval even though the innermost operand's name is "eval" (ES2015
+                // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
+                self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
                 TokenType next_tt = self.peek_type();
                 if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
@@ -2710,6 +2792,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
             } else {
                 // Not arrow: parse as grouping expression
                 ushort inner2 = self.expression()!;
+                // A parenthesized expression is never a bare IdentifierReference,
+                // so `(eval)(...)`/`(0, eval)(...)` must NOT be treated as direct
+                // eval even though the innermost operand's name is "eval" (ES2015
+                // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
+                self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
                 TokenType next_tt = self.peek_type();
                 if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {

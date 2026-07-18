@@ -975,6 +975,13 @@ bitstruct FuncFlags : uint {
     /// `return <non-object>` in a derived constructor throws TypeError unless
     /// the value is undefined. Set when has_super_binding is true at compile time.
     bool  is_derived_ctor  : 23;
+    /// Function is compiled eval code (compile_eval), not Script/global code.
+    /// Per ES2015 §18.2.1.2 EvalDeclarationInstantiation step 16.a,
+    /// CreateGlobalVarBinding(vn, true) installs eval-created global var/
+    /// function bindings as *configurable* — distinct from a real Script's
+    /// GlobalDeclarationInstantiation (§15.1.11 step 18.a), which installs
+    /// them non-configurable via CreateGlobalVarBinding(vn, false).
+    bool  is_eval          : 24;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -1149,6 +1156,12 @@ macro bool CompiledFunction.needs_env(&self) {
 /// Returns `true` for the top-level program or eval scope.
 macro bool CompiledFunction.is_global_fn(&self) {
     return self.flags.is_global;
+}
+
+/// Returns `true` when this is compiled eval code (as opposed to Script or
+/// module top-level code) — see FuncFlags.is_eval.
+macro bool CompiledFunction.is_eval_fn(&self) {
+    return self.flags.is_eval;
 }
 macro bool CompiledFunction.needs_lex_bridge(&self) {
     return self.flags.needs_lex_bridge;

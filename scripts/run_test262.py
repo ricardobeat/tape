@@ -194,24 +194,22 @@ SKIP_FILES = {
     "built-ins/Function/length/S15.3.5.1_A2_T3.js",  # duplicate params across joined arg strings
     "built-ins/Function/length/S15.3.5.1_A3_T3.js",  # duplicate params across joined arg strings
     "built-ins/Function/length/S15.3.5.1_A4_T3.js",  # duplicate params across joined arg strings
-    # B17 — eval-code tests that require sloppy-mode semantics. Our
-    # strict-only engine cannot run indirect eval with `var` declarations
-    # leaking to the global environment (which is the spec'd behavior in
-    # non-strict eval), and the various `global-env-rec-*` tests test the
-    # sloppy-mode behavior where direct eval sees the caller's vars.
-    "language/eval-code/direct/global-env-rec.js",
-    "language/eval-code/direct/global-env-rec-catch.js",
-    "language/eval-code/direct/global-env-rec-eval.js",
-    "language/eval-code/direct/global-env-rec-fun.js",
-    "language/eval-code/indirect/always-non-strict.js",
-    "language/eval-code/indirect/this-value-global.js",
-    "language/eval-code/indirect/var-env-var-non-strict.js",
-    "language/eval-code/indirect/var-env-var-init-global-new.js",
-    "language/eval-code/indirect/var-env-var-init-global-exstng.js",
-    "language/eval-code/indirect/var-env-func-non-strict.js",
+    # B17/PB8 — genuinely sloppy-mode-only, or dependent on a full
+    # GlobalDeclarationInstantiation/EvalDeclarationInstantiation
+    # CanDeclareGlobalFunction implementation (validate-then-commit over ALL
+    # hoisted names before any statement runs, throwing TypeError before
+    # execution) that DECLVAR's single opcode can't distinguish var- from
+    # function-declarations for — not yet implemented (plan 054 follow-up).
+    # Most of this block's *former* siblings (global-env-rec*, this-value-
+    # global, var-env-var/func-non-strict, var-env-*-init-global-new,
+    # var-env-func-init-global-update-configurable) were misdiagnosed as
+    # sloppy-mode-only and now pass after the eval/global-code
+    # declaration-instantiation fixes (direct/indirect eval var_env vs
+    # lex_env split, this-binding, (0,eval) direct-eval detection);
+    # removed from this list.
+    "language/eval-code/indirect/always-non-strict.js",  # `with ({}) {}` — unsupported (AGENTS.md)
+    "language/eval-code/indirect/var-env-var-init-global-exstng.js",  # needs value-write to preserve an EXISTING global prop's configurable=false while a sibling case (function redecl over a configurable prop) needs a full descriptor reset — same opcode, no way to distinguish yet
     "language/eval-code/indirect/var-env-func-init-multi.js",
-    "language/eval-code/indirect/var-env-func-init-global-new.js",
-    "language/eval-code/indirect/var-env-func-init-global-update-configurable.js",
     "language/eval-code/indirect/var-env-func-init-global-update-non-configurable.js",
     "language/eval-code/indirect/non-definable-global-function.js",
     "language/eval-code/indirect/non-definable-function-with-function.js",

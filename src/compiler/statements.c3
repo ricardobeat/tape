@@ -442,6 +442,24 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
                 }
                 // continue to the next declarator name
             }
+            continue;
+        }
+
+        // class Name { ... } — collect the binding name. Class declarations
+        // are lexically scoped exactly like let/const (ES2015 §14.5.15
+        // BlockDeclarationInstantiation), so a `typeof C` before `class C {}`
+        // must observe the TDZ, not fall through to "undefined".
+        if (brace_depth == 0 && tt == TokenType.CLASS) {
+            Token? name_opt = self.lexer.next_token();
+            if (catch _err4 = name_opt) {
+                break;
+            }
+            Token name_tok = name_opt;
+            if (name_tok.type == TokenType.IDENTIFIER && count < capacity) {
+                spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
+                spans[count].len = (uint)name_tok.str_value.len;
+                count++;
+            }
         }
     }
 
@@ -3031,6 +3049,14 @@ fn void CompilerContext.emit_return_iter_closes(&self) {
 
 fn void? CompilerContext.return_statement(&self) {
     self.expect(TokenType.RETURN)!;
+
+    // ES2015 §14.9.1: `return` is only valid inside a FunctionBody — a
+    // top-level Script or eval-code Program has no function to return from.
+    // A nested function body gets its own CompilerContext (is_global always
+    // false there), so this only fires for genuinely top-level `return`.
+    if (self.is_global) {
+        return COMPILE_ERROR~;
+    }
 
     // Check if there's a return value (not a semicolon or end-of-statement)
     // A line terminator between return and the expression causes ASI (ES5 §12.9)

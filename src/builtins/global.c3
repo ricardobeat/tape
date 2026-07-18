@@ -408,41 +408,69 @@ fn void builtin_eval(BuiltinContext* ctx) {
     // Determine whether this is a direct eval call by checking the calling
     // activation's ACT_FLAG_DIRECT_EVAL flag (set by the compiler when the
     // function body contains a direct eval(...) call).
-    // For direct eval, use the caller's lexical environment (ES5 §10.4.2).
-    // For indirect eval, use the global environment.
+    // For direct eval, use the caller's lexical/variable environments
+    // (ES5 §10.4.2). For indirect eval, use the global environment.
     //
-    // In strict mode (this engine is strict-only per AGENTS.md), the eval'd
-    // code's variable and function declarations must be installed in a FRESH
-    // declarative environment whose parent is the caller's env (or the global
-    // env for indirect eval). This prevents `eval("var x = 1")` from
-    // mutating the caller's bindings — instead the declarations live in the
-    // eval's own env, which is discarded when the eval call returns.
-    // (Sloppy-mode eval would share the caller's env — Annex B legacy —
-    // but the engine has no sloppy mode.)
+    // var_env and lex_env are handled differently (ES2015 §18.2.1.1
+    // PerformEval steps 14-19, EvalDeclarationInstantiation), but GETVAR/
+    // PUTVAR/DECLVAR only ever walk/write via lex_env (var_env is DECLVAR's
+    // write target only — see vm_execute.c3's DECLVAR case) — so whatever we
+    // use as var_env MUST also be reachable by walking lex_env's parent
+    // chain, or eval's own `var` bindings become invisible to reads in the
+    // very same eval call (they'd be a second child hanging off a common
+    // ancestor, not an ancestor of lex_env itself).
+    //
+    //   - When the caller's var-scope IS the global environment (top-level
+    //     direct eval, or any indirect eval), var_env is the real global env
+    //     itself — global `var`/`function` declarations from eval must
+    //     become persistent, non-configurable-or-configurable-per-D global
+    //     properties, not vanish with a throwaway env
+    //     (CreateGlobalVarBinding/CreateGlobalFunctionBinding). lex_env is a
+    //     fresh declarative child of the caller's actual lex_env (which
+    //     already chains up through the global env), isolating let/const/
+    //     class from the caller while still reaching the global var_env.
+    //   - When the caller's var-scope is a real function activation, a
+    //     single fresh declarative env serves as BOTH var_env and lex_env
+    //     (parented on the caller's actual lex_env, preserving any block
+    //     scopes visible at the call site) — so `var`/`function`
+    //     declarations and `let`/`const`/`class` declarations land in the
+    //     same throwaway scope, and a read immediately after a `var` write
+    //     sees it, without polluting the caller's own bindings.
     vm::Vm* eval_vm = (vm::Vm*)ctx.vm;
     usz act_count = eval_vm.activation_count;
     bool is_direct_eval = false;
-    EnvRecord* env_for_eval = ctx.global_env;
+    EnvRecord* lex_env_for_eval = ctx.global_env;
+    EnvRecord* var_env_for_eval = ctx.global_env;
+    TVal caller_this;
+    caller_this.set_undefined();
     if (act_count > 0) {
         vm::Activation* caller_act = &eval_vm.activations[act_count - 1];
         if ((caller_act.flags & vm::ACT_FLAG_DIRECT_EVAL) != 0) {
             is_direct_eval = true;
-            env_for_eval = caller_act.lex_env;
+            lex_env_for_eval = caller_act.lex_env;
+            var_env_for_eval = caller_act.var_env;
+            caller_this = caller_act.this_binding;
         }
     }
-    // Create a fresh declarative child env so the eval's DECLVAR writes don't
-    // mutate the caller's bindings. `env_create_declarative` already exists
-    // and is used for the `needs_lex_bridge` path (vm.c3:5217).
-    EnvRecord*? eval_env_raw = env::env_create_declarative(ctx.heap, env_for_eval);
-    if (catch err = eval_env_raw) {
-        // Allocation failed — fall back to sharing the caller's env (preserves
-        // the old behavior on OOM rather than crashing the VM).
-        (*func_obj.extra_ptr()).func.var_env = env_for_eval;
-        (*func_obj.extra_ptr()).func.lex_env = env_for_eval;
+    if (var_env_for_eval == ctx.global_env) {
+        (*func_obj.extra_ptr()).func.var_env = var_env_for_eval;
+        EnvRecord*? lex_env_raw = env::env_create_declarative(ctx.heap, lex_env_for_eval);
+        if (catch err = lex_env_raw) {
+            // Allocation failed — fall back to sharing the caller's env
+            // (preserves the old behavior on OOM rather than crashing the VM).
+            (*func_obj.extra_ptr()).func.lex_env = lex_env_for_eval;
+        } else {
+            (*func_obj.extra_ptr()).func.lex_env = lex_env_raw;
+        }
     } else {
-        EnvRecord* eval_env = eval_env_raw;
-        (*func_obj.extra_ptr()).func.var_env = eval_env;
-        (*func_obj.extra_ptr()).func.lex_env = eval_env;
+        EnvRecord*? shared_env_raw = env::env_create_declarative(ctx.heap, lex_env_for_eval);
+        if (catch err = shared_env_raw) {
+            (*func_obj.extra_ptr()).func.var_env = var_env_for_eval;
+            (*func_obj.extra_ptr()).func.lex_env = lex_env_for_eval;
+        } else {
+            (*func_obj.extra_ptr()).func.var_env = shared_env_raw;
+            (*func_obj.extra_ptr()).func.lex_env = shared_env_raw;
+        }
     }
 
     // Replace the callee slot with the compiled function HObject
@@ -454,12 +482,18 @@ fn void builtin_eval(BuiltinContext* ctx) {
     //   - Indirect eval: thisArg = the global object
     //   - Direct eval: thisArg = the calling context's this binding
     // The re-dispatch CALL handler runs the eval'd function with `this`
-    // in the (base_reg - 1) slot — we set it here to the appropriate value.
+    // in the (base_reg - 1) slot — we overwrite it here since the CALL
+    // handler for a bare `eval(...)` call site always loads `undefined`
+    // there (no receiver object precedes a plain identifier callee).
     TVal this_tv;
-    if (is_direct_eval && ctx.argc > 0) {
-        // For direct eval, the caller's `this` is the same value passed in
-        // the re-dispatch slot by the CALL handler. The CALL handler
-        // already populated the slot, so we don't override it.
+    if (is_direct_eval) {
+        // Ref-counted register write: a raw struct copy would leave the
+        // slot holding a heap pointer with no owning reference, so a
+        // decref anywhere else along `caller_this`'s existing reference
+        // (e.g. the caller popping its own activation) can free the object
+        // out from under this register before the re-dispatched CALL
+        // handler reads it back into the new activation's this_binding.
+        ctx.heap.tval_copy_ref(&ctx.regs[ctx.base_reg - 1], &caller_this);
     } else if (ctx.global_env != null && ctx.global_env.bindings != null) {
         // Indirect eval (or no caller): `this` = global object.
         this_tv.set_object(ctx.global_env.bindings);
@@ -469,6 +503,73 @@ fn void builtin_eval(BuiltinContext* ctx) {
     // Signal the CALL handler to re-dispatch to the compiled function with 0 args
     ctx.needs_re_dispatch = true;
     ctx.re_nargs = 0;
+}
+
+/// $262.evalScript(src) — the test262 host hook that runs `src` as an
+/// independent global Script (ES2015 §18.2.1 ScriptEvaluation), NOT as an
+/// eval call. Unlike `eval`, this is never "direct" or "indirect": the
+/// compiled Program always gets a fresh top-level activation whose
+/// var_env/lex_env is the real global environment, so `var`/`function`/
+/// `let`/`const`/`class` declarations follow ordinary global-code semantics
+/// (GlobalDeclarationInstantiation) regardless of what called evalScript.
+fn void builtin_eval_script(BuiltinContext* ctx) {
+    if (ctx.argc < 1) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    TVal* arg = &ctx.regs[ctx.base_reg];
+    if (!arg.is_string()) {
+        ctx.heap.tval_copy_ref(ctx.result, arg);
+        return;
+    }
+
+    HString* source = (HString*)arg.get_heapptr();
+    char* src_cstr = source.get_cstr();
+    usz src_len = source.blen;
+
+    Lexer lex = lexer::lexer_init(src_cstr[:src_len], ctx.heap);
+    lex.skip_hashbang();
+    CompiledFunction*? cf = compiler::compile(&lex, ctx.heap);
+    CompiledFunction* func;
+    if (try f = cf) {
+        func = f;
+    } else {
+        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+        if (try err = err_raw) {
+            err.prototype = ctx.heap.syntax_err_proto;
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            HString* msg_str = builtin_intern_string(ctx.heap, "SyntaxError in eval code");
+            TVal msg_tv;
+            msg_tv.set_string(msg_str);
+            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+            TVal err_tv;
+            err_tv.set_object(err);
+            ctx.throw_value.set_object(err_tv.get_heapptr());
+        } else {
+            ctx.throw_value.set_undefined();
+        }
+        ctx.should_throw = true;
+        return;
+    }
+
+    vm::Vm* eval_vm = (vm::Vm*)ctx.vm;
+    bool? ok = eval_vm.execute_module_nested(func, ctx.global_env);
+    if (catch err = ok) {
+        ctx.result.set_undefined();
+        return;
+    }
+    if (!ok) {
+        // Uncaught throw inside the script — propagate it as this builtin's
+        // own throw (execute_module_nested left it in heap.error_value).
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        eval_vm.has_error = false;
+        return;
+    }
+
+    ctx.result.set_undefined();
 }
 
 fn void uri_encode_byte(char* out, usz* offset, char b) {

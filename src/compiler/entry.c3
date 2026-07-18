@@ -156,6 +156,16 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool allow_super = fa
 /// Compile a function expression or declaration.
 /// `is_expr` is true for function expressions, false for declarations.
 fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr) {
+    // Reset error state for this compilation — see `compile`'s matching
+    // reset. Without it, a stale `g_last_err_msg` left by a PREVIOUS
+    // Function()-constructor SyntaxError makes finish()'s choke-point check
+    // (context.c3) fail the very next, otherwise-valid compile too — e.g.
+    // register_builtins() compiling Array.prototype.toLocaleString right
+    // after an unrelated test threw a SyntaxError, poisoning every
+    // subsequent test in the same batch-worker process.
+    g_last_err_msg[0] = 0;
+    g_last_err_line = 0;
+    g_last_err_col  = 0;
     CompilerContext ctx;
     ctx.init(lex, heap);
 
@@ -168,6 +178,10 @@ fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr) {
 /// Like compile_function but with generator/async flags set for dynamic
 /// GeneratorFunction / AsyncFunction constructor (ES2019 §19.2.1.1.1).
 fn CompiledFunction*? compile_function_kind(Lexer* lex, void* heap, bool is_expr, bool is_generator, bool is_async) {
+    // See compile_function's matching reset — same stale-flag hazard.
+    g_last_err_msg[0] = 0;
+    g_last_err_line = 0;
+    g_last_err_col  = 0;
     CompilerContext ctx;
     ctx.init(lex, heap);
     ctx.is_generator = is_generator;

@@ -3105,9 +3105,9 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROXY_REVOKE]               = &builtin_proxy_revoke,
     [BUILTIN_PROXY_CALL]                 = &builtin_proxy_call,
     [BUILTIN_TA_SPECIES_GET]             = &builtin_ta_species_get,
-    // evalScript: aliased to eval until the global-declaration-instantiation
-    // rework lands (plan 052); a spec evalScript runs as a global script.
-    [BUILTIN_EVAL_SCRIPT]                = &builtin_eval,
+    // evalScript runs its argument as an independent global Script
+    // (ES2015 §18.2.1 ScriptEvaluation), not as an eval call.
+    [BUILTIN_EVAL_SCRIPT]                = &builtin_eval_script,
     [BUILTIN_REGEXP_SPECIES_GETTER]       = &builtin_regexp_species_getter,
     [BUILTIN_MODULE_BINDING_GETTER]       = &builtin_module_binding_getter,
     [BUILTIN_REFLECT_GET]                 = &builtin_reflect_get,

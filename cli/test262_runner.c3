@@ -149,7 +149,7 @@ const char[] ISCON_HARNESS = "function isConstructor(f){try{var p=new Proxy({},{
 // Minimal $262 host object for tests that call $262.detachArrayBuffer,
 // $DETACHBUFFER, etc. The detach primitive is provided by the engine as
 // the hidden global __detachArrayBuffer (see src/builtins/arraybuffer.c3).
-const char[] HOST262_HARNESS = "var $262={detachArrayBuffer:function(b){return __detachArrayBuffer(b);},global:this,gc:function(){},evalScript:function(s){return eval(s);},createRealm:function(){throw new Error('createRealm not supported');},agent:{}};function $DETACHBUFFER(b){return __detachArrayBuffer(b);}";
+const char[] HOST262_HARNESS = "var $262={detachArrayBuffer:function(b){return __detachArrayBuffer(b);},global:this,gc:function(){},evalScript:function(s){return __evalScript(s);},createRealm:function(){throw new Error('createRealm not supported');},agent:{}};function $DETACHBUFFER(b){return __detachArrayBuffer(b);}";
 
 // Parse test262 metadata frontmatter for `includes: [a.js, b.js]` and load each
 // harness file. Called once per test after the boilerplate harness is loaded.
