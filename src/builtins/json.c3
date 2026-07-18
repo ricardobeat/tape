@@ -9,6 +9,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::env;
 import duktape::dtoa_bindings;
+import duktape::vm;
 import std::io;
 
 // ============================================================================
@@ -391,38 +392,47 @@ fn TVal json_parse_value(JsonParseCtx* jctx) {
     }
 }
 
+/// Reads and ToLength-coerces an array-like's "length" via full [[Get]]
+/// (invokes accessor getters and Proxy "get" traps), then ToNumber-coerces
+/// a non-numeric result (invokes valueOf/toString or Proxy traps in turn).
+/// Errors are signalled via heap.has_error; check after return.
+fn uint json_walk_array_length(void* vm, Heap* heap, HObject* obj) {
+    HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+    TVal len_val;
+    if (!js_get(vm, heap, obj, len_key, &len_val)) return 0;
+    if (len_val.is_fastint()) return (uint)len_val.get_fastint();
+    if (len_val.is_number()) return (uint)(long)len_val.get_number();
+    if (len_val.is_object() && vm != null) {
+        TVal prim = vm::to_primitive_value((Vm*)vm, &len_val, 2);
+        Vm* vmp = (Vm*)vm;
+        if (vmp.throw_pending) {
+            heap.tval_copy_ref(&heap.error_value, &vmp.throw_value);
+            heap.has_error = true;
+            vmp.throw_pending = false;
+            return 0;
+        }
+        if (prim.is_fastint()) return (uint)prim.get_fastint();
+        if (prim.is_number()) return (uint)(long)prim.get_number();
+    }
+    return 0;
+}
+
 /// InternalizeJSONProperty — ES2023 §25.5.1.
 /// Implements the spec algorithm: Get(holder,name) via full [[Get]] (invokes
-/// accessors), recurse into object/array children in integer-ascending +
-/// insertion order, then call the reviver.  Errors (from getters or reviver)
-/// are signalled via heap.has_error; the caller must check after return.
+/// accessors and Proxy traps), recurse into object/array children in
+/// integer-ascending + insertion order (using [[OwnPropertyKeys]] for Proxy
+/// targets), then call the reviver.  Errors (from getters, Proxy traps, or
+/// the reviver) are signalled via heap.has_error; the caller must check
+/// after return.
 fn TVal json_walk(void* vm, Heap* heap, TVal reviver, TVal holder, HString* name) {
     TVal val;
-    // Step 1: val = ? Get(holder, name) — must invoke accessor getters.
+    // Step 1: val = ? Get(holder, name) — must invoke accessor getters and
+    // Proxy "get" traps.
     if (holder.is_object() && holder.get_heapptr() != null) {
         HObject* holder_obj = (HObject*)holder.get_heapptr();
-        hobject::PropLookupResult res = holder_obj.get_with_accessors(name);
-        switch (res.kind) {
-            case hobject::PropLookupKind.PROP_DATA:
-                val = res.data_val;
-            case hobject::PropLookupKind.PROP_ACCESSOR: {
-                // Call the getter; propagate errors via heap.has_error.
-                TVal getter_fn = res.acc.accessor_fn;
-                bool callable = false;
-                if (getter_fn.is_object() && getter_fn.get_heapptr() != null) {
-                    callable = ((HObject*)getter_fn.get_heapptr()).is_callable();
-                } else if (getter_fn.is_lightfunc()) {
-                    callable = true;
-                }
-                if (callable && heap.call_fn != null && vm != null) {
-                    val = heap.call_fn(vm, getter_fn, null, 0, holder);
-                    if (heap.has_error) { val.set_undefined(); return val; }
-                } else {
-                    val.set_undefined();
-                }
-            }
-            case hobject::PropLookupKind.PROP_NOT_FOUND:
-                val.set_undefined();
+        if (!js_get(vm, heap, holder_obj, name, &val)) {
+            val.set_undefined();
+            return val;
         }
     } else {
         val.set_undefined();
@@ -431,84 +441,102 @@ fn TVal json_walk(void* vm, Heap* heap, TVal reviver, TVal holder, HString* name
     // Step 2: if val is an Object, recurse into its children.
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
-        if (obj.get_class() == ObjClass.ARRAY) {
-            HString* len_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
-            TVal? len_prop = obj.get_prop_proto(len_key);
-            uint len = 0;
-            if (try l = len_prop) {
-                if (l.is_fastint()) {
-                    len = (uint)l.get_fastint();
-                } else if (l.is_number()) {
-                    len = (uint)(long)l.get_number();
-                }
-            }
+        bool is_array;
+        if (!proxy_is_array(heap, obj, &is_array)) {
+            val.set_undefined();
+            return val;
+        }
+        if (is_array) {
+            uint len = json_walk_array_length(vm, heap, obj);
+            if (heap.has_error) { val.set_undefined(); return val; }
             for (uint i = 0; i < len; i++) {
                 HString* idx_key = heap.int_to_hstring((long)i);
                 if (idx_key == null) continue;
                 TVal new_elem = json_walk(vm, heap, reviver, val, idx_key);
                 if (heap.has_error) return new_elem;
-                // [[Delete]] result is ignored (non-configurable stays).
                 if (new_elem.is_undefined()) {
-                    obj.es_delete_prop(idx_key);
-                } else {
-                    // [[DefineOwnProperty]] with WEC descriptor; ignore if non-configurable.
-                    int ex_idx = obj.find_prop_idx(idx_key);
-                    if (ex_idx >= 0 && !obj.get_prop_flags((uint)ex_idx).configurable) {
-                        // Non-configurable: silently skip.
+                    bool deleted;
+                    if (obj.flags.exotic_proxyobj) {
+                        if (!proxy_mop_delete(vm, heap, obj, idx_key, &deleted)) { val.set_undefined(); return val; }
                     } else {
-                        obj.put_prop(idx_key, new_elem, hobject::PROP_FLAGS_WEC);
+                        obj.es_delete_prop(idx_key);
+                    }
+                } else {
+                    ProxyDesc nd = {};
+                    nd.found = true;
+                    nd.has_value = true; nd.value = new_elem;
+                    nd.has_writable = true; nd.writable = true;
+                    nd.has_enumerable = true; nd.enumerable = true;
+                    nd.has_configurable = true; nd.configurable = true;
+                    bool res;
+                    if (!object_define_own(vm, heap, obj, idx_key, &nd, &res)) { val.set_undefined(); return val; }
+                }
+            }
+        } else {
+            HString** ordered;
+            uint ordered_count;
+            if (obj.flags.exotic_proxyobj) {
+                if (!proxy_filtered_own_keys(vm, heap, obj, 0, &ordered, &ordered_count)) {
+                    val.set_undefined();
+                    return val;
+                }
+            } else {
+                // Snapshot own enumerable keys in integer-ascending + insertion order
+                // (EnumerableOwnPropertyNames per spec, for-in-order requirement).
+                HString*[128] int_keys;
+                HString*[128] str_keys;
+                uint int_count = 0;
+                uint str_count = 0;
+                for (uint i = 0; i < obj.prop_count && (int_count + str_count) < 128; i++) {
+                    HString* kk = obj.prop_key_at(i);
+                    if (kk == null) continue;
+                    // Only enumerable own properties.
+                    if (!obj.get_prop_flags(i).enumerable) continue;
+                    if (kk.is_arridx()) {
+                        if (int_count < 128) int_keys[int_count++] = kk;
+                    } else {
+                        if (str_count < 128) str_keys[str_count++] = kk;
                     }
                 }
-            }
-        } else if (obj.get_class() == ObjClass.OBJECT) {
-            // Snapshot own enumerable keys in integer-ascending + insertion order
-            // (EnumerableOwnPropertyNames per spec, for-in-order requirement).
-            HString*[128] int_keys;
-            HString*[128] str_keys;
-            uint int_count = 0;
-            uint str_count = 0;
-            for (uint i = 0; i < obj.prop_count && (int_count + str_count) < 128; i++) {
-                HString* kk = obj.prop_key_at(i);
-                if (kk == null) continue;
-                // Only enumerable own properties.
-                if (!obj.get_prop_flags(i).enumerable) continue;
-                if (kk.is_arridx()) {
-                    if (int_count < 128) int_keys[int_count++] = kk;
-                } else {
-                    if (str_count < 128) str_keys[str_count++] = kk;
+                // Insertion sort integer keys ascending.
+                for (uint i = 1; i < int_count; i++) {
+                    HString* tk = int_keys[i];
+                    uint j = i;
+                    while (j > 0 && int_keys[j - 1].array_index() > tk.array_index()) {
+                        int_keys[j] = int_keys[j - 1];
+                        j--;
+                    }
+                    int_keys[j] = tk;
                 }
+                // Concatenate: integer keys first, then string keys.
+                ordered = (HString**)heap.alloc_func(heap.heap_udata, (usz)(int_count + str_count) * HString*::size);
+                if (ordered == null) { val.set_undefined(); return val; }
+                ordered_count = 0;
+                for (uint i = 0; i < int_count; i++) ordered[ordered_count++] = int_keys[i];
+                for (uint i = 0; i < str_count; i++) ordered[ordered_count++] = str_keys[i];
             }
-            // Insertion sort integer keys ascending.
-            for (uint i = 1; i < int_count; i++) {
-                HString* tk = int_keys[i];
-                uint j = i;
-                while (j > 0 && int_keys[j - 1].array_index() > tk.array_index()) {
-                    int_keys[j] = int_keys[j - 1];
-                    j--;
-                }
-                int_keys[j] = tk;
-            }
-            // Concatenate: integer keys first, then string keys.
-            HString*[256] ordered;
-            uint ordered_count = 0;
-            for (uint i = 0; i < int_count; i++) ordered[ordered_count++] = int_keys[i];
-            for (uint i = 0; i < str_count; i++) ordered[ordered_count++] = str_keys[i];
+            defer heap.free_func(heap.heap_udata, ordered);
 
             for (uint i = 0; i < ordered_count; i++) {
                 HString* key_str = ordered[i];
                 TVal new_val = json_walk(vm, heap, reviver, val, key_str);
                 if (heap.has_error) return new_val;
-                // [[Delete]] result is ignored.
                 if (new_val.is_undefined()) {
-                    obj.es_delete_prop(key_str);
-                } else {
-                    // [[DefineOwnProperty]] with WEC; silently skip if non-configurable.
-                    int ex_idx = obj.find_prop_idx(key_str);
-                    if (ex_idx >= 0 && !obj.get_prop_flags((uint)ex_idx).configurable) {
-                        // Non-configurable: silently skip define.
+                    bool deleted;
+                    if (obj.flags.exotic_proxyobj) {
+                        if (!proxy_mop_delete(vm, heap, obj, key_str, &deleted)) { val.set_undefined(); return val; }
                     } else {
-                        obj.put_prop(key_str, new_val, hobject::PROP_FLAGS_WEC);
+                        obj.es_delete_prop(key_str);
                     }
+                } else {
+                    ProxyDesc nd = {};
+                    nd.found = true;
+                    nd.has_value = true; nd.value = new_val;
+                    nd.has_writable = true; nd.writable = true;
+                    nd.has_enumerable = true; nd.enumerable = true;
+                    nd.has_configurable = true; nd.configurable = true;
+                    bool res;
+                    if (!object_define_own(vm, heap, obj, key_str, &nd, &res)) { val.set_undefined(); return val; }
                 }
             }
         }
@@ -1082,11 +1110,17 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
 
 
     if (!has_replacer) {
-        // Check if object has own properties (including accessor properties with getters)
-        for (uint i = 0; i < obj.prop_count; i++) {
-            if (obj.prop_key_at(i) != null) {
-                has_props = true;
-                break;
+        if (obj.flags.exotic_proxyobj) {
+            // Own keys can only be known via [[OwnPropertyKeys]] (may invoke
+            // a trap); defer the empty-object short-circuit to the key loop.
+            has_props = true;
+        } else {
+            // Check if object has own properties (including accessor properties with getters)
+            for (uint i = 0; i < obj.prop_count; i++) {
+                if (obj.prop_key_at(i) != null) {
+                    has_props = true;
+                    break;
+                }
             }
         }
     } else {
@@ -1106,31 +1140,12 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         for (uint p = 0; p < jctx.prop_key_count; p++) {
             HString* key_hstr = jctx.prop_keys[p];
 
-            // Get value from object — must handle accessor properties (getters)
+            // Get value from object — full [[Get]] (accessor getters, Proxy
+            // "get" trap, prototype chain).
             TVal val;
-            bool found_prop = false;
-            for (uint pi = 0; pi < obj.prop_count; pi++) {
-                if (obj.prop_key_at(pi) == key_hstr) {
-                    if (obj.get_prop_flags(pi).is_accessor) {
-                        // Invoke the getter to get the property value
-                        TVal getter_fn = hobject::hobject_access_getter(obj.prop_values()[pi]);
-                        if (getter_fn.is_undefined() || getter_fn.is_null()) {
-                            val.set_undefined();
-                        } else if (jctx.heap.call_fn != null && jctx.vm != null) {
-                            val = jctx.heap.call_fn(jctx.vm, getter_fn, null, 0, holder);
-                            if (jctx.heap.has_error) { jctx.error = true; return -1; }
-                        } else {
-                            val.set_undefined();
-                        }
-                    } else {
-                        val = obj.prop_values()[pi];
-                    }
-                    found_prop = true;
-                    break;
-                }
-            }
-            if (!found_prop) {
-                val.set_undefined();
+            if (!js_get(jctx.vm, jctx.heap, obj, key_hstr, &val)) {
+                jctx.error = true;
+                return -1;
             }
 
             // Apply toJSON + replacer
@@ -1180,6 +1195,71 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             jctx.depth--;
             if (r != 0) return r;
         }
+    } else if (obj.flags.exotic_proxyobj) {
+        // [[OwnPropertyKeys]] filtered to enumerable string keys, in trap order
+        // (ES §24.5.2.1 SerializeJSONObject step 6.a EnumerableOwnPropertyNames).
+        HString** final_keys;
+        uint final_count;
+        if (!proxy_filtered_own_keys(jctx.vm, jctx.heap, obj, 0, &final_keys, &final_count)) {
+            jctx.error = true;
+            return -1;
+        }
+        defer jctx.heap.free_func(jctx.heap.heap_udata, final_keys);
+
+        for (uint si = 0; si < final_count; si++) {
+            HString* key_hstr = final_keys[si];
+            TVal val;
+            if (!js_get(jctx.vm, jctx.heap, obj, key_hstr, &val)) {
+                jctx.error = true;
+                return -1;
+            }
+
+            bool omit = false;
+            val = json_check_property(jctx, key_hstr, val, holder, &omit);
+            if (jctx.error) return -1;
+            if (omit) continue;
+
+            if (!first) {
+                if (jctx.offset >= jctx.buf_size) return -1;
+                jctx.buf[jctx.offset++] = ',';
+            }
+            first = false;
+
+            // Indentation
+            if (jctx.gap_len > 0) {
+                if (jctx.offset >= jctx.buf_size) return -1;
+                jctx.buf[jctx.offset++] = '\n';
+                for (usz g = 0; g < jctx.indent_level * jctx.gap_len && jctx.offset < jctx.buf_size; g++) {
+                    jctx.buf[jctx.offset++] = jctx.gap[g % jctx.gap_len];
+                }
+            }
+
+            // Key
+            char* key_data = key_hstr.get_cstr();
+            uint key_len = key_hstr.blen;
+            char[1024] key_buf;
+            usz key_out = json_escape_string(key_data, key_len, &key_buf, 1024);
+            usz copy = key_out < (jctx.buf_size - jctx.offset) ? key_out : (jctx.buf_size - jctx.offset);
+            for (usz k = 0; k < copy; k++) {
+                jctx.buf[jctx.offset++] = key_buf[k];
+            }
+
+            if (jctx.offset + 2 > jctx.buf_size) return -1;
+            jctx.buf[jctx.offset++] = ':';
+            if (jctx.gap_len > 0) {
+                jctx.buf[jctx.offset++] = ' ';
+            }
+
+            // Value
+            jctx.depth++;
+            if (jctx.depth > JSON_MAX_DEPTH) {
+                jctx.depth--;
+                return -1;
+            }
+            int rc3 = json_serialize_val(jctx, &val);
+            jctx.depth--;
+            if (rc3 != 0) return rc3;
+        }
     } else {
         // Snapshot property keys before iterating, so that getters that delete
         // properties don't cause keys to be skipped (ES5 §15.12.3 step 4.b).
@@ -1187,7 +1267,6 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         // insertion order (HObject.prop_key_at walks the shape chain, returning
         // the i-th property in insertion order).
         HString*[64] snap_keys;
-        uint[64]   snap_value_idx;  // prop_values index of this key
         uint snap_count = 0;
         for (uint i = 0; i < obj.prop_count && snap_count < 64; i++) {
             HString* k = (HString*)obj.prop_key_at(i);
@@ -1197,7 +1276,6 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
             // implicitly excludes Symbols — [[OwnPropertyKeys]] string filter).
             if (k != null && !k.is_symbol() && obj.get_prop_flags(i).enumerable) {
                 snap_keys[snap_count] = k;
-                snap_value_idx[snap_count] = i;
                 snap_count++;
             }
         }
@@ -1206,13 +1284,11 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         // order. We split into two lists, sort the integer list numerically, then
         // concatenate.
         HString*[64] int_keys;
-        uint[64]   int_value_idx;
         uint int_count = 0;
         for (uint k = 0; k < snap_count; k++) {
             HString* kk = snap_keys[k];
             if (kk.is_arridx()) {
                 int_keys[int_count] = kk;
-                int_value_idx[int_count] = snap_value_idx[k];
                 int_count++;
             }
         }
@@ -1221,7 +1297,6 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         for (uint k = 0; k < snap_count; k++) {
             if (!snap_keys[k].is_arridx()) {
                 snap_keys[string_count] = snap_keys[k];
-                snap_value_idx[string_count] = snap_value_idx[k];
                 string_count++;
             }
         }
@@ -1229,57 +1304,34 @@ fn int json_serialize_object(JsonSerializeCtx* jctx, HObject* obj) {
         // Insertion sort the integer keys by their numeric index.
         for (uint i = 1; i < int_count; i++) {
             HString* tk = int_keys[i];
-            uint     ti = int_value_idx[i];
             uint j = i;
             while (j > 0 && int_keys[j - 1].array_index() > tk.array_index()) {
                 int_keys[j] = int_keys[j - 1];
-                int_value_idx[j] = int_value_idx[j - 1];
                 j--;
             }
             int_keys[j] = tk;
-            int_value_idx[j] = ti;
         }
         // Concatenate: integer keys first (sorted), then string keys (in
         // insertion order). Use a separate buffer to avoid clobbering snap_keys.
         HString*[128] final_keys;
-        uint[128]   final_value_idx;
         uint final_count = 0;
         for (uint i = 0; i < int_count; i++) {
             final_keys[final_count] = int_keys[i];
-            final_value_idx[final_count] = int_value_idx[i];
             final_count++;
         }
         for (uint i = 0; i < snap_count; i++) {
             final_keys[final_count] = snap_keys[i];
-            final_value_idx[final_count] = snap_value_idx[i];
             final_count++;
         }
         // Now iterate the final list.
         for (uint si = 0; si < final_count; si++) {
             HString* key_hstr = final_keys[si];
-            uint pi = final_value_idx[si];
+            // Full [[Get]] — invokes accessor getters; naturally yields
+            // undefined if the property was deleted by an earlier getter.
             TVal val;
-            // Check if property still exists and read its value
-            if (pi < obj.prop_count && obj.prop_key_at(pi) == key_hstr) {
-                if (obj.get_prop_flags(pi).is_accessor) {
-                    // Invoke the getter to get the property value
-                    TVal getter_fn = hobject::hobject_access_getter(obj.prop_values()[pi]);
-                    if (getter_fn.is_undefined() || getter_fn.is_null()) {
-                        val.set_undefined();
-                    } else if (jctx.heap.call_fn != null && jctx.vm != null) {
-                        TVal holder_tv;
-                        holder_tv.set_object(obj);
-                        val = jctx.heap.call_fn(jctx.vm, getter_fn, null, 0, holder_tv);
-                        if (jctx.heap.has_error) { jctx.error = true; return -1; }
-                    } else {
-                        continue;
-                    }
-                } else {
-                    val = obj.prop_values()[pi];
-                }
-            } else {
-                // Property was deleted (e.g., by a getter) — treat as undefined
-                val.set_undefined();
+            if (!js_get(jctx.vm, jctx.heap, obj, key_hstr, &val)) {
+                jctx.error = true;
+                return -1;
             }
 
             // Apply toJSON + replacer (even without explicit replacer, this
@@ -1372,23 +1424,51 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
     bool is_dense = (arr.get_class() == ObjClass.ARRAY || arr.get_class() == ObjClass.ARGUMENTS)
                     && arr.array_part() != null;
 
-    // Always read length from the property when possible, otherwise fall back
-    // to the cached array_length pointer (used by arrays whose length is in
-    // array_part rather than the named prop table, e.g. result of slice()).
     HString* len_key = builtin_intern_string(jctx.heap, "length");
-    TVal? len_prop = arr.get_prop_proto(len_key);
     uint len = 0;
-    if (try l = len_prop) {
-        if (l.is_fastint()) {
-            len = (uint)l.get_fastint();
-        } else if (l.is_number()) {
-            len = (uint)(long)l.get_number();
+    if (arr.flags.exotic_proxyobj) {
+        // LengthOfArrayLike via full [[Get]] (Proxy "get" trap), then
+        // ToLength-coerce (may invoke valueOf/toString and throw).
+        TVal len_val;
+        if (!js_get(jctx.vm, jctx.heap, arr, len_key, &len_val)) {
+            jctx.error = true;
+            return -1;
         }
-        // Non-numeric length is not expected for arrays; if it occurs, len stays 0
-    } else if (arr.get_class() == ObjClass.ARRAY) {
-        // Cached array_length pointer (set by array_set_length for arrays
-        // whose length lives in array_part, not the named prop table).
-        len = (uint)*arr.array_len_ptr();
+        if (len_val.is_fastint()) {
+            len = (uint)len_val.get_fastint();
+        } else if (len_val.is_number()) {
+            len = (uint)(long)len_val.get_number();
+        } else if (len_val.is_object() && jctx.vm != null) {
+            TVal prim = vm::to_primitive_value((Vm*)jctx.vm, &len_val, 2);
+            Vm* vmp = (Vm*)jctx.vm;
+            if (vmp.throw_pending) {
+                jctx.heap.tval_copy_ref(&jctx.heap.error_value, &vmp.throw_value);
+                jctx.heap.has_error = true;
+                vmp.throw_pending = false;
+                jctx.error = true;
+                return -1;
+            }
+            if (prim.is_fastint()) { len = (uint)prim.get_fastint(); }
+            else if (prim.is_number()) { len = (uint)(long)prim.get_number(); }
+        }
+    } else {
+        // Always read length from the property when possible, otherwise fall
+        // back to the cached array_length pointer (used by arrays whose
+        // length is in array_part rather than the named prop table, e.g.
+        // result of slice()).
+        TVal? len_prop = arr.get_prop_proto(len_key);
+        if (try l = len_prop) {
+            if (l.is_fastint()) {
+                len = (uint)l.get_fastint();
+            } else if (l.is_number()) {
+                len = (uint)(long)l.get_number();
+            }
+            // Non-numeric length is not expected for arrays; if it occurs, len stays 0
+        } else if (arr.get_class() == ObjClass.ARRAY) {
+            // Cached array_length pointer (set by array_set_length for arrays
+            // whose length lives in array_part, not the named prop table).
+            len = (uint)*arr.array_len_ptr();
+        }
     }
 
     if (len == 0) {
@@ -1415,12 +1495,10 @@ fn int json_serialize_array(JsonSerializeCtx* jctx, HObject* arr) {
         HString* idx_key = jctx.heap.int_to_hstring((long)i);
 
         if (!found) {
-            TVal? elem_prop = arr.get_prop_proto(idx_key);
-            if (try e = elem_prop) {
-                elem = e;
-                found = true;
-            } else {
-                elem.set_undefined();
+            // Full [[Get]] — invokes accessor getters and Proxy "get" traps.
+            if (!js_get(jctx.vm, jctx.heap, arr, idx_key, &elem)) {
+                jctx.error = true;
+                return -1;
             }
         }
 
@@ -1566,14 +1644,22 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
                 return 0;
             }
             HObject* obj = (HObject*)val.get_heapptr();
-            if (obj.get_class() == ObjClass.ARRAY) {
-                return json_serialize_array(jctx, obj);
-            } else if (obj.get_class() == ObjClass.FUNCTION) {
-                // Functions serialize as null in JSON
+            if (obj.is_callable()) {
+                // Functions (including callable Proxies) serialize as null in JSON.
                 if (jctx.offset + 5 > jctx.buf_size) return -1;
                 libc::memcpy(jctx.buf + jctx.offset, "null", 4);
                 jctx.offset += 4;
                 return 0;
+            }
+            // IsArray (§7.2.2): recurses through Proxy targets, throws
+            // TypeError on a revoked proxy.
+            bool is_arr;
+            if (!proxy_is_array(jctx.heap, obj, &is_arr)) {
+                jctx.error = true;
+                return -1;
+            }
+            if (is_arr) {
+                return json_serialize_array(jctx, obj);
             } else {
                 return json_serialize_object(jctx, obj);
             }
@@ -1623,30 +1709,54 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
             HObject* robj = (HObject*)replacer.get_heapptr();
             if (robj.is_callable()) {
                 replacer_func = replacer;
-            } else if (robj.get_class() == ObjClass.ARRAY) {
+            } else {
+                // IsArray (§7.2.2): recurses through Proxy targets, throws
+                // TypeError on a revoked proxy.
+                bool robj_is_array;
+                if (!proxy_is_array(ctx.heap, robj, &robj_is_array)) {
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    ctx.should_throw = true;
+                    return;
+                }
+                if (robj_is_array) {
                 // Build PropertyList from array elements
                 // Max 256 keys in property list
                 HString*[256] temp_keys;
                 uint count = 0;
                 has_replacer_array_flag = true;
 
-                // Get length
+                // Get length via full [[Get]] (Proxy "get" trap, accessors),
+                // then ToLength-coerce (may invoke valueOf/toString and throw).
                 HString* len_key = builtin_intern_string(ctx.heap, "length");
-                TVal? len_prop = robj.get_prop_proto(len_key);
                 uint arr_len = 0;
-                if (try l = len_prop) {
-                    if (l.is_fastint()) {
-                        arr_len = (uint)l.get_fastint();
-                    } else if (l.is_number()) {
-                        arr_len = (uint)(long)l.get_number();
+                {
+                    TVal len_val;
+                    if (!js_get(ctx.vm, ctx.heap, robj, len_key, &len_val)) {
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                        ctx.should_throw = true;
+                        return;
+                    }
+                    if (len_val.is_fastint()) {
+                        arr_len = (uint)len_val.get_fastint();
+                    } else if (len_val.is_number()) {
+                        arr_len = (uint)(long)len_val.get_number();
+                    } else {
+                        double raw = builtin_to_number_vm(ctx, &len_val);
+                        if (ctx.should_throw) return;
+                        arr_len = (uint)(long)raw;
                     }
                 }
-
 
                 bool is_dense = robj.get_class() == ObjClass.ARRAY && robj.array_part() != null;
 
                 for (uint i = 0; i < arr_len && count < 256; i++) {
-                    // Read element: try dense array fast path, then prop lookup
+                    // Read element: try dense array fast path, then full [[Get]]
+                    // (Proxy "get" trap, accessors, prototype chain). A hole and
+                    // an explicit `undefined` element are indistinguishable via
+                    // [[Get]] — both yield undefined, and both are skipped below
+                    // since ToString-of-undefined-derived-key never resolves.
                     TVal elem;
                     bool found = false;
                     if (is_dense && i < robj.array_size) {
@@ -1659,11 +1769,13 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                     if (!found) {
                         HString* idx_key = ctx.heap.int_to_hstring((long)i);
                         if (idx_key == null) continue;
-                        TVal? elem_opt = robj.get_prop_proto(idx_key);
-                        if (try e = elem_opt) {
-                            elem = e;
-                            found = true;
+                        if (!js_get(ctx.vm, ctx.heap, robj, idx_key, &elem)) {
+                            ctx.throw_value = ctx.heap.error_value;
+                            ctx.heap.has_error = false;
+                            ctx.should_throw = true;
+                            return;
                         }
+                        found = !elem.is_undefined();
                     }
                     if (!found) continue;
 
@@ -1675,7 +1787,7 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                     // Everything else → skip
                     HString* str_key = null;
 
-                    if (elem.is_string()) {
+                    if (elem.is_string() && elem.get_heapptr() != null && !((HString*)elem.get_heapptr()).is_symbol()) {
                         str_key = (HString*)elem.get_heapptr();
                     } else if (elem.is_fastint()) {
                         str_key = ctx.heap.int_to_hstring(elem.get_fastint());
@@ -1770,10 +1882,10 @@ fn void builtin_json_stringify(BuiltinContext* ctx) {
                         prop_key_count = count;
                     }
                 }
-
+                }
+                // Non-callable, non-array replacer → ignore (leave replacer_func undefined)
             }
         }
-        // Non-callable, non-array replacer → ignore (leave replacer_func undefined)
     }
 
     // Check space parameter — unwrap Number/String wrappers
