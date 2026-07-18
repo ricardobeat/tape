@@ -82,6 +82,13 @@ enum Opcode : char {
     LDREG,
     /// `A = constants[BC]`  — load from the constant pool (A-BC format).
     LDCONST,
+    /// `constants[BC] = A`  — write into the constant pool (A-BC format).
+    /// Used for tagged-template site caching: the constant pool slot is
+    /// shared by every closure instantiated from the same CompiledFunction,
+    /// so storing the template object there the first time a tagged
+    /// template expression is reached implements the per-call-site
+    /// [[TemplateRegistry]] cache (ES2015 §12.2.9.3) without extra state.
+    SETCONST,
     /// `A = (int)sBx`  — load a signed 16-bit immediate (A-sBx format).
     LDINT,
     /// `A = (A << 16) | BC`  — extend a previously loaded integer with
@@ -201,6 +208,12 @@ enum Opcode : char {
     GETPROP_CACHE,
     /// `A[B] = C`  — put (set) property.
     PUTPROP,
+    /// `A[B] = C` as a fresh non-enumerable data property (writable and
+    /// configurable, enumerable false) — bypasses the normal [[Set]]
+    /// semantics of PUTPROP. Used for the `.raw` property of tagged
+    /// template objects (ES2015 §12.2.9.3 GetTemplateObject step 8), which
+    /// is a real data property but must not show up in for-in/Object.keys.
+    PUTPROP_NE,
     /// `A = delete B[C]`  — delete property.
     DELPROP,
 
@@ -212,6 +225,9 @@ enum Opcode : char {
     NEWARR,
     /// Set array length: `A.length = BC` (A-BC format).
     SETALEN,
+    /// `Object.freeze(A)`, ignoring non-objects — used to freeze tagged
+    /// template objects (ES2015 §12.2.9.3 GetTemplateObject).
+    FREEZEOBJ,
 
     // ---- Function calls --------------------------------------------------
 

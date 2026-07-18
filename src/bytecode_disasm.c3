@@ -114,6 +114,9 @@ $endif
 const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.LDREG.ordinal]       = "LDREG",
     [Opcode.LDCONST.ordinal]     = "LDCONST",
+    [Opcode.SETCONST.ordinal]    = "SETCONST",
+    [Opcode.FREEZEOBJ.ordinal]   = "FREEZEOBJ",
+    [Opcode.PUTPROP_NE.ordinal]  = "PUTPROP_NE",
     [Opcode.LDINT.ordinal]       = "LDINT",
     [Opcode.LDINTX.ordinal]      = "LDINTX",
     [Opcode.LDUNDEF.ordinal]     = "LDUNDEF",

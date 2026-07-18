@@ -1448,6 +1448,14 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
         }
 
+        case Opcode.SETCONST: {
+            uint bc = insn.get_bc();
+            if (bc < vm.current_func.const_count) {
+                vm.heap.tval_copy_ref(&ds.constants[bc], ra);
+            }
+            continue;
+        }
+
         case Opcode.LDINT:
             ra.set_fastint((long)insn.get_sbc());
             continue;
@@ -2356,6 +2364,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.GETPROPC:
         case Opcode.GETPROPC2:
         case Opcode.PUTPROP:
+        case Opcode.PUTPROP_NE:
         case Opcode.PUTPROP_SUPER:
         case Opcode.GETPROP_SUPER:
         case Opcode.DELPROP:
@@ -2390,6 +2399,7 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.NEWARR:
         case Opcode.NEWREGEXP:
         case Opcode.SETALEN:
+        case Opcode.FREEZEOBJ:
         case Opcode.ARRSPRD:
         case Opcode.OBJSPRD:
         case Opcode.SPREAD_ARG:

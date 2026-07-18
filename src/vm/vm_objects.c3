@@ -180,6 +180,14 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
             return (TVal){};
         }
 
+        case Opcode.FREEZEOBJ: {
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                hobj.freeze();
+            }
+            return (TVal){};
+        }
+
         case Opcode.ARRSPRD: {
             // A = target array reg, B = index reg (in/out), C = source reg
             // Uses ES6 iterator protocol (§12.2.5.3 ArrayAccumulation SpreadElement)

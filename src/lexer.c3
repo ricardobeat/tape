@@ -93,6 +93,7 @@ struct Token {
     uint col;
     double num_value;
     char[] str_value;
+    char[] raw_value;
     bool str_owns_memory;
     bool has_octal_escape;
     bool is_template;
@@ -107,6 +108,7 @@ fn Token make_token(TokenType tt, uint line, uint col) {
     t.col = col;
     t.num_value = 0.0;
     t.str_value = {};
+    t.raw_value = {};
     t.str_owns_memory = false;
     t.has_octal_escape = false;
     t.is_template = false;
@@ -1650,12 +1652,15 @@ fn Token? Lexer.scan_regexp(&self) {
 /// For tagged templates, invalid escape sequences are allowed; in that
 /// case `has_invalid_escape` is set and the returned string is the raw
 /// (uncooked) source text of the part.
-fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes, bool* has_invalid_escape) {
+fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes, bool* has_invalid_escape, char[]* raw_out) {
     uint start_pos = self.pos;
     *has_invalid_escape = false;
+    *raw_out = {};
 
     // Fast path: scan ahead to see if there are any escape sequences
-    // or special characters (`, $).
+    // or special characters (`, $). A bare CR also routes to the slow
+    // path so CR / CRLF can be normalized to LF (TV/TRV of
+    // LineTerminatorSequence, ES2015 11.8.6.1) in both cooked and raw text.
     uint scan_pos = self.pos;
     bool found_escapes = false;
     while (scan_pos < (uint)self.source.len) {
@@ -1668,11 +1673,11 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes,
             *end_char = '$';
             break;
         }
-        if (sc == '\\') {
+        if (sc == '\\' || sc == '\r') {
             found_escapes = true;
             break;
         }
-        if (sc == '\n' || sc == '\r') {
+        if (sc == '\n') {
             // Line terminator is allowed in templates
             scan_pos++;
             continue;
@@ -1700,14 +1705,21 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes,
         }
         *has_escapes = false;
         if (text_len > 0) {
-            return self.source[start_pos..scan_pos - 1];
+            char[] slice = self.source[start_pos..scan_pos - 1];
+            *raw_out = slice;
+            return slice;
         }
         return {};
     }
 
-    // Slow path: build decoded string in stack buffer
+    // Slow path: build decoded (cooked) and raw text in parallel stack buffers.
+    // The raw buffer mirrors the source text exactly except that bare CR and
+    // CRLF sequences are normalized to LF, per the TRV of LineTerminatorSequence
+    // (ES2015 11.8.6.1) — this applies to raw text just as much as cooked.
     char[STRING_BUF_SIZE] buf;
     uint buf_len = 0;
+    char[STRING_BUF_SIZE] raw_buf;
+    uint raw_len = 0;
 
     while (!self.at_end()) {
         char ch = self.peek_char();
@@ -1721,12 +1733,17 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes,
             break;
         }
         if (ch == '\n' || ch == '\r') {
-            buf[buf_len] = self.advance_char();
-            buf_len++;
+            self.advance_char();
+            if (ch == '\r' && !self.at_end() && self.peek_char() == '\n') {
+                self.advance_char();
+            }
+            buf[buf_len] = '\n'; buf_len++;
+            raw_buf[raw_len] = '\n'; raw_len++;
             continue;
         }
 
         if (ch == '\\') {
+            uint esc_start = self.pos;
             self.advance_char(); // consume backslash
             if (self.at_end()) {
                 *has_invalid_escape = true;
@@ -1738,6 +1755,8 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes,
             // Line continuation: \<LF> or \<CR><LF>
             if (esc == '\n') {
                 self.advance_char();
+                raw_buf[raw_len] = '\\'; raw_len++;
+                raw_buf[raw_len] = '\n'; raw_len++;
                 continue;
             }
             if (esc == '\r') {
@@ -1745,6 +1764,20 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes,
                 if (!self.at_end() && self.peek_char() == '\n') {
                     self.advance_char();
                 }
+                raw_buf[raw_len] = '\\'; raw_len++;
+                raw_buf[raw_len] = '\n'; raw_len++;
+                continue;
+            }
+            // Line continuation: \<LS> or \<PS> (UTF-8: E2 80 A8 / E2 80 A9).
+            // Unlike CR/CRLF, these are kept as-is (not normalized to LF) in
+            // both cooked (elided) and raw text.
+            if (esc == (char)0xE2 && self.remaining() >= 3
+                && self.peek_char_at(1) == (char)0x80
+                && (self.peek_char_at(2) == (char)0xA8 || self.peek_char_at(2) == (char)0xA9)) {
+                raw_buf[raw_len] = '\\'; raw_len++;
+                raw_buf[raw_len] = self.advance_char(); raw_len++;
+                raw_buf[raw_len] = self.advance_char(); raw_len++;
+                raw_buf[raw_len] = self.advance_char(); raw_len++;
                 continue;
             }
 
@@ -1835,11 +1868,18 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes,
                     buf[buf_len] = esc; buf_len++;
             }
             if (*has_invalid_escape) break;
+            // Raw text mirrors the literal escape sequence verbatim (backslash
+            // plus whatever followed it), since none of the cases above are
+            // LineTerminatorSequences (already handled earlier as \<LF>/\<CR>).
+            for (uint ri = esc_start; ri < self.pos; ri++) {
+                raw_buf[raw_len] = self.source[ri]; raw_len++;
+            }
             continue;
         }
 
-        buf[buf_len] = self.advance_char();
-        buf_len++;
+        char plain = self.advance_char();
+        buf[buf_len] = plain; buf_len++;
+        raw_buf[raw_len] = plain; raw_len++;
     }
 
     if (*has_invalid_escape) {
@@ -1863,13 +1903,37 @@ fn char[]? Lexer.scan_template_content(&self, char* end_char, bool* has_escapes,
         }
         uint raw_end = self.at_end() ? (uint)self.source.len : self.pos;
         if (raw_end > start_pos) {
-            return self.source[start_pos..raw_end - 1];
+            // Normalize CR / CRLF to LF in the raw text (TRV of
+            // LineTerminatorSequence), same as the cooked-scanning path above.
+            uint out_len = 0;
+            uint ri = start_pos;
+            while (ri < raw_end) {
+                char rc = self.source[ri];
+                if (rc == '\r') {
+                    raw_buf[out_len] = '\n'; out_len++;
+                    ri++;
+                    if (ri < raw_end && self.source[ri] == '\n') { ri++; }
+                    continue;
+                }
+                raw_buf[out_len] = rc; out_len++;
+                ri++;
+            }
+            char[] slice = self.source[start_pos..raw_end - 1];
+            if (out_len > 0) {
+                *raw_out = raw_buf[0..out_len - 1];
+            } else {
+                *raw_out = {};
+            }
+            return slice;
         }
         return {};
     }
 
     *has_escapes = true;
     *end_char = (self.at_end()) ? 0 : self.peek_char();
+    if (raw_len > 0) {
+        *raw_out = raw_buf[0..raw_len - 1];
+    }
     if (buf_len > 0) {
         return buf[0..buf_len - 1];
     }
@@ -1888,7 +1952,8 @@ fn Token? Lexer.scan_template_head(&self) {
     char end_char = 0;
     bool has_escapes = false;
     bool has_invalid_escape = false;
-    char[]? content = self.scan_template_content(&end_char, &has_escapes, &has_invalid_escape);
+    char[] raw_text = {};
+    char[]? content = self.scan_template_content(&end_char, &has_escapes, &has_invalid_escape, &raw_text);
 
     if (catch err = content) {
         return LEX_ERROR~;
@@ -1899,6 +1964,7 @@ fn Token? Lexer.scan_template_head(&self) {
         self.advance_char(); // consume closing backtick
         Token tok = make_token(TokenType.STRING, start_line, start_col);
         tok.str_value = content;
+        tok.raw_value = raw_text;
         tok.str_owns_memory = false;
         tok.is_template = true;
         tok.has_invalid_escape = has_invalid_escape;
@@ -1911,6 +1977,7 @@ fn Token? Lexer.scan_template_head(&self) {
         self.advance_char(); // {
         Token tok = make_token(TokenType.TEMPLATE_HEAD, start_line, start_col);
         tok.str_value = content;
+        tok.raw_value = raw_text;
         tok.str_owns_memory = false;
         tok.is_template = true;
         tok.has_invalid_escape = has_invalid_escape;
@@ -1930,7 +1997,8 @@ fn Token? Lexer.scan_template_after_expr(&self) {
     char end_char = 0;
     bool has_escapes = false;
     bool has_invalid_escape = false;
-    char[]? content = self.scan_template_content(&end_char, &has_escapes, &has_invalid_escape);
+    char[] raw_text = {};
+    char[]? content = self.scan_template_content(&end_char, &has_escapes, &has_invalid_escape, &raw_text);
 
     if (catch err = content) {
         return LEX_ERROR~;
@@ -1941,6 +2009,7 @@ fn Token? Lexer.scan_template_after_expr(&self) {
         self.advance_char(); // consume closing backtick
         Token tok = make_token(TokenType.TEMPLATE_TAIL, start_line, start_col);
         tok.str_value = content;
+        tok.raw_value = raw_text;
         tok.str_owns_memory = false;
         tok.is_template = true;
         tok.has_invalid_escape = has_invalid_escape;
@@ -1953,6 +2022,7 @@ fn Token? Lexer.scan_template_after_expr(&self) {
         self.advance_char(); // {
         Token tok = make_token(TokenType.TEMPLATE_MIDDLE, start_line, start_col);
         tok.str_value = content;
+        tok.raw_value = raw_text;
         tok.str_owns_memory = false;
         tok.is_template = true;
         tok.has_invalid_escape = has_invalid_escape;

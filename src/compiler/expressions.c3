@@ -1572,6 +1572,7 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
 
     // Collect string parts and expression registers
     uint[MAX_TEMPLATE_PARTS] str_indices;
+    uint[MAX_TEMPLATE_PARTS] raw_indices;
     bool[MAX_TEMPLATE_PARTS] part_invalid;
     ushort[MAX_TEMPLATE_PARTS] expr_regs;
     uint part_count = 0;
@@ -1586,18 +1587,21 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
             return COMPILE_ERROR~;
         }
         str_indices[0] = self.add_string_constant(str_tok.str_value);
+        raw_indices[0] = self.add_string_constant(str_tok.raw_value);
         part_invalid[0] = str_tok.has_invalid_escape;
         part_count = 1;
     } else if (tt == TokenType.TEMPLATE) {
         // Legacy TEMPLATE token (should not normally appear, but handle gracefully)
         Token tmpl_tok = self.advance()!;
         str_indices[0] = self.add_string_constant(tmpl_tok.str_value);
+        raw_indices[0] = self.add_string_constant(tmpl_tok.raw_value);
         part_invalid[0] = false;
         part_count = 1;
     } else if (tt == TokenType.TEMPLATE_HEAD) {
         // Template with substitutions: `text${expr}text${expr}text`
         Token head_tok = self.advance()!;
         str_indices[0] = self.add_string_constant(head_tok.str_value);
+        raw_indices[0] = self.add_string_constant(head_tok.raw_value);
         part_invalid[0] = head_tok.has_invalid_escape;
         part_count = 1;
 
@@ -1611,6 +1615,7 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
         // Handle TEMPLATE_MIDDLE / TEMPLATE_TAIL chain
         while (next_tok.type == TokenType.TEMPLATE_MIDDLE) {
             str_indices[part_count] = self.add_string_constant(next_tok.str_value);
+            raw_indices[part_count] = self.add_string_constant(next_tok.raw_value);
             part_invalid[part_count] = next_tok.has_invalid_escape;
             part_count++;
 
@@ -1625,15 +1630,32 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
             return COMPILE_ERROR~;
         }
         str_indices[part_count] = self.add_string_constant(next_tok.str_value);
+        raw_indices[part_count] = self.add_string_constant(next_tok.raw_value);
         part_invalid[part_count] = next_tok.has_invalid_escape;
         part_count++;
     } else {
         return COMPILE_ERROR~;
     }
 
-    // === Build the template object array ===
-    // Create empty array
+    // === Site cache: constants[cache_idx] holds this call site's frozen
+    // template object across every evaluation, shared by all closures
+    // instantiated from the enclosing CompiledFunction (ES2015 §12.2.9.3
+    // GetTemplateObject — the cache is per Parse Node, not per closure).
+    // The slot starts as `undefined`; the first evaluation builds and
+    // freezes the array, then stores it back with SETCONST.
+    TVal undef_tv;
+    undef_tv.set_undefined();
+    uint cache_idx = self.add_constant(undef_tv);
+
     ushort tmpl_arr_reg = self.alloc_reg();
+    self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)tmpl_arr_reg, cache_idx));
+    ushort cache_test_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDUNDEF, (uint)cache_test_reg, 0, 0);
+    self.emit_abc(Opcode.SEQ, (uint)cache_test_reg, (uint)tmpl_arr_reg, (uint)cache_test_reg);
+    uint cached_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)cache_test_reg);
+    self.free_reg(cache_test_reg);
+
+    // === Build the template object array (cache miss) ===
     self.emit_abc(Opcode.NEWARR, (uint)tmpl_arr_reg, 0, 0);
 
     // Fill with string parts (cooked values; undefined for invalid escapes)
@@ -1652,13 +1674,13 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
     }
     self.emit(bytecode::make_a_bc(Opcode.SETALEN, (uint)tmpl_arr_reg, part_count));
 
-    // Create raw array (copy of template array for now — raw === cooked)
+    // Create raw array (uncooked source text of each part)
     ushort raw_arr_reg = self.alloc_reg();
     self.emit_abc(Opcode.NEWARR, (uint)raw_arr_reg, 0, 0);
 
     for (uint i = 0; i < part_count; i++) {
         ushort str_reg = self.alloc_reg();
-        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)str_reg, str_indices[i]));
+        self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)str_reg, raw_indices[i]));
         ushort idx_reg = self.alloc_reg();
         self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)idx_reg, (int)i));
         self.emit_abc(Opcode.PUTPROP, (uint)raw_arr_reg, (uint)idx_reg, (uint)str_reg);
@@ -1667,15 +1689,27 @@ fn ushort? CompilerContext.emit_tagged_template(&self, ushort callee_reg) {
     }
     self.emit(bytecode::make_a_bc(Opcode.SETALEN, (uint)raw_arr_reg, part_count));
 
-    // Set .raw property on template array
+    // Set .raw property on template array — a real but non-enumerable data
+    // property (ES2015 §12.2.9.3 step 8: CreateDataProperty, then step 9
+    // demotes it to non-writable/non-configurable via freeze below; own
+    // enumerability is fixed at creation since freeze doesn't alter it).
     {
         uint raw_key_idx = self.add_string_constant("raw");
         ushort raw_key_reg = self.alloc_reg();
         self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)raw_key_reg, raw_key_idx));
-        self.emit_abc(Opcode.PUTPROP, (uint)tmpl_arr_reg, (uint)raw_key_reg, (uint)raw_arr_reg);
+        self.emit_abc(Opcode.PUTPROP_NE, (uint)tmpl_arr_reg, (uint)raw_key_reg, (uint)raw_arr_reg);
         self.free_reg(raw_key_reg);
-        self.free_reg(raw_arr_reg);
     }
+
+    // Both arrays are frozen — non-configurable/non-writable integrity
+    // level (ES2015 §12.2.9.3 steps 10-11).
+    self.emit_abc(Opcode.FREEZEOBJ, (uint)raw_arr_reg, 0, 0);
+    self.free_reg(raw_arr_reg);
+    self.emit_abc(Opcode.FREEZEOBJ, (uint)tmpl_arr_reg, 0, 0);
+
+    self.emit(bytecode::make_a_bc(Opcode.SETCONST, (uint)tmpl_arr_reg, cache_idx));
+
+    self.patch_jump(cached_jump);
 
     // === Set up the call ===
     // Ensure callee is positioned so args don't overlap with live registers
@@ -2210,6 +2244,18 @@ fn ushort? CompilerContext.member_expr(&self) {
                 }
             }
             obj = result;
+            obj_is_base_local = false;
+        } else if (self.is_next_template()) {
+            // MemberExpression : MemberExpression TemplateLiteral — a tagged
+            // template is itself a MemberExpression (distinct from a call
+            // expression's `Arguments`), so `new tag\`...\`` evaluates the
+            // tagged template first and applies `new` to its result.
+            obj = self.emit_tagged_template(obj)!;
+            if (self.call_prop_obj_reg != MAX_REGISTERS) {
+                self.free_reg(self.call_prop_obj_reg);
+                self.call_prop_obj_reg = MAX_REGISTERS;
+            }
+            self.last_was_member = false;
             obj_is_base_local = false;
         } else {
             break;

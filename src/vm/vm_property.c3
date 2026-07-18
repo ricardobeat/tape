@@ -2515,6 +2515,21 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
             }
             return (TVal){};
 
+        case Opcode.PUTPROP_NE: {
+            // A[B] = C as a fresh non-enumerable data property. Only used by
+            // the compiler for the `.raw` property of tagged template
+            // objects, on a plain array we just created — no exotic
+            // receiver (Proxy/TypedArray) is ever passed here.
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                void* key = get_prop_key(vm, rb);
+                if (key != null) {
+                    hobj.put_prop(key, *rc, hobject::PROP_FLAGS_NWC);
+                }
+            }
+            return (TVal){};
+        }
+
         case Opcode.PUTPROP_SUPER: {
             // super.x = v — [[Set]] on the super base with receiver = this.
             if (!ra.is_object()) {
