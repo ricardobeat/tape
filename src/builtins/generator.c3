@@ -504,6 +504,18 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     gf_proto.prototype = heap.function_proto;
     heap.generator_func_proto = gf_proto;
 
+    // Set GeneratorFunction.prototype.prototype → Generator.prototype
+    // (ES2015 §25.2.3.3): the shared prototype every individual generator
+    // function's own `.prototype` object inherits from — this is what
+    // `Object.getPrototypeOf(function* () {}).prototype` reads.
+    // {writable:false, enumerable:false, configurable:true}.
+    {
+        HString* gf_prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        TVal gf_prototype_tv;
+        gf_prototype_tv.set_object(proto);
+        gf_proto.put_prop(gf_prototype_key, gf_prototype_tv, hobject::PROP_FLAGS_NWC);
+    }
+
     // Set GeneratorFunction.prototype.constructor → GeneratorFunction
     // (will be filled in after creating the ctor object below)
 

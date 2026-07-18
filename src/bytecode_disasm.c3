@@ -191,6 +191,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.INITSET.ordinal]     = "INITSET",
     [Opcode.INITGET.ordinal]     = "INITGET",
     [Opcode.INITSETI.ordinal]    = "INITSETI",
+    [Opcode.INITPROPN.ordinal]   = "INITPROPN",
     [Opcode.CLASS_INITGET.ordinal] = "CLASS_INITGET",
     [Opcode.CLASS_INITSET.ordinal] = "CLASS_INITSET",
     [Opcode.CLASS_INITPROP.ordinal] = "CLASS_INITPROP",

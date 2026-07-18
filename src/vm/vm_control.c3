@@ -122,7 +122,9 @@ fn TVal? dispatch_returns(Dispatch* ds, Opcode op, TVal* ra) {
     }
 }
 
-/// ES2015 §9.2.11 SetFunctionName helper for CLASS_INITGET/CLASS_INITSET.
+/// ES2015 §9.2.11 SetFunctionName helper for computed-key methods/accessors —
+/// shared by CLASS_INITGET/CLASS_INITSET/CLASS_INITPROP (class bodies) and
+/// INITGET/INITSET/INITPROP (object literals).
 /// If the accessor function `fn_obj` currently has an empty `.name` property,
 /// overwrite it with `prefix + key_str` (string key) or `prefix + "[desc]"`
 /// (symbol key), matching the computed-accessor name spec.
@@ -169,6 +171,33 @@ fn void class_initaccessor_set_name(Vm* vm, HObject* fn_obj, TVal* key_tval, cha
         TVal new_tv;
         new_tv.set_string(new_name);
         vm.heap.tval_copy_ref(name_slot, &new_tv);
+    }
+}
+
+/// Shared INITPROP/INITPROPN body: define a data property with WEC flags
+/// using DefinePropertyOrThrow semantics — if the property already exists
+/// and is configurable, it is replaced; non-configurable existing properties
+/// are silently left untouched (caller has already coerced the key on
+/// computed-key paths via TOPROPKEY, so `get_prop_key` here is idempotent).
+fn void initprop_define(Vm* vm, HObject* hobj, TVal* key_val, TVal* val) {
+    void* key = get_prop_key(vm, key_val);
+    if (key == null) return;
+    int idx = hobj.find_prop_idx(key);
+    if (idx >= 0) {
+        hobject::PropFlags ef = hobj.get_prop_flags((uint)idx);
+        if (ef.configurable) {
+            TVal put_val = *val;
+            vm.heap.tval_copy_ref(&hobj.prop_values()[idx], &put_val);
+            hobject::PropFlags nf;
+            nf.writable = true;
+            nf.enumerable = true;
+            nf.configurable = true;
+            nf.is_accessor = false;
+            hobj.set_prop_flags((uint)idx, nf);
+        }
+        // non-configurable: do nothing (silent)
+    } else {
+        hobj.put_prop(key, *val, hobject::PROP_FLAGS_WEC);
     }
 }
 
@@ -231,12 +260,14 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
         func_obj.put_prop((HString*)vm.heap.strs[heap::BuiltinStr.NAME], name_tv, hobject::PROP_FLAGS_NWC);
     }
 
-    // Only constructable functions get a .prototype property.
-    // Arrow functions, async functions, and class methods are
-    // not constructable and must not have .prototype (ES6 §14.2.16,
-    // ES2017 §14.7.5, ES2015 §14.3.9 — DefineMethod creates
-    // functions without .prototype).
-    if (template.is_constructable()) {
+    // Constructable functions, plus generator functions (which are never
+    // constructable but still expose a `.prototype` used as the generator
+    // instance's prototype per ES2015 §14.4 GeneratorFunction), get a
+    // .prototype property. Arrow functions, async functions, and (non-
+    // generator) methods/accessors are not constructable and must not have
+    // .prototype (ES6 §14.2.16, ES2017 §14.7.5, ES2015 §14.3.9 —
+    // DefineMethod creates functions without .prototype).
+    if (template.is_constructable() || template.is_generator()) {
         // ES5 §13.2.2 step 15: create .prototype property on the function
         // (plain object with .constructor).  For regular functions the
         // flags are {writable:true, enumerable:false, configurable:false}.
@@ -526,6 +557,12 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                         hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, getter_val, undef), hobject::PROP_FLAGS_ACCESSOR);
                     }
                 }
+                // ES2015 §14.3 + §9.2.11 SetFunctionName: for computed-key
+                // getters the compiler leaves the function name empty; set it
+                // to "get <key>" or "get [desc]" (symbol) at object-creation time.
+                if (rc.is_object() && key != null) {
+                    class_initaccessor_set_name(vm, (HObject*)rc.get_heapptr(), rb, "get ");
+                }
             }
             return (TVal){};
         }
@@ -559,6 +596,12 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                         hobj.put_prop(key, hobject::hobject_create_accessors(vm.heap, undef, setter_val), hobject::PROP_FLAGS_ACCESSOR);
                     }
                 }
+                // ES2015 §14.3 + §9.2.11 SetFunctionName: for computed-key
+                // setters the compiler leaves the function name empty; set it
+                // to "set <key>" or "set [desc]" (symbol) at object-creation time.
+                if (rc.is_object() && key != null) {
+                    class_initaccessor_set_name(vm, (HObject*)rc.get_heapptr(), rb, "set ");
+                }
             }
             return (TVal){};
         }
@@ -591,26 +634,27 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     }
                 }
 
-                void* key = get_prop_key(vm, rb);
-                if (key != null && hobj != null) {
-                    int idx = hobj.find_prop_idx(key);
-                    if (idx >= 0) {
-                        // Existing property — if configurable, replace it.
-                        hobject::PropFlags ef = hobj.get_prop_flags((uint)idx);
-                        if (ef.configurable) {
-                            TVal put_val = *rc;
-                            vm.heap.tval_copy_ref(&hobj.prop_values()[idx], &put_val);
-                            hobject::PropFlags nf;
-                            nf.writable = true;
-                            nf.enumerable = true;
-                            nf.configurable = true;
-                            nf.is_accessor = false;
-                            hobj.set_prop_flags((uint)idx, nf);
-                        }
-                        // non-configurable: do nothing (silent)
-                    } else {
-                        hobj.put_prop(key, *rc, hobject::PROP_FLAGS_WEC);
-                    }
+                initprop_define(vm, hobj, rb, rc);
+            }
+            return (TVal){};
+        }
+
+        case Opcode.INITPROPN: {
+            // A=object, B=key, C=value — identical to INITPROP (minus the
+            // array dense-write fast path, since this opcode is only emitted
+            // for object-literal data/method properties), but additionally
+            // performs SetFunctionName if the value is a function with an
+            // empty name. Used for object-literal data properties (`key:
+            // value`) whose value is statically known to be an
+            // AnonymousFunctionDefinition (ES2015 §12.2.6.9 step 6), and for
+            // computed-key method shorthand (always renamed unconditionally,
+            // like class methods) — the compiler already names static-key
+            // cases directly, so this only fires for computed keys.
+            if (ra.is_object()) {
+                HObject* hobj = (HObject*)ra.get_heapptr();
+                initprop_define(vm, hobj, rb, rc);
+                if (rc.is_object()) {
+                    class_initaccessor_set_name(vm, (HObject*)rc.get_heapptr(), rb, "");
                 }
             }
             return (TVal){};

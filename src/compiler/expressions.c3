@@ -3260,6 +3260,7 @@ fn ushort? CompilerContext.object_literal(&self) {
             ushort key_reg;
             uint shorthand_name_idx = 0;  // 0 = not a shorthand-eligible key
             bool is_shorthand_key = false;  // true iff the key came from a plain identifier
+            bool is_computed_key = false;  // true iff the key came from `[expr]`
             // Source start for Function.prototype.toString retention. Captured
             // above (prop_src_start) at the property's first token, which is the
             // correct span origin for all method forms — `async`/`*` prefixes,
@@ -3315,6 +3316,13 @@ fn ushort? CompilerContext.object_literal(&self) {
                         self.advance()!; // consume `[`
                         key_reg = self.assignment_expr()!;
                         self.expect(TokenType.RBRACKET)!;
+                        // ES2015 §12.2.6.7: ToPropertyKey happens as part of
+                        // evaluating the computed key — coerce in place now
+                        // (see the matching comment in the data-property
+                        // computed-key branch below) so an abrupt completion
+                        // (e.g. Object.create(null) with no toString/valueOf)
+                        // throws here rather than being silently accepted.
+                        self.emit_abc(Opcode.TOPROPKEY, (uint)key_reg, 0, 0);
                     } else {
                         Token prop_tok;
                         if (prop_tt == TokenType.IDENTIFIER || prop_tt == TokenType.STRING
@@ -3433,6 +3441,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // Computed property key — clear inferred name since the actual
                 // key is computed at runtime (per ES2015 §14.3 the inferred
                 // name is the empty string for computed keys).
+                is_computed_key = true;
                 self.has_inferred_name = false;
                 self.inferred_name_len = 0;
                 // For plain computed methods `[expr](){}`, update key_src_start to
@@ -3447,6 +3456,16 @@ fn ushort? CompilerContext.object_literal(&self) {
                 self.advance()!;
                 key_reg = self.assignment_expr()!;
                 self.expect(TokenType.RBRACKET)!;
+                // ES2015 §12.2.6.7 ComputedPropertyName: ToPropertyKey happens
+                // immediately as part of evaluating the key, before the
+                // accessor/method body is instantiated or the value expression
+                // is evaluated. Coerce in place now so a coercion side effect
+                // (e.g. a `toString` that mutates a variable the value
+                // expression reads) or a ToPropertyKey abrupt completion is
+                // observed at the right point, rather than deferred to the
+                // INITGET/INITSET/INITPROP opcode after the value has already
+                // been evaluated.
+                self.emit_abc(Opcode.TOPROPKEY, (uint)key_reg, 0, 0);
             } else if (self.match(TokenType.ELLIPSIS)) {
                 // Object spread: ...expr
                 // `*...expr` is not legal — restore flags and reject.
@@ -3493,7 +3512,13 @@ fn ushort? CompilerContext.object_literal(&self) {
                     super_bound = true;
                 }
                 ushort method_reg = self.function_expr_body(key_src_start)!;
-                self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
+                // Method shorthand is always a MethodDefinition (§14.3.9): unlike
+                // `key: value`, SetFunctionName is unconditional, not gated on
+                // IsAnonymousFunctionDefinition. Computed keys need INITPROPN so
+                // the empty compile-time name gets patched at object-creation
+                // time; static keys already have the correct name baked in.
+                Opcode method_init_op = is_computed_key ? Opcode.INITPROPN : Opcode.INITPROP;
+                self.emit_abc(method_init_op, (uint)obj_reg, (uint)key_reg, (uint)method_reg);
                 self.free_reg(method_reg);
                 self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
@@ -3526,12 +3551,31 @@ fn ushort? CompilerContext.object_literal(&self) {
                     // definition — no NamedEvaluation (§12.2.6.8 step 5).
                     self.has_inferred_name = false;
                     self.inferred_name_len = 0;
+                } else if (is_computed_key) {
+                    // ES2015 §12.2.6.9 step 6: `IsAnonymousFunctionDefinition`
+                    // is a static check on the value expression, independent of
+                    // the (runtime-computed) key. Set has_inferred_name with an
+                    // *empty* name so a following function/arrow/class/generator
+                    // expression still consumes and clears the flag (leaving its
+                    // compiled name empty, to be patched at runtime once the key
+                    // is known — see INITPROPN/class_initaccessor_set_name).
+                    // Anything that is NOT such an expression (identifier ref,
+                    // comma expr, literal, ...) never touches the flag, so it
+                    // stays set afterward — that's the signal used below to
+                    // choose INITPROPN vs plain INITPROP.
+                    self.has_inferred_name = true;
+                    self.inferred_name_len = 0;
                 }
                 ushort val_reg = self.assignment_expr()!;
+                bool computed_val_is_anon_fn_def = is_computed_key && !is_proto_key && !self.has_inferred_name;
+                self.has_inferred_name = false;
+                self.inferred_name_len = 0;
                 if (is_proto_key) {
                     // ES2015 §12.2.6.1: `__proto__: value` sets the object's [[Prototype]].
                     // Only object values and null are valid; non-objects are silently ignored.
                     self.emit_abc(Opcode.SETPROTO, (uint)obj_reg, (uint)val_reg, 0);
+                } else if (computed_val_is_anon_fn_def) {
+                    self.emit_abc(Opcode.INITPROPN, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
                 } else {
                     self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
                 }

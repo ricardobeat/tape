@@ -335,6 +335,12 @@ enum Opcode : char {
     /// allow replacement when the existing property is configurable). Used
     /// for array literal element initialization.
     INITPROP,
+    /// Identical to INITPROP, plus SetFunctionName if C is a function with an
+    /// empty `.name` (ES2015 §12.2.6.9 step 6). Used for object-literal
+    /// computed data properties (`{ [expr]: value }`) whose value is
+    /// statically known to be an AnonymousFunctionDefinition.
+    /// ABC format: A=object_reg, B=key_reg, C=value_reg.
+    INITPROPN,
     /// Define class getter accessor: non-enumerable, configurable.
     /// Per ES2015 §14.5.14 step 9, class accessor descriptors are
     /// {enumerable:false, configurable:true}.
