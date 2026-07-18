@@ -131,6 +131,36 @@ fn HObject* typedarray_instance_proto(BuiltinContext* ctx, HObject* fallback_pro
     return fallback_proto;
 }
 
+/// Resolve the instance prototype for the per-class TypedArray() constructor
+/// (ES2022 §22.2.5.1 step 3 AllocateTypedArray -> GetPrototypeFromConstructor).
+///
+/// This MUST be called only after all argument-processing steps that can
+/// throw (ToIndex on a non-object first argument, ArrayBuffer/TypedArray/
+/// iterable source validation, etc.) have already succeeded — AllocateTypedArray
+/// runs strictly after argument processing in the spec, so a throwing/
+/// observable custom `new.target.prototype` getter must never be invoked
+/// before an earlier abrupt completion from argument processing.
+fn HObject* typed_array_resolve_instance_proto(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    // AllocateTypedArray's defaultProto (ES2022 §22.2.5.1 per-class TypedArray()
+    // constructor step 3) is the specific subclass's own %XArray.prototype%, not
+    // the shared abstract %TypedArray.prototype%.
+    HObject* default_proto = heap.typedarray_proto;
+    if (ctx.callee_obj != null) {
+        HString* proto_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        if (proto_key != null) {
+            int pidx = ctx.callee_obj.find_prop_idx((void*)proto_key);
+            if (pidx >= 0) {
+                TVal pv = ctx.callee_obj.prop_values()[pidx];
+                if (pv.is_object() && pv.get_heapptr() != null) {
+                    default_proto = (HObject*)pv.get_heapptr();
+                }
+            }
+        }
+    }
+    return typedarray_instance_proto(ctx, default_proto);
+}
+
 /// Store one converted element into `buf`'s backing store at element index
 /// `idx` for typed array class `cls`. Assumes bounds have already been
 /// validated (used during construction, where the buffer freshly allocated
@@ -322,25 +352,6 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
     uint elem_size = ta_elem_size(obj_class);
     uint shift = ta_elem_shift(obj_class);
 
-    // AllocateTypedArray's defaultProto (ES2022 §22.2.5.1 per-class TypedArray()
-    // constructor step 3) is the specific subclass's own %XArray.prototype%, not
-    // the shared abstract %TypedArray.prototype%.
-    HObject* default_proto = heap.typedarray_proto;
-    if (ctx.callee_obj != null) {
-        HString* proto_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
-        if (proto_key != null) {
-            int pidx = ctx.callee_obj.find_prop_idx((void*)proto_key);
-            if (pidx >= 0) {
-                TVal pv = ctx.callee_obj.prop_values()[pidx];
-                if (pv.is_object() && pv.get_heapptr() != null) {
-                    default_proto = (HObject*)pv.get_heapptr();
-                }
-            }
-        }
-    }
-    HObject* instance_proto = typedarray_instance_proto(ctx, default_proto);
-    if (ctx.should_throw) return;
-
     TVal arg0; arg0.set_undefined();
     if (ctx.argc >= 1) arg0 = ctx.regs[ctx.base_reg];
 
@@ -410,6 +421,9 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                     return;
                 }
             }
+
+            HObject* instance_proto = typed_array_resolve_instance_proto(ctx);
+            if (ctx.should_throw) return;
 
             HObject*? raw = heap.alloc_object(obj_class);
             if (catch err = raw) { ctx.result.set_undefined(); return; }
@@ -608,6 +622,9 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
             }
         }
     }
+
+    HObject* instance_proto = typed_array_resolve_instance_proto(ctx);
+    if (ctx.should_throw) return;
 
     HObject*? raw = heap.alloc_object(obj_class);
     if (catch err = raw) { ctx.result.set_undefined(); return; }
