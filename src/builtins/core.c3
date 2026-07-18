@@ -359,7 +359,12 @@ const uint BUILTIN_PROMISE_THROWER             = 445;
 const uint BUILTIN_MAP_SPECIES_GETTER          = 446;
 const uint BUILTIN_SET_SPECIES_GETTER          = 447;
 
-const uint BUILTIN_COUNT                       = 448;
+const uint BUILTIN_DATAVIEW_GET_BIGINT64       = 448;
+const uint BUILTIN_DATAVIEW_GET_BIGUINT64      = 449;
+const uint BUILTIN_DATAVIEW_SET_BIGINT64       = 450;
+const uint BUILTIN_DATAVIEW_SET_BIGUINT64      = 451;
+
+const uint BUILTIN_COUNT                       = 452;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -2180,6 +2185,10 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case 378: return { "setUint32", 2 };
         case 379: return { "setFloat32", 2 };
         case 380: return { "setFloat64", 2 };
+        case 446: return { "getBigInt64", 1 };
+        case 447: return { "getBigUint64", 1 };
+        case 448: return { "setBigInt64", 2 };
+        case 449: return { "setBigUint64", 2 };
         // %TypedArray%.prototype wave A (plan 049 stage 4)
         case 381: return { "values", 0 };
         case 382: return { "keys", 0 };
@@ -3123,6 +3132,10 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_PROMISE_THROWER]             = &builtin_promise_thrower,
     [BUILTIN_MAP_SPECIES_GETTER]          = &builtin_map_species_getter,
     [BUILTIN_SET_SPECIES_GETTER]          = &builtin_set_species_getter,
+    [BUILTIN_DATAVIEW_GET_BIGINT64]       = &builtin_dataview_get_bigint64,
+    [BUILTIN_DATAVIEW_GET_BIGUINT64]      = &builtin_dataview_get_biguint64,
+    [BUILTIN_DATAVIEW_SET_BIGINT64]       = &builtin_dataview_set_bigint64,
+    [BUILTIN_DATAVIEW_SET_BIGUINT64]      = &builtin_dataview_set_biguint64,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

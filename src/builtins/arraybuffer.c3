@@ -44,6 +44,44 @@ fn bool arraybuffer_to_index(BuiltinContext* ctx, TVal* val, uint* out_len) {
     return true;
 }
 
+/// ES2022 §7.1.22 ToIndex proper (range [0, 2^53-1], no engine-specific cap).
+/// Used by the ArrayBuffer(length) constructor, which must perform ToIndex
+/// (steps 1-5 of the runtime semantics) before AllocateArrayBuffer's
+/// OrdinaryCreateFromConstructor (step 6 -> §24.1.1.1 step 1) — while the
+/// engine's own too-large-to-allocate uint32 cap plays the role of
+/// CreateByteDataBlock's allocation failure and must be checked only *after*
+/// the instance prototype has been resolved (see
+/// data-allocation-after-object-creation.js: a throwing new.target.prototype
+/// getter must win over the RangeError from an unrepresentable length).
+/// Returns false (and sets ctx.should_throw) only for genuine ToIndex
+/// failures (negative or >2^53-1); NaN coerces to 0.
+fn bool arraybuffer_to_index_wide(BuiltinContext* ctx, TVal* val, double* out_len) {
+    *out_len = 0.0;
+    if (val.is_fastint()) {
+        long v = val.get_fastint();
+        if (v < 0) {
+            arraybuffer_throw_range_error(ctx, "Invalid array buffer length");
+            return false;
+        }
+        *out_len = (double)v;
+        return true;
+    }
+
+    double d = builtin_to_integer_vm(ctx, val);
+    if (ctx.should_throw) return false;
+    if (d != d) { *out_len = 0.0; return true; } // NaN -> 0 per ToIndex(ToIntegerOrInfinity)
+    if (d < 0.0) {
+        arraybuffer_throw_range_error(ctx, "Invalid array buffer length");
+        return false;
+    }
+    if (d > 9007199254740991.0) { // 2^53 - 1
+        arraybuffer_throw_range_error(ctx, "Invalid array buffer length");
+        return false;
+    }
+    *out_len = d;
+    return true;
+}
+
 fn void arraybuffer_throw_type_error(BuiltinContext* ctx, char[] msg) {
     HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
     if (try err = err_raw) {
@@ -88,6 +126,27 @@ fn bool is_bufferview_class(hobject::ObjClass cls) {
         || (cls >= hobject::ObjClass.INT8ARRAY && cls <= hobject::ObjClass.FLOAT64ARRAY);
 }
 
+/// GetPrototypeFromConstructor (ES2022 §9.1.15) for ArrayBuffer's
+/// OrdinaryCreateFromConstructor (§24.1.1.1 AllocateArrayBuffer step 1). Unlike
+/// the general-purpose builtin_proto_from_new_target (which silently treats a
+/// throwing "prototype" getter as absent), this must propagate the throw —
+/// AllocateArrayBuffer's ReturnIfAbrupt(obj) happens before the Data Block is
+/// allocated. Sets ctx.should_throw and returns null on error.
+fn HObject* arraybuffer_instance_proto(BuiltinContext* ctx, HObject* fallback_proto) {
+    HObject* nt = ctx.new_target;
+    if (nt == null) return fallback_proto;
+    HString* proto_key = (HString*)ctx.heap.strs[heap::BuiltinStr.PROTOTYPE];
+    if (proto_key == null) return fallback_proto;
+    TVal? proto_tv = builtins_generic_get(nt, proto_key, ctx);
+    if (ctx.should_throw) return null;
+    if (try ptv = proto_tv) {
+        if (ptv.is_object() && ptv.get_heapptr() != null) {
+            return (HObject*)ptv.get_heapptr();
+        }
+    }
+    return fallback_proto;
+}
+
 // ============================================================================
 // ArrayBuffer(length) constructor — ES2015 §24.1.2.1
 // ============================================================================
@@ -102,10 +161,31 @@ fn void builtin_arraybuffer(BuiltinContext* ctx) {
     len_arg.set_undefined();
     if (ctx.argc >= 1) len_arg = ctx.regs[ctx.base_reg];
 
-    uint byte_length = 0;
-    if (!arraybuffer_to_index(ctx, &len_arg, &byte_length)) {
+    double byte_length_wide = 0.0;
+    if (!arraybuffer_to_index_wide(ctx, &len_arg, &byte_length_wide)) {
         return;
     }
+
+    HObject* instance_proto = arraybuffer_instance_proto(ctx, ctx.heap.arraybuffer_proto);
+    if (ctx.should_throw) return;
+
+    HObject*? raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAYBUFFER);
+    if (catch err = raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* obj = raw;
+    obj.prototype = instance_proto;
+    (*obj.extra_ptr()).ab.data = null;
+    (*obj.extra_ptr()).ab.byte_length = 0;
+    (*obj.extra_ptr()).ab.views_head = null;
+
+    uint byte_length = 0;
+    if (byte_length_wide > 2147483647.0) {
+        arraybuffer_throw_range_error(ctx, "Invalid array buffer length");
+        return;
+    }
+    byte_length = (uint)byte_length_wide;
 
     char* data = null;
     if (byte_length > 0) {
@@ -116,19 +196,8 @@ fn void builtin_arraybuffer(BuiltinContext* ctx) {
         }
         libc::memset(data, 0, (usz)byte_length);
     }
-
-    HObject*? raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAYBUFFER);
-    if (catch err = raw) {
-        if (data != null) ctx.heap.free_func(ctx.heap.heap_udata, data);
-        ctx.result.set_undefined();
-        return;
-    }
-    HObject* obj = raw;
     (*obj.extra_ptr()).ab.data = data;
     (*obj.extra_ptr()).ab.byte_length = byte_length;
-    (*obj.extra_ptr()).ab.views_head = null;
-
-    obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.arraybuffer_proto);
 
     ctx.result.set_object(obj);
 }
@@ -496,7 +565,18 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
         if (try getter = getter_raw) {
             getter.flags.callable = true;
             getter.flags.constructable = false;
+            getter.prototype = heap.function_proto;
             (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAYBUFFER_SPECIES_GET;
+
+            HString* getter_name = builtin_intern_string(heap, "get [Symbol.species]");
+            if (getter_name != null) {
+                TVal name_tv; name_tv.set_string(getter_name);
+                getter.put_prop((void*)builtin_intern_string(heap, "name"), name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* len_key_sp = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            TVal zero_tv; zero_tv.set_fastint(0);
+            getter.put_prop(len_key_sp, zero_tv, hobject::PROP_FLAGS_NWC);
+
             TVal getter_tv;
             getter_tv.set_object(getter);
             TVal undef;

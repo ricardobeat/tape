@@ -101,17 +101,28 @@ fn void builtin_dataview(BuiltinContext* ctx) {
         }
     }
 
+    // OrdinaryCreateFromConstructor (via new.target.prototype) can run
+    // arbitrary user code — including detaching `buf` — so it must be
+    // resolved before the view is linked, and the detach state re-checked
+    // afterward, before the DataView instance is returned.
+    HObject* instance_proto = typedarray_instance_proto(ctx, ctx.heap.dataview_proto);
+    if (ctx.should_throw) return;
+
+    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "DataView constructor: buffer is detached");
+        return;
+    }
+
     HObject*? raw = ctx.heap.alloc_object(hobject::ObjClass.DATAVIEW);
     if (catch err = raw) {
         ctx.result.set_undefined();
         return;
     }
     HObject* obj = raw;
+    obj.prototype = instance_proto;
     (*obj.extra_ptr()).view.byte_offset = byte_offset;
     (*obj.extra_ptr()).view.byte_length = view_len;
     typedarray_link_view(buf, obj);
-
-    obj.prototype = typedarray_instance_proto(ctx, ctx.heap.dataview_proto);
 
     ctx.result.set_object(obj);
 }
@@ -383,6 +394,27 @@ fn void builtin_dataview_set_float32(BuiltinContext* ctx) { dv_set(ctx, hobject:
 fn void builtin_dataview_set_float64(BuiltinContext* ctx) { dv_set(ctx, hobject::ObjClass.FLOAT64ARRAY); }
 
 // ============================================================================
+// getBigInt64/getBigUint64/setBigInt64/setBigUint64 — BigInt arithmetic is
+// out of scope for this engine; these are registered as ordinary (non-
+// constructable) methods so `.length`/`.name`/IsConstructor all behave per
+// spec, but they throw rather than performing real 64-bit BigInt reads/writes.
+// ============================================================================
+
+fn void dv_bigint_unsupported(BuiltinContext* ctx) {
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || !is_dataview_obj((HObject*)this_val.get_heapptr())) {
+        arraybuffer_throw_type_error(ctx, "DataView method called on incompatible receiver");
+        return;
+    }
+    arraybuffer_throw_type_error(ctx, "BigInt64/BigUint64 DataView access is not supported");
+}
+
+fn void builtin_dataview_get_bigint64(BuiltinContext* ctx)  { dv_bigint_unsupported(ctx); }
+fn void builtin_dataview_get_biguint64(BuiltinContext* ctx) { dv_bigint_unsupported(ctx); }
+fn void builtin_dataview_set_bigint64(BuiltinContext* ctx)  { dv_bigint_unsupported(ctx); }
+fn void builtin_dataview_set_biguint64(BuiltinContext* ctx) { dv_bigint_unsupported(ctx); }
+
+// ============================================================================
 // Registration
 // ============================================================================
 
@@ -493,6 +525,10 @@ fn bool register_dataview(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "setUint32", BUILTIN_DATAVIEW_SET_UINT32)) return false;
     if (!register_string_proto_method(proto, heap, "setFloat32", BUILTIN_DATAVIEW_SET_FLOAT32)) return false;
     if (!register_string_proto_method(proto, heap, "setFloat64", BUILTIN_DATAVIEW_SET_FLOAT64)) return false;
+    if (!register_string_proto_method(proto, heap, "getBigInt64", BUILTIN_DATAVIEW_GET_BIGINT64)) return false;
+    if (!register_string_proto_method(proto, heap, "getBigUint64", BUILTIN_DATAVIEW_GET_BIGUINT64)) return false;
+    if (!register_string_proto_method(proto, heap, "setBigInt64", BUILTIN_DATAVIEW_SET_BIGINT64)) return false;
+    if (!register_string_proto_method(proto, heap, "setBigUint64", BUILTIN_DATAVIEW_SET_BIGUINT64)) return false;
 
     // @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);
