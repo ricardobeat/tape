@@ -6,13 +6,12 @@
 raw 32814/463/46CE). Verified the 40 "new" fails vs s286 in isolation:
 **38 were batch-runner-segv flakes** (pass single-process — see memory
 `batch-runner-segv-under-load`), 2 were genuine regressions from this session's
-merges, both caught and being fixed before round 3:
-- TA (`25d1ad1`): `throw-type-error-before-custom-proto-access` — eager
-  `newTarget.prototype` getter access before arg-validation throw. (fix in flight)
-- O (`2916ccd`): plain async functions wrongly got a `.prototype` (the
-  `is_generator()` gate catches async — flag conflation, see
-  `ctx-is-async-conflation`); breaks `class extends asyncFn` IsConstructor
-  ordering. (fix in flight)
+merges, both caught and FIXED (tree regression-free, corpus clean):
+- TA: eager `newTarget.prototype` getter access before arg-validation throw —
+  fixed `7d6b1c1` (defer proto resolution until after arg validation).
+- O: plain async functions wrongly got a `.prototype` (the `is_generator()`
+  gate catches async — flag conflation, see `ctx-is-async-conflation`) — fixed
+  `359e879` (`is_generator() && !is_async()`, the codebase's existing idiom).
 
 Merged to main (`7c47e9c..6c8d663`), ~549 real tests recovered + 39 reclassified:
 - **P1 (`e40cdd9`) — the big one**: the 436 `RegExp/property-escapes` fails were
