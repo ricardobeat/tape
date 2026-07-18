@@ -33,7 +33,22 @@ work, or at minimum point it at Array.prototype.values). Small, real, in-scope.
 Affects Array/Map/Set/String iterators. Architectural — touches every iterator
 type + GC. Reporter: TA. **Subsystem change — dedicated agent, careful.**
 
-### PB6 — well-known symbol `.description` wrong / not a string
+### PB6 — FIXED (`6599430`) — well-known symbol description + GETPROPC2 accessor bypass
+Two bugs: (1) well-known symbols registered with bare description ("iterator" not
+"Symbol.iterator"); (2) — the real symptom — the fused two-hop opcode GETPROPC2's
+symbol-intermediate path returned the raw accessor-pair object instead of
+auto-boxing + invoking the getter (why `Symbol.iterator.description` gave
+`[object Object]` but `var s=Symbol.iterator; s.description` (single-hop GETPROPC)
+worked). Fixed all 4 GETPROPC2 occurrences via a shared `getprop2_symbol_hop`
+helper (vm_property.c3) + description literals (symbol.c3). NO test262 delta (no
+test asserts the string) but a real correctness fix; validated via chained-access
++ alloc-in-getter stress + corpus, zero regressions. Latent same-pattern bug on
+String/Number/Boolean.prototype GETPROPC2 intermediates is dormant (no accessors
+there yet) — flagged for if those gain getters.
+Adjacent unfixed: `Symbol.for(objectKey)` skips custom toString/toPrimitive
+coercion (fails `Symbol/for/description.js`) — separate ToString bug.
+
+### PB6-orig — well-known symbol `.description` wrong / not a string
 `Symbol.iterator.description` returns `[object Object]` (should be
 `"Symbol.iterator"`). Well-known symbols' description handling is broken.
 Reporter: B. Small, localized to symbol.c3 — good focused task.
@@ -69,6 +84,16 @@ save/restore. **This is the prerequisite:** fix PB10 first (oracle = the 19
 newly-failing Promise tests + the agent's synthetic repro), THEN cherry-pick
 `261cfd5` and confirm net-positive. Do NOT merge P2 before PB10 is fixed.
 (Awaiting agent's exact repro + failing-test list.)
+
+### PB11 — assignment LHS reference checked eagerly, not deferred to PutValue
+`try { s = throws(); } catch(e){}` where `s` is undeclared throws ReferenceError
+(from the LHS) instead of letting the RHS's RangeError propagate. Per ES2022
+assignment semantics the LHS Reference is obtained but NOT dereferenced/checked
+until PutValue (after RHS eval). Root cause in `src/compiler/expressions.c3`
+`assignment_expr` — the LHS identifier existence is checked before/independent of
+RHS evaluation. Blocks 3 Number/toFixed tests (S15.7.4.5_A1.3/A1.4) and likely
+others that assign a throwing-RHS to an undeclared var in a try. Reporter: N1.
+Overlaps PB8's expressions.c3 ownership — coordinate (do after PB8 lands).
 
 ## Needs more investigation
 
@@ -107,7 +132,17 @@ eval surface). A fresh focused agent should redo — the design is proven:
 The committed `functions.c3`/`expressions.c3` var-hoisting fixes (in 4ff3485) are
 prerequisites these build on.
 
-### PB9 — arrow in class-field initializer accessing a private name (COMPILE bug)
+### PB9 — FIXED (`4900b11`) — prescan misdetected `this.#x` access as declaration
+Real root cause (agent re-diagnosed): `prescan_private_names` only tracked {}
+depth, not (), so a `this.#x` in a field-init/default-param (not brace-wrapped)
+sat at the same depth as a real declaration → false "duplicate private name".
+Fixed by excluding HASH_IDENT preceded by DOT/OPT_CHAIN from declaration
+classification (private_names.c3) + field_init_ctx/static_init_ctx now
+adopt_private_names (class.c3). NOTE: my repro used a PUBLIC field `f=...` which
+is entirely UNIMPLEMENTED in this engine (pre-existing, separate) — agent used
+the private-field equivalent that test262 actually exercises. +3 class tests.
+
+### PB9-orig — arrow in class-field initializer accessing a private name
 `class B { #s=5; f=(()=>this.#s); }` fails at compile with "duplicate private name
 declaration". Confirmed pre-existing (fails identically on 4ff3485, before the
 private-names-cap change — NOT a C7a-cap regression). Root cause: likely
