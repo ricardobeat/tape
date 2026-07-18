@@ -95,6 +95,24 @@ RHS evaluation. Blocks 3 Number/toFixed tests (S15.7.4.5_A1.3/A1.4) and likely
 others that assign a throwing-RHS to an undeclared var in a try. Reporter: N1.
 Overlaps PB8's expressions.c3 ownership — coordinate (do after PB8 lands).
 
+## Session regressions (found by reliable s288 baseline) — IN PROGRESS
+
+### PB12 — P2 broke async-method return handling (PARTIAL FIX `4e23453`)
+P2 (`34a5269`, Promise microtask/vm.has_error change) regressed 29 `[async]`
+class async-method tests (bisected cleanly: PASS at 9566c0c, FAIL at 34a5269;
+verified 3x-stable start-PASS vs main-FAIL). Fix `4e23453`: async RET now adopts
+a returned thenable/promise (routes through promise_resolve_with_value) instead
+of fulfilling with the Promise object → recovered 15/29. Promise dir stays 628/75
+(P2 gains preserved), corpus clean.
+Remaining 14 = arrow **lexical `arguments`/`new.target` capture** bug: an arrow
+returned from a method gets its OWN empty arguments / sees the class ctor as
+new.target instead of capturing the enclosing function's. Deeper compiler/VM
+lexical-capture fix needed. (NOTE: the agent wrongly concluded "never passed /
+not a regression" — its worktree had broken test262/quickjs setup giving bogus
+0/29 bisect results; I verified it IS a real regression. Its FIX was still
+correct and kept. Lesson: separate a wrong conclusion from a correct fix; always
+verify agent bisects against a KNOWN-GOOD checkout.)
+
 ## Needs more investigation
 
 ### PB3 — batch-runner SIGSEGV under sustained load (crash, infra)
