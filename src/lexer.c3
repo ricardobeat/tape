@@ -1291,6 +1291,20 @@ fn Token? Lexer.scan_identifier(&self) {
 
     // Slow path: rewind and decode into ident_buf.
     self.pos = start_pos;
+    char[] name = self.scan_ident_body_decoded()!;
+
+    Token tok = make_token(TokenType.IDENTIFIER, start_line, start_col);
+    tok.str_value = name;
+    return tok;
+}
+
+/// Decode an identifier body (possibly containing \uXXXX / \u{H+} escapes)
+/// from the current lexer position into `ident_buf`, re-encoding each
+/// escaped or literal codepoint as UTF-8. Used by both plain identifiers
+/// and private names (`#name`) since both allow Unicode escapes per spec.
+/// Every codepoint (escaped or not) is validated against
+/// is_identifier_start/is_identifier_part as it is decoded.
+fn char[]? Lexer.scan_ident_body_decoded(&self) {
     uint buf_len = 0;
     bool first = true;
 
@@ -1343,16 +1357,10 @@ fn Token? Lexer.scan_identifier(&self) {
     }
 
     // Build name slice. C3's .. is inclusive, so [0..buf_len-1] gives buf_len bytes.
-    char[] name;
     if (buf_len > 0) {
-        name = self.ident_buf[0..buf_len-1];
-    } else {
-        name = {};
+        return self.ident_buf[0..buf_len-1];
     }
-
-    Token tok = make_token(TokenType.IDENTIFIER, start_line, start_col);
-    tok.str_value = name;
-    return tok;
+    return {};
 }
 
 // ============================================================================
@@ -1547,18 +1555,31 @@ fn Token? Lexer.scan_punctuator(&self) {
             // Private identifier: #name. The '#' is already consumed; scan
             // the identifier body and return HASH_IDENT with the text
             // *excluding* the '#'. Bypasses keyword lookup by construction.
+            // Like plain identifiers, the name may contain \uXXXX / \u{H+}
+            // Unicode escapes: fast-scan first, and if a backslash turns up
+            // anywhere, rewind and decode the whole name via the shared
+            // helper (same slow path as scan_identifier).
             if (self.at_end()) return LEX_ERROR~;
-            uint cp2 = self.peek_codepoint();
-            if (!is_identifier_start(cp2)) return LEX_ERROR~;
             uint name_start = self.pos;
-            self.read_codepoint();
-            while (!self.at_end()) {
+            bool has_escape = (self.peek_char() == 0x5C);
+            if (!has_escape) {
+                uint cp2 = self.peek_codepoint();
+                if (!is_identifier_start(cp2)) return LEX_ERROR~;
+                self.read_codepoint();
+            }
+            while (!has_escape && !self.at_end()) {
                 uint cp3 = self.peek_codepoint();
+                if (cp3 == 0x5C) { has_escape = true; break; }
                 if (!is_identifier_part(cp3)) break;
                 self.read_codepoint();
             }
             Token tok = make_token(TokenType.HASH_IDENT, start_line, start_col);
-            tok.str_value = self.source[name_start..self.pos-1];
+            if (has_escape) {
+                self.pos = name_start;
+                tok.str_value = self.scan_ident_body_decoded()!;
+            } else {
+                tok.str_value = self.source[name_start..self.pos-1];
+            }
             return tok;
         default:  return LEX_ERROR~;
     }
