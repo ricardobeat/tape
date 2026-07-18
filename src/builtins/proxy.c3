@@ -95,6 +95,15 @@ fn void ProxyDesc.complete(&self) {
 /// callers that may see a proxy use own_property_desc below).
 fn void ordinary_own_desc(Heap* heap, HObject* obj, HString* key, ProxyDesc* out) {
     *out = (ProxyDesc){};
+    // Integer-Indexed exotic [[GetOwnProperty]] (ES2022 §10.4.5.1): canonical
+    // numeric index keys never live in the property table — bypass it entirely.
+    if (is_typed_array_class(obj.get_class())) {
+        double num;
+        if (ta_key_numeric_index(heap, key, &num)) {
+            ta_own_index_desc(obj, num, out);
+            return;
+        }
+    }
     int idx = obj.find_prop_idx((void*)key);
     if (idx >= 0) {
         hobject::PropFlags f = obj.get_prop_flags((uint)idx);
@@ -213,6 +222,18 @@ fn bool tval_is_callable(TVal v) {
 // ============================================================================
 
 fn bool js_get_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, TVal receiver, TVal* out) {
+    // Integer-Indexed exotic [[Get]] (ES2022 §10.4.5.8): canonical numeric
+    // index keys never walk the prototype chain.
+    if (is_typed_array_class(obj.get_class())) {
+        double num;
+        if (ta_key_numeric_index(heap, key, &num)) {
+            ProxyDesc d;
+            ta_own_index_desc(obj, num, &d);
+            *out = d.found ? d.value : (TVal){};
+            if (!d.found) out.set_undefined();
+            return true;
+        }
+    }
     HObject* cur = obj;
     uint depth = 0;
     while (cur != null && depth < 256) {
@@ -249,11 +270,43 @@ fn bool js_get(void* vm, Heap* heap, HObject* obj, HString* key, TVal* out) {
 // ============================================================================
 
 fn bool js_set_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, TVal val, TVal receiver, bool* res) {
+    // Integer-Indexed exotic [[Set]] (ES2022 §10.4.5.10): canonical numeric
+    // index keys bypass OrdinarySet entirely.
+    if (is_typed_array_class(obj.get_class())) {
+        double num;
+        if (ta_key_numeric_index(heap, key, &num)) {
+            bool same_recv = receiver.is_object() && (HObject*)receiver.get_heapptr() == obj;
+            if (same_recv) {
+                BuiltinContext conv_ctx;
+                conv_ctx.vm = vm;
+                conv_ctx.heap = heap;
+                conv_ctx.should_throw = false;
+                ta_integer_indexed_element_set(&conv_ctx, obj, num, val);
+                if (conv_ctx.should_throw) {
+                    heap.has_error = true;
+                    heap.tval_copy_ref(&heap.error_value, &conv_ctx.throw_value);
+                    return false;
+                }
+                *res = true;
+                return true;
+            }
+            if (!ta_is_valid_integer_index(obj, num)) { *res = true; return true; }
+            // Valid index but receiver differs from O: falls through to
+            // OrdinarySet below (receiver gets its own data property).
+        }
+    }
     HObject* cur = obj;
     uint depth = 0;
     while (cur != null && depth < 256) {
         if (cur.flags.exotic_proxyobj) {
             return proxy_mop_set(vm, heap, cur, key, val, receiver, res);
+        }
+        // A TypedArray encountered while walking up the prototype chain
+        // (cur != obj) has its own exotic [[Set]] — OrdinarySetWithOwnDescriptor
+        // recurses into parent.[[Set]](P, V, Receiver) rather than treating it
+        // as a flat OrdinaryGetOwnProperty lookup (ES2024 §9.1.9.2 step 2.b).
+        if (cur != obj && is_typed_array_class(cur.get_class())) {
+            return js_set_with_receiver(vm, heap, cur, key, val, receiver, res);
         }
         ProxyDesc d;
         ordinary_own_desc(heap, cur, key, &d);
@@ -298,6 +351,28 @@ fn bool js_set_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, T
         }
         return proxy_mop_define(vm, heap, recv_obj, key, &nd, res);
     }
+    // Integer-Indexed exotic receiver: [[DefineOwnProperty]]({value}) on a
+    // TypedArray routes through IntegerIndexedElementSet, not put_prop — and
+    // an out-of-bounds numeric index simply fails rather than falling back
+    // to CreateDataProperty.
+    if (is_typed_array_class(recv_obj.get_class())) {
+        double rnum;
+        if (ta_key_numeric_index(heap, key, &rnum)) {
+            if (!ta_is_valid_integer_index(recv_obj, rnum)) { *res = false; return true; }
+            BuiltinContext conv_ctx;
+            conv_ctx.vm = vm;
+            conv_ctx.heap = heap;
+            conv_ctx.should_throw = false;
+            ta_integer_indexed_element_set(&conv_ctx, recv_obj, rnum, val);
+            if (conv_ctx.should_throw) {
+                heap.has_error = true;
+                heap.tval_copy_ref(&heap.error_value, &conv_ctx.throw_value);
+                return false;
+            }
+            *res = true;
+            return true;
+        }
+    }
     ProxyDesc existing;
     ordinary_own_desc(heap, recv_obj, key, &existing);
     if (existing.found) {
@@ -320,6 +395,16 @@ fn bool js_set_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, T
 // ============================================================================
 
 fn bool js_has_property(void* vm, Heap* heap, HObject* obj, HString* key, bool* out) {
+    // Integer-Indexed exotic [[HasProperty]] (ES2022 §10.4.5.2): a canonical
+    // numeric index key never falls through to OrdinaryHasProperty / the
+    // prototype chain, whether or not it is a valid in-bounds index.
+    if (is_typed_array_class(obj.get_class())) {
+        double num;
+        if (ta_key_numeric_index(heap, key, &num)) {
+            *out = ta_is_valid_integer_index(obj, num);
+            return true;
+        }
+    }
     HObject* cur = obj;
     uint depth = 0;
     while (cur != null && depth < 256) {
@@ -653,7 +738,36 @@ fn bool proxy_desc_compatible(bool extensible, ProxyDesc* desc, ProxyDesc* curre
 // Ordinary [[DefineOwnProperty]] (ValidateAndApplyPropertyDescriptor, applied)
 // ============================================================================
 
-fn bool ordinary_define_own(Heap* heap, HObject* obj, HString* key, ProxyDesc* desc, bool* res) {
+fn bool ordinary_define_own(void* vm, Heap* heap, HObject* obj, HString* key, ProxyDesc* desc, bool* res) {
+    // Integer-Indexed exotic [[DefineOwnProperty]] (ES2022 §10.4.5.3): canonical
+    // numeric index keys bypass ValidateAndApplyPropertyDescriptor entirely.
+    if (is_typed_array_class(obj.get_class())) {
+        double num;
+        if (ta_key_numeric_index(heap, key, &num)) {
+            if (!ta_is_valid_integer_index(obj, num)
+                || desc.is_accessor_desc()
+                || (desc.has_configurable && !desc.configurable)
+                || (desc.has_enumerable && !desc.enumerable)
+                || (desc.has_writable && !desc.writable)) {
+                *res = false;
+                return true;
+            }
+            if (desc.has_value) {
+                BuiltinContext conv_ctx;
+                conv_ctx.vm = vm;
+                conv_ctx.heap = heap;
+                conv_ctx.should_throw = false;
+                ta_integer_indexed_element_set(&conv_ctx, obj, num, desc.value);
+                if (conv_ctx.should_throw) {
+                    heap.has_error = true;
+                    heap.tval_copy_ref(&heap.error_value, &conv_ctx.throw_value);
+                    return false;
+                }
+            }
+            *res = true;
+            return true;
+        }
+    }
     ProxyDesc cur;
     ordinary_own_desc(heap, obj, key, &cur);
     bool ext = obj.flags.extensible;
@@ -712,7 +826,7 @@ fn bool object_define_own(void* vm, Heap* heap, HObject* obj, HString* key, Prox
     if (obj.flags.exotic_proxyobj) {
         return proxy_mop_define(vm, heap, obj, key, desc, res);
     }
-    return ordinary_define_own(heap, obj, key, desc, res);
+    return ordinary_define_own(vm, heap, obj, key, desc, res);
 }
 
 // ============================================================================

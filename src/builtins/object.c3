@@ -236,6 +236,17 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
         }
     }
 
+    // TypedArray (Integer-Indexed exotic): [0, [[ArrayLength]]) are
+    // enumerable own properties, ascending.
+    if (is_typed_array_class(obj.get_class())) {
+        uint ta_len = ta_element_count(obj);
+        for (uint i = 0; i < ta_len; i++) {
+            HString* k = ctx.heap.int_to_hstring((long)i);
+            if (k == null) return key_count;
+            key_buf[key_count++] = k;
+        }
+    }
+
     // Phase 1: ALL integer-indexed properties merged from named props + dense
     // array, sorted by numeric index (ES2015 §9.1.11.1 OrdinaryOwnPropertyKeys).
     {
@@ -533,6 +544,17 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
     }
 
+    // TypedArray (Integer-Indexed exotic): [0, [[ArrayLength]]) are own
+    // properties, ascending.
+    if (is_typed_array_class(obj.get_class())) {
+        uint ta_len = ta_element_count(obj);
+        for (uint i = 0; i < ta_len; i++) {
+            HString* k = ctx.heap.int_to_hstring((long)i);
+            if (k == null) { ctx.result.set_undefined(); return; }
+            key_buf[key_count++] = k;
+        }
+    }
+
     // Phase 1: ALL integer-indexed properties merged from named props + dense
     // array, sorted by numeric index (ES2015 §9.1.11.1 OrdinaryOwnPropertyKeys).
     {
@@ -770,6 +792,17 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
                 if (k == null) { ctx.result.set_undefined(); return; }
                 key_buf[key_count++] = k;
             }
+        }
+    }
+
+    // TypedArray (Integer-Indexed exotic): [0, [[ArrayLength]]) are own
+    // properties, ascending, before any named/symbol keys (ES2022 §10.4.5.12).
+    if (is_typed_array_class(obj.get_class())) {
+        uint ta_len = ta_element_count(obj);
+        for (uint i = 0; i < ta_len; i++) {
+            HString* k = ctx.heap.int_to_hstring((long)i);
+            if (k == null) { ctx.result.set_undefined(); return; }
+            key_buf[key_count++] = k;
         }
     }
 
@@ -2289,6 +2322,32 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     bool has_any_field = desc_fields.has_enumerable || desc_fields.has_configurable
                       || desc_fields.has_value || desc_fields.has_writable
                       || desc_fields.has_get || desc_fields.has_set;
+
+    // Integer-Indexed exotic [[DefineOwnProperty]] (ES2022 §10.4.5.3): routes
+    // through the shared ordinary_define_own, which special-cases canonical
+    // numeric index keys on TypedArrays. Non-numeric-index keys on a
+    // TypedArray fall through to the general (ordinary object) path below.
+    if (is_typed_array_class(obj.get_class())) {
+        ProxyDesc pd;
+        pd.found = true;
+        if (is_accessor) {
+            pd.has_get = desc_fields.has_get; pd.getter = desc_vals[0];
+            pd.has_set = desc_fields.has_set; pd.setter = desc_vals[1];
+        } else {
+            pd.has_value = desc_fields.has_value; pd.value = desc_vals[0];
+            pd.has_writable = desc_fields.has_writable; pd.writable = desc_flags.writable;
+        }
+        pd.has_enumerable = desc_fields.has_enumerable; pd.enumerable = desc_flags.enumerable;
+        pd.has_configurable = desc_fields.has_configurable; pd.configurable = desc_flags.configurable;
+        bool dok;
+        if (!ordinary_define_own(ctx.vm, ctx.heap, obj, key_hstr, &pd, &dok)) { proxy_ctx_ok(ctx); return; }
+        if (!dok) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property");
+            return;
+        }
+        *ctx.result = arg0;
+        return;
+    }
 
     // ES5 §15.4.5.1 ArraySetLength: special handling when defining 'length' on an Array.
     // This path runs before general [[DefineOwnProperty]] and handles the full

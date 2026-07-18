@@ -2353,13 +2353,16 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             return (TVal){};
                         }
 
-                        // Proxy anywhere on the prototype chain: run the full
-                        // [[Set]] (receiver = hobj) through the trap machinery.
+                        // Proxy or TypedArray anywhere on the prototype chain: both
+                        // have exotic [[Set]] methods that OrdinarySetWithOwnDescriptor
+                        // must recurse into (§9.1.9.2 step 2.b), not treat as a flat
+                        // OrdinaryGetOwnProperty lookup — run the full [[Set]]
+                        // (receiver = hobj) through js_set_with_receiver.
                         {
                             HObject* pscan = hobj.prototype;
                             uint pdepth = 0;
                             while (pscan != null && pdepth < 256) {
-                                if (pscan.flags.exotic_proxyobj) {
+                                if (pscan.flags.exotic_proxyobj || builtins::is_typed_array_class(pscan.get_class())) {
                                     bool sres;
                                     TVal recv_tv; recv_tv.set_object(hobj);
                                     if (!builtins::js_set_with_receiver(vm, vm.heap, hobj, (HString*)key, put_val, recv_tv, &sres)) {

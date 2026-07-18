@@ -110,10 +110,25 @@ fn void typedarray_link_view(HObject* buf, HObject* view) {
 /// Resolve the constructor's `.prototype` (falling back to the shared
 /// %TypedArray%.prototype-derived per-class prototype) for `new.target`-style
 /// prototype inheritance.
+///
+/// Unlike the general-purpose builtin_proto_from_new_target (which silently
+/// treats an inaccessible/throwing "prototype" getter as absent), TypedArray
+/// construction's GetPrototypeFromConstructor (ES2022 §9.1.15 step 3, via
+/// AllocateTypedArray step 1) must propagate a thrown Get(constructor,
+/// "prototype") abruptly. Sets ctx.should_throw and returns null on error.
 fn HObject* typedarray_instance_proto(BuiltinContext* ctx, HObject* fallback_proto) {
-    // Prefer new_target (set by vm_calls for both direct new and super() paths).
-    // Fall back to callee_obj for the legacy path where new_target is not set.
-    return builtin_proto_from_new_target(ctx, fallback_proto);
+    HObject* nt = ctx.new_target;
+    if (nt == null) return fallback_proto;
+    HString* proto_key = (HString*)ctx.heap.strs[heap::BuiltinStr.PROTOTYPE];
+    if (proto_key == null) return fallback_proto;
+    TVal? proto_tv = builtins_generic_get(nt, proto_key, ctx);
+    if (ctx.should_throw) return null;
+    if (try ptv = proto_tv) {
+        if (ptv.is_object() && ptv.get_heapptr() != null) {
+            return (HObject*)ptv.get_heapptr();
+        }
+    }
+    return fallback_proto;
 }
 
 /// Store one converted element into `buf`'s backing store at element index
@@ -307,7 +322,24 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
     uint elem_size = ta_elem_size(obj_class);
     uint shift = ta_elem_shift(obj_class);
 
-    HObject* instance_proto = typedarray_instance_proto(ctx, heap.typedarray_proto);
+    // AllocateTypedArray's defaultProto (ES2022 §22.2.5.1 per-class TypedArray()
+    // constructor step 3) is the specific subclass's own %XArray.prototype%, not
+    // the shared abstract %TypedArray.prototype%.
+    HObject* default_proto = heap.typedarray_proto;
+    if (ctx.callee_obj != null) {
+        HString* proto_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+        if (proto_key != null) {
+            int pidx = ctx.callee_obj.find_prop_idx((void*)proto_key);
+            if (pidx >= 0) {
+                TVal pv = ctx.callee_obj.prop_values()[pidx];
+                if (pv.is_object() && pv.get_heapptr() != null) {
+                    default_proto = (HObject*)pv.get_heapptr();
+                }
+            }
+        }
+    }
+    HObject* instance_proto = typedarray_instance_proto(ctx, default_proto);
+    if (ctx.should_throw) return;
 
     TVal arg0; arg0.set_undefined();
     if (ctx.argc >= 1) arg0 = ctx.regs[ctx.base_reg];
@@ -737,6 +769,76 @@ fn bool ta_is_detached(HObject* obj) {
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     if (buf == null) return true;
     return ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu);
+}
+
+/// Element count ([[ArrayLength]]) of a live TypedArray — 0 when detached.
+fn uint ta_element_count(HObject* obj) {
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    if (buf == null || (*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu) return 0;
+    uint shift = ta_elem_shift(obj.flags.obj_class);
+    return (*obj.extra_ptr()).view.byte_length >> shift;
+}
+
+/// IsValidIntegerIndex (ES2022 §10.4.5.9): true iff `idx` is a non-negative
+/// integer, the buffer is not detached, and idx < [[ArrayLength]].
+fn bool ta_is_valid_integer_index(HObject* obj, double idx) {
+    if (ta_is_detached(obj)) return false;
+    if (idx != idx || idx < 0.0) return false;
+    if (idx == 0.0 && 1.0 / idx < 0.0) return false; // -0
+    if (idx != math::floor(idx)) return false;
+    return idx < (double)ta_element_count(obj);
+}
+
+/// CanonicalNumericIndexString + integer-index classification for a String
+/// property key on a TypedArray (ES2022 §10.4.5 IntegerIndexedObject match).
+/// Returns true when `key` is a canonical numeric index string, with
+/// `*out_num` set to the numeric value (any finite or infinite double,
+/// possibly non-integer or negative) for further checks by the caller.
+/// Returns false when `key` is not numeric-index-like at all (ordinary
+/// property lookup should proceed as usual).
+fn bool ta_key_numeric_index(Heap* heap, HString* key, double* out_num) {
+    if (key.is_symbol()) return false;
+    if (key.is_arridx()) {
+        *out_num = (double)key.array_index();
+        return true;
+    }
+    return is_canonical_numeric_index(heap, key, out_num);
+}
+
+/// Integer-Indexed exotic [[GetOwnProperty]] (ES2022 §10.4.5.1) for a String
+/// key already known to be a canonical numeric index (`num`). Populates
+/// `out` with a data-property descriptor (WEC) when the index is valid;
+/// leaves `out.found = false` otherwise (still consumed the key — caller
+/// must not fall back to ordinary lookup).
+fn void ta_own_index_desc(HObject* obj, double num, ProxyDesc* out) {
+    *out = (ProxyDesc){};
+    if (!ta_is_valid_integer_index(obj, num)) return;
+    uint idx = (uint)(long)num;
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    char* base = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+    out.found = true;
+    out.has_value = true;
+    out.value = ta_load_element(base, obj.flags.obj_class, idx);
+    out.has_writable = true; out.writable = true;
+    out.has_enumerable = true; out.enumerable = true;
+    out.has_configurable = true; out.configurable = true;
+}
+
+/// IntegerIndexedElementSet (ES2022 §10.4.5.10): ToNumber(value) first (may
+/// run user code / throw), then silently no-op if OOB/detached afterwards.
+/// `ctx` carries should_throw/throw_value for propagating ToNumber errors.
+fn void ta_integer_indexed_element_set(BuiltinContext* ctx, HObject* obj, double num, TVal value) {
+    hobject::ObjClass cls = obj.flags.obj_class;
+    char[8] scratch;
+    TVal converted = value;
+    ta_write_element((char*)&scratch, cls, &converted, ctx);
+    if (ctx.should_throw) return;
+    if (!ta_is_valid_integer_index(obj, num)) return;
+    uint idx = (uint)(long)num;
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    char* base = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+    char* p = base + ((ulong)idx << ta_elem_shift(cls));
+    ta_write_element(p, cls, &converted, ctx);
 }
 
 /// Normalize a relative index (ES2022 §23.2.4.1 ToIntegerOrInfinity + clamp).
@@ -2653,6 +2755,16 @@ fn HObject* ta_typed_array_create(BuiltinContext* ctx, TVal* args, uint nargs) {
     if (!is_typed_array_class(result_obj.flags.obj_class)) {
         arraybuffer_throw_type_error(ctx, "TypedArrayCreate: constructor did not return a TypedArray");
         return null;
+    }
+    // ES2022 §23.2.4.3 TypedArrayCreate step 4: when argumentList is
+    // «length», validate the result's [[ArrayLength]] is at least the
+    // requested length (a custom constructor may have ignored/shrunk it).
+    if (nargs == 1 && (args[0].is_fastint() || args[0].is_number())) {
+        double want = args[0].is_fastint() ? (double)args[0].get_fastint() : args[0].get_number();
+        if ((double)ta_element_count(result_obj) < want) {
+            arraybuffer_throw_type_error(ctx, "TypedArrayCreate: derived constructor created a TypedArray shorter than requested");
+            return null;
+        }
     }
     return result_obj;
 }

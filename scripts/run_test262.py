@@ -293,6 +293,10 @@ SKIP_FILES = {
     "built-ins/Function/prototype/call/S15.3.4.4_A6_T5.js",
     "built-ins/Function/prototype/call/S15.3.4.4_A6_T7.js",
     "built-ins/Function/prototype/call/S15.3.4.4_A6_T8.js",
+    # BigInt64Array/BigUint64Array constructors — BigInt is out of scope
+    # (see the built-ins/BigInt SKIP_DIRS entry); this test doesn't tag
+    # `features: [BigInt]` so the feature filter above doesn't catch it.
+    "built-ins/TypedArrayConstructors/BigUint64Array/is-a-constructor.js",
 }
 
 PHASES = [
