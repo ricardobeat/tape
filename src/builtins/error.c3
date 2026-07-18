@@ -29,7 +29,8 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
     if (ctx.argc > 0) {
         TVal* msg_arg = &ctx.regs[ctx.base_reg];
         if (!msg_arg.is_undefined()) {
-            msg_str = builtin_to_string(ctx.heap, msg_arg);
+            msg_str = builtin_to_string_vm(ctx, msg_arg);
+            if (ctx.should_throw) return;
             if (msg_str != null) {
                 TVal msg_val;
                 msg_val.set_string(msg_str);
@@ -41,15 +42,23 @@ fn void builtin_error_constructor_shared(BuiltinContext* ctx, HObject* proto) {
 
     // ES2022 §20.5.8.1 InstallErrorCause (O, options)
     // Called as step 4 of every Error/NativeError constructor. If options is
-    // an Object and has an own "cause" property, install it as a non-enumerable
-    // data property {writable:true, configurable:true, enumerable:false} on O.
+    // an Object and ? HasProperty(options, "cause") is true, install ? Get(options,
+    // "cause") as a non-enumerable data property {writable:true, configurable:true,
+    // enumerable:false} on O. Both HasProperty and Get can invoke user code (Proxy
+    // traps, accessor getters) and must propagate an abrupt completion.
     if (ctx.argc >= 2) {
         TVal* opt_arg = &ctx.regs[ctx.base_reg + 1];
         if (opt_arg.is_object() && opt_arg.get_heapptr() != null) {
             HObject* opt_obj = (HObject*)opt_arg.get_heapptr();
             HString* cause_key = builtin_intern_string(ctx.heap, "cause");
-            if (opt_obj.has_prop(cause_key)) {
-                TVal? cause_prop = opt_obj.get_prop(cause_key);
+            bool has_cause;
+            if (!js_has_property(ctx.vm, ctx.heap, opt_obj, cause_key, &has_cause)) {
+                proxy_ctx_ok(ctx);
+                return;
+            }
+            if (has_cause) {
+                TVal? cause_prop = builtins_generic_get(opt_obj, cause_key, ctx);
+                if (ctx.should_throw) return;
                 if (try cv = cause_prop) {
                     err.put_prop(cause_key, cv, hobject::PROP_FLAGS_WC);
                 }
