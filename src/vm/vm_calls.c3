@@ -14,6 +14,34 @@ import std::math;
 // ============================================================================
 // vm_calls — function/object/generator call dispatch
 // ============================================================================
+
+/// Finish initializing a strict `arguments` exotic object: set .length,
+/// .callee, and @@iterator (ES2017+ §9.4.4.7 CreateUnmappedArgumentsObject).
+/// Per spec, @@iterator must be the *same function object* as
+/// %Array.prototype.values%, so callers must go through this helper rather
+/// than re-deriving the value property-by-property at each call site.
+fn void finish_arguments_object(Vm* vm, HObject* args_obj, HObject* callee, uint nargs) {
+    HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
+    if (callee_key != null) {
+        TVal callee_tv;
+        callee_tv.set_object(callee);
+        args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
+    }
+    HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
+    if (length_key != null) {
+        TVal length_tv;
+        length_tv.set_fastint((long)nargs);
+        args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
+    }
+    HString* iter_sym = builtins::ensure_iterator_symbol(vm.heap);
+    if (iter_sym != null && vm.heap.array_proto != null) {
+        TVal? values_tv = vm.heap.array_proto.get_prop(iter_sym);
+        if (try values_fn = values_tv) {
+            args_obj.put_prop(iter_sym, values_fn, hobject::PROP_FLAGS_WC);
+        }
+    }
+}
+
 /// Sub-dispatch for CALL, CALL_S, CALL_PROP, SETPROTO, SUPER_CALL, SUPER_CALL_S, NEWTARGET, NEW_OBJ, NEW_OBJ_S, TAILCALL opcodes.
 /// Initialize the pending derived-constructor this_binding after super()
 /// produced the constructed object. super() may execute inside an arrow
@@ -375,18 +403,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                                 args_obj.set_array_idx(ai, new_regs[ai]);
                             }
                             args_obj.prototype = vm.heap.object_proto;
-                            HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
-                            if (callee_key != null) {
-                                TVal callee_tv;
-                                callee_tv.set_object(hobj_fast);
-                                args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
-                            }
-                            HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                            if (length_key != null) {
-                                TVal length_tv;
-                                length_tv.set_fastint((long)nargs);
-                                args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
-                            }
+                            finish_arguments_object(vm, args_obj, hobj_fast, nargs);
                             HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                             if (args_name != null) {
                                 TVal args_tv;
@@ -1211,18 +1228,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                             args_obj_g.set_array_idx(ai, new_regs_g[ai]);
                         }
                         args_obj_g.prototype = vm.heap.object_proto;
-                        HString* callee_key_g = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
-                        if (callee_key_g != null) {
-                            TVal callee_tv_g;
-                            callee_tv_g.set_object(hobj);
-                            args_obj_g.put_prop(callee_key_g, callee_tv_g, hobject::PROP_FLAGS_WC);
-                        }
-                        HString* length_key_g = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                        if (length_key_g != null) {
-                            TVal length_tv_g;
-                            length_tv_g.set_fastint((long)nargs);
-                            args_obj_g.put_prop(length_key_g, length_tv_g, hobject::PROP_FLAGS_WC);
-                        }
+                        finish_arguments_object(vm, args_obj_g, hobj, nargs);
                         HString* args_name_g = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                         if (args_name_g != null) {
                             TVal args_tv_g;
@@ -1428,18 +1434,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         args_obj.set_array_idx(ai, new_regs[ai]);
                     }
                     args_obj.prototype = vm.heap.object_proto;
-                    HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
-                    if (callee_key != null) {
-                        TVal callee_tv;
-                        callee_tv.set_object(hobj);
-                        args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
-                    }
-                    HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    if (length_key != null) {
-                        TVal length_tv;
-                        length_tv.set_fastint((long)nargs);
-                        args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
-                    }
+                    finish_arguments_object(vm, args_obj, hobj, nargs);
                     HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                     if (args_name != null) {
                         TVal args_tv;
@@ -1913,16 +1908,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         args_obj_su.set_array_idx(ai, old_args[ai]);
                     }
                     args_obj_su.prototype = vm.heap.object_proto;
-                    HString* callee_key_su = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
-                    if (callee_key_su != null) {
-                        TVal callee_tv_su; callee_tv_su.set_object(super_hobj);
-                        args_obj_su.put_prop(callee_key_su, callee_tv_su, hobject::PROP_FLAGS_WC);
-                    }
-                    HString* length_key_su = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    if (length_key_su != null) {
-                        TVal length_tv_su; length_tv_su.set_fastint((long)nargs);
-                        args_obj_su.put_prop(length_key_su, length_tv_su, hobject::PROP_FLAGS_WC);
-                    }
+                    finish_arguments_object(vm, args_obj_su, super_hobj, nargs);
                     HString* args_name_su = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                     if (args_name_su != null) {
                         TVal args_tv_su; args_tv_su.set_object(args_obj_su);
@@ -2341,16 +2327,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         args_obj2.set_array_idx(ai, old_args2[ai]);
                     }
                     args_obj2.prototype = vm.heap.object_proto;
-                    HString* callee_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
-                    if (callee_key2 != null) {
-                        TVal callee_tv2; callee_tv2.set_object(hobj);
-                        args_obj2.put_prop(callee_key2, callee_tv2, hobject::PROP_FLAGS_WC);
-                    }
-                    HString* length_key2 = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    if (length_key2 != null) {
-                        TVal length_tv2; length_tv2.set_fastint((long)nargs);
-                        args_obj2.put_prop(length_key2, length_tv2, hobject::PROP_FLAGS_WC);
-                    }
+                    finish_arguments_object(vm, args_obj2, hobj, nargs);
                     HString* args_name2 = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                     if (args_name2 != null) {
                         TVal args_tv2; args_tv2.set_object(args_obj2);
