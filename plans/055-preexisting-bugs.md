@@ -96,6 +96,12 @@ others that assign a throwing-RHS to an undeclared var in a try. Reporter: N1.
 Overlaps PB8's expressions.c3 ownership — coordinate (do after PB8 lands).
 
 ## Session regressions (found by reliable s288 baseline) — IN PROGRESS
+Status: 55 → 30 remaining. Fixed: 15 async-thenable (`4e23453`), 10 eval/Array
+(`89698d3` — var-init-drop from PB8's env_declare_var skip + strict-eval-leak +
+block-fn-leak). Remaining: ~14 async arrow-capture (agent running, culprit P2
+34a5269), ~11 class/fn-name/private (agent running, culprit C7a-cap a7f171e),
+5 `super-prop`-in-direct-eval (DEFER — compile_eval lacks home-object context,
+a genuine feature gap PB8 flagged, not a quick fix).
 
 ### PB12 — P2 broke async-method return handling (PARTIAL FIX `4e23453`)
 P2 (`34a5269`, Promise microtask/vm.has_error change) regressed 29 `[async]`
@@ -112,6 +118,16 @@ not a regression" — its worktree had broken test262/quickjs setup giving bogus
 0/29 bisect results; I verified it IS a real regression. Its FIX was still
 correct and kept. Lesson: separate a wrong conclusion from a correct fix; always
 verify agent bisects against a KNOWN-GOOD checkout.)
+
+### PB13 — `Function('return this;')()` returns undefined, not the global object
+A non-strict Function-constructor body's `this` should be the global object; it
+returns undefined. Blocks `Object/entries|values/tamper-with-global-object.js`.
+Pre-existing (unmodified HEAD). Outside object.c3. Reporter: O4. (Related to the
+strict-only `this` handling — but Function() bodies are a distinct path.)
+
+### PB14 — `Object/fromEntries/evaluation-order.js` SIGABRTs the worker
+Reproduces on unmodified HEAD. A crash, not a wrong value. Needs investigation.
+Reporter: O4.
 
 ## Needs more investigation
 
