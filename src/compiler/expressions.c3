@@ -244,6 +244,15 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         return COMPILE_ERROR~;
     }
 
+    // ES5 §11.13.1 strict mode: assigning to 'eval' or 'arguments' is a
+    // SyntaxError. Only fires for a bare identifier target — member
+    // expressions never reach here with last_lhs_name_len set
+    // (save_lhs_ident_name is called only from identifier resolution).
+    if (!self.last_was_member && self.last_lhs_name_len > 0
+        && is_restricted_name(self.last_lhs_name_buf[:self.last_lhs_name_len])) {
+        return self.fail("Assignment to eval or arguments is not allowed in strict mode")~;
+    }
+
     // Save LHS info (will be overwritten by RHS evaluation)
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
@@ -939,6 +948,11 @@ fn ushort? CompilerContext.unary_expr(&self) {
             if (!self.last_was_member && !self.last_was_getvar && !self.last_was_local_var) {
                 return COMPILE_ERROR~;
             }
+            // ES5 §11.4.4 strict mode: ++eval / ++arguments is a SyntaxError.
+            if (!self.last_was_member && self.last_lhs_name_len > 0
+                && is_restricted_name(self.last_lhs_name_buf[:self.last_lhs_name_len])) {
+                return self.fail("Assignment to eval or arguments is not allowed in strict mode")~;
+            }
             // postfix_expr leaves self.last_was_getvar / self.last_was_member
             // (and the member obj/prop registers) set so we can inspect the
             // LHS shape here. Member takes priority over getvar because for
@@ -985,6 +999,11 @@ fn ushort? CompilerContext.unary_expr(&self) {
             }
             if (!self.last_was_member && !self.last_was_getvar && !self.last_was_local_var) {
                 return COMPILE_ERROR~;
+            }
+            // ES5 §11.4.5 strict mode: --eval / --arguments is a SyntaxError.
+            if (!self.last_was_member && self.last_lhs_name_len > 0
+                && is_restricted_name(self.last_lhs_name_buf[:self.last_lhs_name_len])) {
+                return self.fail("Assignment to eval or arguments is not allowed in strict mode")~;
             }
             // See INC case above for why member takes priority over getvar.
             bool dec_was_getvar = self.last_was_getvar;
@@ -1059,6 +1078,11 @@ fn ushort? CompilerContext.postfix_expr(&self) {
     if ((tt == TokenType.INC || tt == TokenType.DEC) && !nl_before_postfix_op) {
         if (!self.last_was_member && !lhs_was_getvar && !self.last_was_local_var) {
             return COMPILE_ERROR~;
+        }
+        // ES5 §11.3.1/§11.3.2 strict mode: eval++ / arguments-- is a SyntaxError.
+        if (!self.last_was_member && self.last_lhs_name_len > 0
+            && is_restricted_name(self.last_lhs_name_buf[:self.last_lhs_name_len])) {
+            return self.fail("Assignment to eval or arguments is not allowed in strict mode")~;
         }
     }
     if (tt == TokenType.INC && !nl_before_postfix_op) {

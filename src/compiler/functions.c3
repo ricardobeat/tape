@@ -1389,6 +1389,14 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
     bool  saved_slt   = self.lexer.seen_line_term;
 
     uint brace_depth = 0;
+    // For a global/module-level scan, the lexer starts at the Program's own
+    // top level (no enclosing brace to consume), so top-level declarations
+    // sit at brace_depth 0. For a function-local scan, the lexer starts
+    // *before* the function body's own opening '{' (hoist_decls runs prior
+    // to CompilerContext.block(), which consumes it) — that '{' is the
+    // first LBRACE this scan sees, so declarations at the top of the
+    // function body sit at brace_depth 1, not 0.
+    uint own_depth = is_global ? 0 : 1;
     // Template substitution depth: incremented on TEMPLATE_HEAD/MIDDLE,
     // decremented on TEMPLATE_TAIL.  A RBRACE when template_depth > 0 closes
     // a template substitution and must not be treated as a JS block boundary.
@@ -1452,11 +1460,11 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             continue;
         }
 
-        // Detect `async function` at brace_depth 0: the pre-scan sees
-        // IDENTIFIER("async") first, peeks at FUNCTION, and if so pushes
-        // "function" back so the next iteration handles it as a FUNCTION
-        // token with is_async already set.
-        if (brace_depth == 0 && tt == TokenType.IDENTIFIER &&
+        // Detect `async function` at the scan's own top level: the pre-scan
+        // sees IDENTIFIER("async") first, peeks at FUNCTION, and if so
+        // pushes "function" back so the next iteration handles it as a
+        // FUNCTION token with is_async already set.
+        if (brace_depth == own_depth && tt == TokenType.IDENTIFIER &&
             tok_opt.str_value.len == 5 &&
             tok_opt.str_value[0] == 'a' && tok_opt.str_value[1] == 's' &&
             tok_opt.str_value[2] == 'y' && tok_opt.str_value[3] == 'n' &&
@@ -1484,7 +1492,7 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             }
         }
 
-        if (brace_depth == 0 && tt == TokenType.FUNCTION) {
+        if (brace_depth == own_depth && tt == TokenType.FUNCTION) {
             // At global/module scope, function declarations are already hoisted
             // by hoist_global_fn_decls().  Skip them here to avoid double
             // compilation — just advance past the star, name, and body.
@@ -1525,7 +1533,18 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
             }
             Token? name_opt = self.lexer.next_token();
             if (catch _err = name_opt) break;
-            if (name_opt.type != TokenType.IDENTIFIER) continue;
+            if (name_opt.type != TokenType.IDENTIFIER) {
+                // Anonymous function expression (e.g. an IIFE) — not a
+                // declaration, so its `var`s belong to its own scope, not
+                // this one. Push back the token (the param-list '(') so
+                // skip_function_body sees the full `(...) { ... }` and
+                // scans past the entire body instead of letting the
+                // enclosing loop wander into it brace-by-brace and
+                // mis-hoist its locals into this scope.
+                self.lexer.pushback(name_opt);
+                self.skip_function_body();
+                continue;
+            }
 
             char[] fn_name = name_opt.str_value;
             if (fn_name.len == 0) continue;
@@ -1606,13 +1625,12 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
 
             // Lexer is now past the function body. Continue scanning.
         } else if (tt == TokenType.VAR) {
-            // var declarations hoisted to function scope (ES5 §10.5,
-            // VarDeclaredNames recurses into every nested block/loop/if,
-            // stopping only at function boundaries). At global/module scope
-            // this scan must hoist vars at any brace_depth: nested function
-            // bodies are fully consumed by skip_function_body/skip_expression
-            // before control returns here, so a brace_depth > 0 var always
-            // belongs to this same global scope, never to an inner function.
+            // var declarations hoist through nested blocks (if/for/try/plain
+            // `{}`) to the enclosing function or Program/module scope —
+            // only a nested FUNCTION body is a hoisting boundary, and those
+            // are fully skipped above (skip_function_body) before their
+            // contents are ever seen here, so no brace_depth guard is
+            // needed to avoid leaking an inner function's own vars.
             for (;;) {
                 Token? name_opt2 = self.lexer.next_token();
                 if (catch _err = name_opt2) break;
@@ -1637,6 +1655,16 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                 TokenType sep = sep_opt.type;
                 if (sep == TokenType.ASSIGN) {
                     self.skip_expression();
+                    // skip_expression stops (and pushes back) at the next
+                    // comma/semicolon without consuming it — re-check here
+                    // so a subsequent declarator in the same `var` statement
+                    // (`var x, y = 1, z;`) is not skipped.
+                    Token? sep_opt2 = self.lexer.next_token();
+                    if (catch _err2 = sep_opt2) break;
+                    if (sep_opt2.type != TokenType.COMMA) {
+                        self.lexer.pushback(sep_opt2);
+                        break;
+                    }
                 } else if (sep != TokenType.COMMA) {
                     break;
                 }

@@ -289,6 +289,23 @@ SKIP_FILES = {
     # (see the built-ins/BigInt SKIP_DIRS entry); this test doesn't tag
     # `features: [BigInt]` so the feature filter above doesn't catch it.
     "built-ins/TypedArrayConstructors/BigUint64Array/is-a-constructor.js",
+    # S287 — Function() constructor bodies and indirect-eval'd source have no
+    # "use strict" directive of their own and are non-strict per spec (they
+    # don't inherit the caller's strictness); ES5 §11.6.2.2/§12.10.1 only
+    # forbids `var eval`/`var arguments`/`eval = x`/`arguments++` etc. in
+    # *strict* code. Our engine forces every compilation unit strict, so
+    # these otherwise-legal non-strict constructs are rejected as SyntaxErrors.
+    "language/statements/variable/12.2.1-5-s.js",   # Function('var eval;')
+    "language/statements/variable/12.2.1-9-s.js",   # indirect eval: var eval;
+    "language/statements/variable/12.2.1-16-s.js",  # Function('var arguments;')
+    "language/statements/variable/12.2.1-20-s.js",  # indirect eval: var arguments;
+    "language/statements/variable/12.2.1-21-s.js",  # indirect eval: arguments = 42;
+    "language/statements/variable/12.2.1-6-s.js",   # Function('eval = 42;')
+    "language/statements/variable/12.2.1-17-s.js",  # Function('arguments = 42;')
+    "language/statements/variable/12.2.1-10-s.js",  # indirect eval: eval = 42;
+    "language/statements/function/13.0_4-17gs.js",  # Function('eval = 42;')
+    "language/statements/function/13.0-12-s.js",    # Function(" ", "eval = 42;")
+    "language/statements/function/13.0-17-s.js",    # eval("...new Function('eval = 42;')...")
 }
 
 PHASES = [
