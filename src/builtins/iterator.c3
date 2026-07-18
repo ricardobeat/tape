@@ -121,18 +121,8 @@ fn void builtin_array_proto_entries(BuiltinContext* ctx) {
 fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
 
-    // Get `this` — must be a string or String object
-    TVal this_val = ctx.this_val;
-    HString* str_data = null;
-    if (this_val.is_string()) {
-        str_data = (HString*)this_val.get_heapptr();
-    } else if (this_val.is_object()) {
-        HObject* obj = (HObject*)this_val.get_heapptr();
-        if ((*obj.extra_ptr()).prim.primitive_value.is_string()) {
-            str_data = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
-        }
-    }
-
+    // Get `this` — RequireObjectCoercible + ToString, per §22.1.3.30 step 1-2.
+    HString* str_data = string_proto_get_this(ctx);
     if (str_data == null) {
         ctx.result.set_undefined();
         return;
@@ -464,19 +454,23 @@ fn void builtin_regexp_string_iterator_next(BuiltinContext* ctx) {
     char* input = s_hstr.get_cstr();
     int input_len = (int)s_hstr.blen;
     bool global_flag = (flags & 1) != 0;
+    bool unicode_flag = (flags & 4) != 0;
 
-    // Get lastIndex from the regexp
+    // Get lastIndex from the regexp — a UTF-16 code-unit index; convert to a
+    // CESU-8 byte offset for re_exec (which takes byte offsets).
     HString* li_key = builtin_intern_string(heap, "lastIndex");
-    int search_pos = 0;
+    long search_charunit = 0;
     if (try liv = rx.get_prop_proto(li_key)) {
         if (liv.is_fastint()) {
-            search_pos = (int)liv.get_fastint();
+            search_charunit = liv.get_fastint();
         } else if (liv.is_number()) {
-            search_pos = (int)liv.get_number();
+            search_charunit = (long)liv.get_number();
         }
     }
-    if (search_pos < 0) search_pos = 0;
-    if (search_pos > input_len) {
+    if (search_charunit < 0) search_charunit = 0;
+    uint str_charlen = s_hstr.char_length();
+    int search_pos = (int)s_hstr.char_offset_to_byte_offset((uint)search_charunit);
+    if ((ulong)search_charunit > (ulong)str_charlen) {
         // lastIndex beyond end — no match per ES2020 §21.2.5.2.2 step 6
         // Also handles empty-match-at-end-of-string advance.
         (*iter.extra_ptr()).regexp_iter.flags |= 2;
@@ -544,16 +538,19 @@ fn void builtin_regexp_string_iterator_next(BuiltinContext* ctx) {
         (*iter.extra_ptr()).regexp_iter.flags |= 2;
     }
 
-    // Update lastIndex for global iterators only.
+    // Update lastIndex for global iterators only. lastIndex is a UTF-16
+    // code-unit index; convert the byte-offset match end back to units.
     if (global_flag) {
         int next_pos = out_end;
         if (out_end == search_pos) {
-            // Empty match: advance by one byte (per ES2020 §21.2.5.2.2
-            // AdvanceStringIndex with unicode=false).  The original matchAll
-            // loop did the same: search_pos = out_end + 1.
-            next_pos = search_pos + 1;
+            // Empty match: AdvanceStringIndex(S, lastIndex, unicode) — per
+            // ES2022 §22.2.7.2.2, advances by one code unit, or by a full
+            // surrogate pair when the `u`/`v` flag is set.
+            next_pos = out_end + (int)hstring::advance_string_index_byte_len(
+                input[:input_len], (uint)out_end, unicode_flag);
         }
-        TVal next_tv; next_tv.set_fastint((long)next_pos);
+        long next_charunit = (long)hstring::compute_charlen(input[:next_pos]);
+        TVal next_tv; next_tv.set_fastint(next_charunit);
         rx.put_prop(li_key, next_tv, hobject::PROP_FLAGS_WEC);
     }
 
@@ -600,9 +597,9 @@ fn void builtin_regexp_string_iterator_next(BuiltinContext* ctx) {
         match_arr_len++;
     }
 
-    // Set index property
+    // Set index property — convert byte offset to UTF-16 code-unit index.
     TVal idx_tv;
-    idx_tv.set_fastint((long)out_start);
+    idx_tv.set_fastint((long)hstring::compute_charlen(input[:out_start]));
     HString* idx_key = builtin_intern_string(heap, "index");
     match_arr.put_prop(idx_key, idx_tv, hobject::PROP_FLAGS_WEC);
 

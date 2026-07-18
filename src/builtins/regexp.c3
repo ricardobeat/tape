@@ -1402,7 +1402,9 @@ fn void builtin_regexp_proto_symbol_replace(BuiltinContext* ctx) {
                     fn_args[arg_count++] = cap_undef;
                 }
             }
-            TVal pos_tv; pos_tv.set_fastint((long)out_start);
+            // position argument is the UTF-16 code-unit index (pos_d), not
+            // the CESU-8 byte offset (out_start) used for slicing `input`.
+            TVal pos_tv; pos_tv.set_fastint((long)pos_d);
             fn_args[arg_count++] = pos_tv;
             TVal str_tv; str_tv.set_string(s_hstr);
             fn_args[arg_count++] = str_tv;

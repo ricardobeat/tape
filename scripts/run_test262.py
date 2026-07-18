@@ -230,6 +230,12 @@ SKIP_FILES = {
     "language/statements/for/S12.6.3_A2.js",
     "language/statements/for/S12.6.3_A10_T2.js",
     "language/statements/for/S12.6.3_A10.1_T2.js",
+    # B17 — relies on `toString = Object.prototype.toString` silently creating
+    # an implicit global in sloppy mode; our strict engine throws ReferenceError
+    # on the assignment, so the guarded `if (toString === ...)` block that
+    # exercises String.prototype.split is never entered / the bare reference
+    # throws uncaught. Unsatisfiable while strict-only.
+    "built-ins/String/prototype/split/checking-by-using-eval.js",
     # B17 — switch scope-lex-let tests the let-scope of switch's lexical
     # declaration (ES2018 §13.12.1 step 6 BlockDeclarationInstantiation).
     # Our switch doesn't push a fresh block scope yet.

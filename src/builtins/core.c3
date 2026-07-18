@@ -1644,6 +1644,13 @@ fn double builtin_to_integer_vm(BuiltinContext* ctx, TVal* val) {
             return 0.0 / 0.0;
         }
         if (!prim.is_object()) {
+            if (prim.is_string()) {
+                HString* ps = (HString*)prim.get_heapptr();
+                if (ps != null && ps.is_symbol()) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert a Symbol value to a number");
+                    return 0.0 / 0.0;
+                }
+            }
             return builtin_to_integer(&prim);
         }
         // Both valueOf and toString returned non-primitives — ES2022 §7.1.5 step 4b

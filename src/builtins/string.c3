@@ -1199,7 +1199,12 @@ fn void builtin_string_proto_split(BuiltinContext* ctx) {
                             if (ctx.argc <= 1) fn_args[1].set_undefined();
                             TVal splitter_this = sep_tv;
                             TVal res = ctx.heap.call_fn(ctx.vm, splitter, &fn_args[0], 2, splitter_this);
-                            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                            if (ctx.heap.has_error) {
+                                ctx.should_throw = true;
+                                ctx.throw_value = ctx.heap.error_value;
+                                ctx.heap.has_error = false;
+                                return;
+                            }
                             *ctx.result = res;
                             return;
                         } else {
@@ -1677,7 +1682,12 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
                             }
                             TVal this_val = ctx.regs[ctx.base_reg];
                             TVal res = ctx.heap.call_fn(ctx.vm, replacer, &fn_args[0], 2, this_val);
-                            if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                            if (ctx.heap.has_error) {
+                                ctx.should_throw = true;
+                                ctx.throw_value = ctx.heap.error_value;
+                                ctx.heap.has_error = false;
+                                return;
+                            }
                             *ctx.result = res;
                             return;
                         } else {
@@ -1756,7 +1766,12 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
                 fn_args[arg_count++].set_string(s_hstr);
                 TVal this_val; this_val.set_undefined();
                 TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
-                if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                if (ctx.heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = ctx.heap.error_value;
+                    ctx.heap.has_error = false;
+                    return;
+                }
                 replace_str = builtin_to_string_vm(ctx, &res);
                 if (ctx.should_throw) return;
                 if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
@@ -1836,7 +1851,12 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
                     fn_args[arg_count++].set_string(s_hstr);
                     TVal this_val; this_val.set_undefined();
                     TVal res = ctx.heap.call_fn(ctx.vm, replace_val, &fn_args[0], (uint)arg_count, this_val);
-                    if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+                    if (ctx.heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = ctx.heap.error_value;
+                        ctx.heap.has_error = false;
+                        return;
+                    }
                     replace_str = builtin_to_string_vm(ctx, &res);
                     if (ctx.should_throw) return;
                     if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
@@ -1933,7 +1953,12 @@ fn void builtin_string_proto_replace(BuiltinContext* ctx) {
         fn_args[2].set_string(s_hstr);
         TVal this_val; this_val.set_undefined();
         TVal res = ctx.heap.call_fn(ctx.vm, replace_val_str, &fn_args[0], 3, this_val);
-        if (ctx.heap.has_error) { ctx.should_throw = true; return; }
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            return;
+        }
         replace_str = builtin_to_string_vm(ctx, &res);
         if (ctx.should_throw) return;
         if (replace_str == null) replace_str = builtin_intern_string(ctx.heap, "undefined");
@@ -2701,7 +2726,12 @@ fn bool invoke_regexp_match(BuiltinContext* ctx, HObject* rx, HString* s_hstr) {
             args[0].set_string(s_hstr);
             TVal this_val; this_val.set_object(rx);
             TVal res = ctx.heap.call_fn(ctx.vm, matcher, &args[0], 1, this_val);
-            if (ctx.heap.has_error) { ctx.should_throw = true; return true; }
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return true;
+            }
             *ctx.result = res;
             return true;
         }
@@ -3621,6 +3651,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
             HObject* fn_obj = fn_raw;
             (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_STRING_PROTO_SYMBOL_ITER;
             fn_obj.flags.callable = true;
+            fn_obj.flags.constructable = false;
             fn_obj.prototype = heap.function_proto;
             HString* name_key = builtin_intern_string(heap, "name");
             HString* name_val = builtin_intern_string(heap, "[Symbol.iterator]");

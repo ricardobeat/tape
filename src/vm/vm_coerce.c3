@@ -705,7 +705,9 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, int hint = 0) {
                     toprim_fn.set_undefined();
                 }
             }
-            if (toprim_fn.is_lightfunc() || (toprim_fn.is_object() && toprim_fn.get_heapptr() != null && ((HObject*)toprim_fn.get_heapptr()).is_callable())) {
+            bool toprim_callable = toprim_fn.is_lightfunc() ||
+                (toprim_fn.is_object() && toprim_fn.get_heapptr() != null && ((HObject*)toprim_fn.get_heapptr()).is_callable());
+            if (toprim_callable) {
                 // Call Symbol.toPrimitive(obj, hint) — use "default" for general ToPrimitive,
                 // but "string" for + operator (ES5 §11.6.1).
                 HString* hint_str = (hint == 1)
@@ -723,6 +725,11 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, int hint = 0) {
                 // ES6 §7.1.1 step 6.d: result is Object → TypeError
                 // Signal caller via throw_pending (checked after return)
                 vm_set_toprimitive_error(vm);
+                return *val;
+            } else if (!toprim_fn.is_undefined() && !toprim_fn.is_null()) {
+                // ES6 §7.1.1 step 5a / §7.3.13 Call: exoticToPrim is present
+                // but not callable — Call(exoticToPrim, ...) throws TypeError.
+                vm_set_type_error(vm, "Symbol.toPrimitive is not a function");
                 return *val;
             }
         }
