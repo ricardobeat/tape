@@ -1606,10 +1606,13 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
 
             // Lexer is now past the function body. Continue scanning.
         } else if (tt == TokenType.VAR) {
-            // var declarations hoisted to function scope.  At global/module
-            // scope, only top-level (brace_depth == 0) vars need hoisting;
-            // vars inside function bodies are hoisted by their own scope.
-            if (is_global && brace_depth > 0) continue;
+            // var declarations hoisted to function scope (ES5 §10.5,
+            // VarDeclaredNames recurses into every nested block/loop/if,
+            // stopping only at function boundaries). At global/module scope
+            // this scan must hoist vars at any brace_depth: nested function
+            // bodies are fully consumed by skip_function_body/skip_expression
+            // before control returns here, so a brace_depth > 0 var always
+            // belongs to this same global scope, never to an inner function.
             for (;;) {
                 Token? name_opt2 = self.lexer.next_token();
                 if (catch _err = name_opt2) break;

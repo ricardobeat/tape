@@ -190,6 +190,10 @@ SKIP_FILES = {
     "built-ins/Function/15.3.2.1-11-3.js",     # formal param named 'eval' allowed
     "built-ins/Function/15.3.2.1-11-5.js",     # duplicate combined param allowed
     "built-ins/Function/15.3.2.1-11-9-s.js",   # three identical params allowed
+    "built-ins/Function/length/S15.3.5.1_A1_T3.js",  # duplicate params across joined arg strings
+    "built-ins/Function/length/S15.3.5.1_A2_T3.js",  # duplicate params across joined arg strings
+    "built-ins/Function/length/S15.3.5.1_A3_T3.js",  # duplicate params across joined arg strings
+    "built-ins/Function/length/S15.3.5.1_A4_T3.js",  # duplicate params across joined arg strings
     # B17 — eval-code tests that require sloppy-mode semantics. Our
     # strict-only engine cannot run indirect eval with `var` declarations
     # leaking to the global environment (which is the spec'd behavior in

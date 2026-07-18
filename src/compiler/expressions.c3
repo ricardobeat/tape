@@ -3135,6 +3135,15 @@ fn ushort? CompilerContext.primary_expr(&self) {
             self.expect(TokenType.RBRACE)!;
             Token next_tok = self.lexer.scan_template_after_expr()!;
 
+            // §13.2.8.1 SubstitutionEvaluation: each substitution value is
+            // converted via ToString directly — unlike the `+` operator,
+            // which goes through ToPrimitive(default) first. The two only
+            // differ observably when Symbol.prototype[@@toPrimitive] has
+            // been redefined/removed. Coerce here so the ADD below (both
+            // operands already strings) is a plain concat, not a second
+            // ToPrimitive pass.
+            self.emit_abc(Opcode.TOSTR, (uint)expr_reg, 0, 0);
+
             // Concatenate: result = result + expr  (ADD handles string coercion)
             {
                 ushort concat_reg = self.alloc_reg();
@@ -3165,6 +3174,9 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 ushort next_expr_reg = self.expression()!;
                 self.expect(TokenType.RBRACE)!;
                 next_tok = self.lexer.scan_template_after_expr()!;
+
+                // ToString the substitution value (see head-substitution comment above).
+                self.emit_abc(Opcode.TOSTR, (uint)next_expr_reg, 0, 0);
 
                 // Concatenate expression
                 ushort concat_reg3 = self.alloc_reg();

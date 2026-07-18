@@ -87,11 +87,15 @@ fn int vm_relational_compare(Vm* vm, TVal* x, TVal* y, bool* is_undef) {
         if (vm.throw_pending) return 0;
     }
     // Both primitives now. If both strings → lex compare, else numeric.
+    // Symbols are internally string-tagged but must go through ToNumber
+    // (which throws per §7.1.3) instead of the lexical-compare fast path.
     if (px.is_string() && py.is_string()) {
         HString* sx = (HString*)px.get_heapptr();
         HString* sy = (HString*)py.get_heapptr();
-        int c = hstring::hstring_compare(sx, sy);
-        return c < 0 ? -1 : (c > 0 ? 1 : 0);
+        if (!(sx != null && sx.is_symbol()) && !(sy != null && sy.is_symbol())) {
+            int c = hstring::hstring_compare(sx, sy);
+            return c < 0 ? -1 : (c > 0 ? 1 : 0);
+        }
     }
     double dx = vm_to_number(vm, &px);
     if (vm.throw_pending) return 0;
@@ -430,20 +434,21 @@ fn HString*? vm_to_string(Vm* vm, TVal* val) {
         case NULL_VAL:
             return (HString*)h.strs[heap::BuiltinStr.NULL_STR];
         case OBJECT: {
-            // Call toString() on the object per ES5 §8.12 ToString
+            // ES2015 §7.1.12 ToString(argument): let primValue be
+            // ? ToPrimitive(argument, string); return ? ToString(primValue).
+            // Delegates to to_primitive_value's generic-object path (hint
+            // "string") rather than a standalone toString()-only lookup, so
+            // getter-defined toString/valueOf (Object.defineProperty
+            // accessors) and the toString-then-valueOf fallback order are
+            // both honored — not just a plain data-property toString.
             if (vm != null && vm.heap.call_fn != null && val.get_heapptr() != null) {
-                HObject* obj = (HObject*)val.get_heapptr();
-                HString* to_str_key = (HString*)h.strs[heap::BuiltinStr.TO_STRING];
-                if (to_str_key != null) {
-                    if (try toString_fn = obj.get_prop_proto(to_str_key)) {
-                        if (toString_fn.is_lightfunc() || (toString_fn.is_object() && toString_fn.get_heapptr() != null && ((HObject*)toString_fn.get_heapptr()).is_callable())) {
-                            TVal result = h.call_fn(vm, toString_fn, null, 0, *val);
-                            if (vm_check_call_fn_error(vm)) return null;
-                            if (try result_str = vm_to_string(vm, &result)) {
-                                return result_str;
-                            }
-                        }
+                TVal prim = to_primitive_value(vm, val, 1);
+                if (vm.throw_pending) return null;
+                if (prim.get_tag() != OBJECT) {
+                    if (try result_str = vm_to_string(vm, &prim)) {
+                        return result_str;
                     }
+                    return null;
                 }
             }
             return (HString*)h.strs[heap::BuiltinStr.OBJECT_OBJECT];
@@ -673,9 +678,16 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, int hint = 0) {
             result.set_string((*obj.extra_ptr()).prim.primitive_value.get_heapptr());
             return result;
         }
-        // Fast path: Symbol wrapper → unwrap directly
+        // Fast path: Symbol wrapper → unwrap directly. Symbol.prototype[@@toPrimitive]
+        // ignores its hint and always returns [[SymbolData]] unwrapped, so skipping
+        // straight to the primitive is equivalent to calling it — but ONLY while
+        // that well-known method is still the original built-in. If it has been
+        // redefined/deleted, ToPrimitive must fall through to the exotic-method
+        // check below (which sees it's gone) and then to OrdinaryToPrimitive,
+        // which for hint "string" tries toString() (≠ the raw symbol) first.
         if (cls == hobject::ObjClass.SYMBOL &&
-            (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+            (*obj.extra_ptr()).prim.primitive_value.is_string()
+            && vm != null && builtins::symbol_proto_toprimitive_is_original(vm.heap)) {
             HString* s = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
             if (s != null && s.is_symbol()) {
                 TVal result;

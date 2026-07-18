@@ -2515,6 +2515,25 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 if (!vm_throw_error(vm, vm.heap.type_err_proto, msg_slice, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                     return VM_ERROR~;
                 }
+            } else {
+                // Strict mode: assigning a property to a Boolean/Number/String/Symbol/
+                // BigInt primitive throws TypeError — the ephemeral wrapper ToObject
+                // would create is discarded immediately, so the property never sticks.
+                HString* type_hstr = typeof_string(vm, ra);
+                HString* name_hstr = rb.is_string() ? (HString*)rb.get_heapptr() : null;
+                char[types::ERROR_MSG_BUF] msg_buf;
+                int msg_len;
+                if (name_hstr != null) {
+                    msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot create property '%s' on %s",
+                                              name_hstr.get_cstr(), type_hstr.get_cstr());
+                } else {
+                    msg_len = libc::snprintf(&msg_buf, types::ERROR_MSG_BUF, "Cannot create property on %s",
+                                              type_hstr.get_cstr());
+                }
+                char[] msg_slice = (msg_len > 0 && msg_len < types::ERROR_MSG_BUF) ? msg_buf[:msg_len] : msg_buf[:0];
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, msg_slice, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
             }
             return (TVal){};
 

@@ -322,6 +322,14 @@ enum Opcode : char {
     /// duplicating the later property read done by GETPROP/PUTPROP (which
     /// idempotently no-ops on an already-string register).
     TOPROPKEY,
+    /// `A = ToString(reg[A])`  — in-place coercion to string via §7.1.17,
+    /// used for template literal substitutions (§13.2.8.1
+    /// SubstitutionEvaluation calls ToString directly — unlike the `+`
+    /// operator, which goes through ToPrimitive(default) first). This
+    /// distinction is only observable when Symbol.prototype[@@toPrimitive]
+    /// has been redefined/removed, since it otherwise always returns the
+    /// unwrapped symbol regardless of hint.
+    TOSTR,
 
     // ---- Miscellaneous ---------------------------------------------------
 

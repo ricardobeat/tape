@@ -187,6 +187,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.FINALLY.ordinal]     = "FINALLY",
     [Opcode.ENDFINALLY.ordinal]  = "ENDFINALLY",
     [Opcode.TOPROPKEY.ordinal]   = "TOPROPKEY",
+    [Opcode.TOSTR.ordinal]       = "TOSTR",
     [Opcode.NOP.ordinal]         = "NOP",
     [Opcode.DEBUGGER.ordinal]    = "DEBUGGER",
     [Opcode.BREAK.ordinal]       = "BREAK",

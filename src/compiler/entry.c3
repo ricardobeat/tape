@@ -74,7 +74,19 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
 /// Compile source as eval code (Program, returns last expression value).
 /// Eval code differs from a regular program in that the value of the last
 /// expression statement is returned (not undefined).
-fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
+///
+/// `allow_super`: true for a direct eval whose calling context may have a
+/// super binding (§12.3.5 MakeSuperPropertyReference / §13.3.7.1
+/// MakeSuperPropertyReference read `env.HasSuperBinding()` off the *running*
+/// execution context, which for direct eval is the caller's). The eval code
+/// is compiled as an independent unit and has no static knowledge of the
+/// caller's class/method context, so this just permits the `super.x`/
+/// `super[x]` syntax to compile; the `__super__` hidden binding lookup it
+/// emits (GETVAR) still walks the real environment chain at runtime — for
+/// direct eval that chain IS the caller's, so a genuinely absent binding
+/// still throws ReferenceError there, same as the spec's HasSuperBinding
+/// check would.
+fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool allow_super = false) {
     g_last_err_msg[0] = 0;
     g_last_err_line = 0;
     g_last_err_col  = 0;
@@ -82,6 +94,7 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap) {
     ctx.init(lex, heap);
     ctx.is_global = true;
     ctx.eval_mode = true;
+    ctx.has_super_binding = allow_super;
     ctx.eval_acc_reg = ctx.alloc_reg();
 
     // Initialize eval result accumulator to undefined (for empty eval)

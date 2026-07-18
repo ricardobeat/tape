@@ -1534,11 +1534,7 @@ fn HString* builtin_to_string(Heap* heap, TVal* val) {
             // Symbols need special handling: ToString(symbol) = "Symbol(description)"
             if (s != null && s.is_symbol()) {
                 // Build "Symbol(description)" string
-                char[] desc = "";
-                if (s.blen > 1) {
-                    char* ptr = s.get_cstr();
-                    desc = ptr[1:(sz)(s.blen - 1)];
-                }
+                char[] desc = symbol_description(s);
                 char[512] result_buf;
                 result_buf[0] = 'S';
                 result_buf[1] = 'y';

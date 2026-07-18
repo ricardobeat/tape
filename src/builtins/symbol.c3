@@ -17,8 +17,16 @@ uint g_symbol_counter = 0;
 
 /// Create a new Symbol HString with 0xFF prefix byte.
 /// Symbols are NOT inserted into the string table (they are unique).
-fn HString* create_symbol_string(Heap* heap, char[] desc) {
-    // Build internal representation: 0xFF + description
+///
+/// `has_desc` distinguishes `Symbol()` (no description, ES2019 §19.4.3.5
+/// returns undefined) from `Symbol("")` (an explicit empty-string
+/// description) — both would otherwise encode identically as a bare 0xFF
+/// byte. When true, a 0x01 marker byte follows the 0xFF prefix, ahead of
+/// the (possibly zero-length) description bytes; symbol_description/
+/// symbol_has_description read it back. 0x01 can never collide with the
+/// 0xFF second byte that marks hidden symbols.
+fn HString* create_symbol_string(Heap* heap, char[] desc, bool has_desc = true) {
+    // Build internal representation: 0xFF [0x01 marker if has_desc] + description
     // We add a counter suffix for uniqueness when description is empty
     uint counter = g_symbol_counter;
     g_symbol_counter++;
@@ -26,6 +34,10 @@ fn HString* create_symbol_string(Heap* heap, char[] desc) {
     char[256] buf;
     buf[0] = (char)0xFF;
     int pos = 1;
+    if (has_desc) {
+        buf[pos] = (char)0x01;
+        pos++;
+    }
 
     for (int i = 0; i < desc.len && pos < 255; i++) {
         buf[pos] = desc[i];
@@ -77,10 +89,24 @@ fn bool is_symbol_val(TVal val) {
     return s != null && s.is_symbol();
 }
 
-/// Get the description bytes of a Symbol (everything after the 0xFF prefix)
+/// True if the Symbol was created with an explicit description (even an
+/// empty string), as opposed to `Symbol()` / `Symbol(undefined)` which has
+/// no description at all. See create_symbol_string for the encoding.
+fn bool symbol_has_description(HString* sym) {
+    if (sym.blen <= 1) return false;
+    char* ptr = sym.get_cstr();
+    return (uint)(char)ptr[1] == 0x01;
+}
+
+/// Get the description bytes of a Symbol (everything after the 0xFF prefix
+/// and, if present, the has-description marker byte).
 fn char[] symbol_description(HString* sym) {
     if (sym.blen <= 1) return "";
     char* ptr = sym.get_cstr();
+    if (symbol_has_description(sym)) {
+        if (sym.blen <= 2) return "";
+        return ptr[2:(sz)(sym.blen - 2)];
+    }
     return ptr[1:(sz)(sym.blen - 1)];
 }
 
@@ -417,17 +443,21 @@ fn void builtin_symbol(BuiltinContext* ctx) {
         return;
     }
 
-    // Get description from first argument (ToString if present)
+    // Get description from first argument (ToString if present). Per ES2019
+    // §19.4.1.1, `description` is undefined — and the Symbol has NO
+    // description — both when omitted and when explicitly passed `undefined`.
     char[] desc = "";
-    if (ctx.argc >= 1) {
+    bool has_desc = false;
+    if (ctx.argc >= 1 && !ctx.regs[ctx.base_reg].is_undefined()) {
         TVal arg = ctx.regs[ctx.base_reg];
         HString* desc_str = builtin_to_string(ctx.heap, &arg);
         if (desc_str != null) {
             desc = desc_str.get_data();
         }
+        has_desc = true;
     }
 
-    HString* sym = create_symbol_string(ctx.heap, desc);
+    HString* sym = create_symbol_string(ctx.heap, desc, has_desc);
     if (sym == null) {
         ctx.result.set_undefined();
         return;
@@ -525,11 +555,11 @@ fn void builtin_symbol_proto_description_get(BuiltinContext* ctx) {
         return;
     }
 
-    char[] desc = symbol_description(sym);
-    if (desc.len == 0) {
+    if (!symbol_has_description(sym)) {
         ctx.result.set_undefined();
         return;
     }
+    char[] desc = symbol_description(sym);
     HString* result = ctx.heap.str_intern(desc);
     if (result == null) {
         ctx.result.set_undefined();
@@ -621,6 +651,22 @@ fn void builtin_symbol_proto_valueOf(BuiltinContext* ctx) {
     }
 
     builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Symbol.prototype.valueOf called on non-Symbol");
+}
+
+/// True if Symbol.prototype[Symbol.toPrimitive] is still the original
+/// built-in method (not redefined/removed). Lets to_primitive_value's
+/// Symbol-wrapper fast path (which unwraps directly, matching what this
+/// method always does regardless of hint) confirm it's actually safe to
+/// skip the call rather than assuming so unconditionally.
+fn bool symbol_proto_toprimitive_is_original(Heap* heap) {
+    if (heap.symbol_proto == null || heap.toprimitive_symbol == null) return false;
+    TVal? val = heap.symbol_proto.get_prop_proto(heap.toprimitive_symbol);
+    if (catch val) return false;
+    TVal v = val;
+    if (!v.is_object() || v.get_heapptr() == null) return false;
+    HObject* fn_obj = (HObject*)v.get_heapptr();
+    if (!fn_obj.is_callable()) return false;
+    return (*fn_obj.extra_ptr()).func.builtin_fn_index == (int)BUILTIN_SYMBOL_PROTO_TOPRIMITIVE;
 }
 
 // ============================================================================

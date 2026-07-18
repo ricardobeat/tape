@@ -2401,6 +2401,30 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
         }
 
+        case Opcode.TOSTR: {
+            // In-place ToString coercion (see bytecode.c3 doc comment) — used
+            // by template literal substitutions, which call ToString directly
+            // rather than going through ToPrimitive(default) like `+`.
+            if (!ra.is_string() || (ra.get_heapptr() != null && ((HString*)ra.get_heapptr()).is_symbol())) {
+                HString*? str = vm_to_string(vm, ra);
+                // vm_to_string may call user code (toString/@@toPrimitive) that
+                // reallocates the valstack — refresh before touching ra again.
+                ds.regs_base = ds.act.bottom;
+                ra = &ds.regs_base[insn.a];
+                if (vm.throw_pending) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    continue;
+                }
+                if (try s = str) {
+                    TVal str_tv;
+                    str_tv.set_string(s);
+                    vm.heap.tval_copy_ref(ra, &str_tv);
+                    track_heap_store(ds.act, ra, (uint)insn.a);
+                }
+            }
+            continue;
+        }
+
         // === OBJECT / ARRAY CREATION ===
         case Opcode.NEWOBJ:
         case Opcode.NEWARR:

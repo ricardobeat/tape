@@ -14,6 +14,45 @@ import std::math;
 // ============================================================================
 // vm_objects — object/array creation, spreads, iterators
 // ============================================================================
+
+/// Result of copy_data_property: whether the caller's enumeration loop
+/// should keep going, and (independently) whether a hard VM_ERROR occurred.
+struct CopyPropResult {
+    bool cont;       // false: getter threw (already cleared) — stop enumerating, return success
+    bool vm_error;   // true: put_prop failed — caller must propagate VM_ERROR~
+}
+
+/// Copy one enumerable own property (by prop-table index `i`, key `key`)
+/// from `source` to `target`, invoking the getter for accessor properties
+/// ([[Get]] semantics). Mirrors the original single-pass OBJSPRD loop's
+/// getter-throw handling: on throw, has_error is cleared and enumeration
+/// stops (matching a pre-existing, out-of-scope gap where the throw isn't
+/// re-propagated — this refactor preserves that behavior rather than fixing
+/// or worsening it). Shared by OBJSPRD's three key-ordering passes.
+fn CopyPropResult copy_data_property(Vm* vm, HObject* source, HObject* target, uint i, void* key) {
+    hobject::PropFlags flags = source.get_prop_flags(i);
+    TVal val;
+    if (flags.is_accessor) {
+        TVal gs_slot = source.prop_values()[i];
+        TVal getter = hobject::hobject_access_getter(gs_slot);
+        if (getter.is_undefined() || getter.is_null()) return { true, false };
+        if (vm.heap.call_fn == null) return { true, false };
+        TVal this_tv;
+        this_tv.set_object(source);
+        val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
+        if (vm.heap.has_error) {
+            vm.heap.has_error = false;
+            return { false, false };
+        }
+    } else {
+        val = source.prop_values()[i];
+    }
+    if (!target.put_prop(key, val, hobject::PROP_FLAGS_WEC)) {
+        return { false, true };
+    }
+    return { true, false };
+}
+
 /// Sub-dispatch for NEWOBJ, NEWARR, NEWREGEXP, SETALEN, ARRSPRD, OBJSPRD, SPREAD_ARG opcodes.
 fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
@@ -449,36 +488,79 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                 }
             }
 
-            // Copy own named properties (enumerable only, insertion order)
+            // Copy own named properties (enumerable only), in spec order
+            // (ES2015 §9.1.11.1 OrdinaryOwnPropertyKeys / §7.3.23
+            // CopyDataProperties): named-table array-index keys ascending,
+            // then other String keys in insertion order, then Symbol keys
+            // in insertion order. A single raw insertion-order pass would
+            // put a `defineProperty`-added index key wherever it happened
+            // to be declared, rather than sorted before the string keys.
+
+            // Pass 1: named-table arridx keys, ascending numeric order (not
+            // table-storage order) — sort a small (index-value, table-index)
+            // list first.
+            {
+                uint arridx_count = 0;
+                for (uint i = 0; i < source.prop_count; i++) {
+                    void* key = source.prop_key_at(i);
+                    if (key != null && ((HString*)key).is_arridx() && source.get_prop_flags(i).enumerable) {
+                        arridx_count++;
+                    }
+                }
+                if (arridx_count > 0) {
+                    usz buf_size = (usz)arridx_count * 2 * 4;
+                    uint* sort_buf = (uint*)vm.heap.alloc_func(vm.heap.heap_udata, buf_size);
+                    if (sort_buf != null) {
+                        uint p = 0;
+                        for (uint i = 0; i < source.prop_count; i++) {
+                            void* key = source.prop_key_at(i);
+                            if (key != null && ((HString*)key).is_arridx() && source.get_prop_flags(i).enumerable) {
+                                sort_buf[p * 2]     = ((HString*)key).array_index();
+                                sort_buf[p * 2 + 1] = i;
+                                p++;
+                            }
+                        }
+                        // Insertion sort by index value (arridx_count is typically small).
+                        for (uint a = 1; a < arridx_count; a++) {
+                            uint kv = sort_buf[a * 2];
+                            uint iv = sort_buf[a * 2 + 1];
+                            uint b = a;
+                            while (b > 0 && sort_buf[(b - 1) * 2] > kv) {
+                                sort_buf[b * 2]     = sort_buf[(b - 1) * 2];
+                                sort_buf[b * 2 + 1] = sort_buf[(b - 1) * 2 + 1];
+                                b--;
+                            }
+                            sort_buf[b * 2]     = kv;
+                            sort_buf[b * 2 + 1] = iv;
+                        }
+                        for (uint a = 0; a < arridx_count; a++) {
+                            uint i = sort_buf[a * 2 + 1];
+                            CopyPropResult r = copy_data_property(vm, source, target, i, source.prop_key_at(i));
+                            if (r.vm_error) { vm.heap.free_func(vm.heap.heap_udata, sort_buf); return VM_ERROR~; }
+                            if (!r.cont) { vm.heap.free_func(vm.heap.heap_udata, sort_buf); return (TVal){}; }
+                        }
+                        vm.heap.free_func(vm.heap.heap_udata, sort_buf);
+                    }
+                }
+            }
+            // Pass 2: other String keys, insertion (table) order.
             for (uint i = 0; i < source.prop_count; i++) {
                 void* key = source.prop_key_at(i);
-                if (key == null) continue;
-                hobject::PropFlags flags = source.get_prop_flags(i);
-                if (!flags.enumerable) continue;
-
-                TVal val;
-                if (flags.is_accessor) {
-                    // Accessor property: invoke the getter ([[Get]] semantics)
-                    TVal gs_slot = source.prop_values()[i];
-                    TVal getter = hobject::hobject_access_getter(gs_slot);
-                    if (getter.is_undefined() || getter.is_null()) continue;
-                    // If call_fn is unavailable, skip (shouldn't happen in practice)
-                    if (vm.heap.call_fn == null) continue;
-                    TVal this_tv;
-                    this_tv.set_object(source);
-                    val = vm.heap.call_fn(vm, getter, null, 0, this_tv);
-                    if (vm.heap.has_error) {
-                        vm.heap.has_error = false;
-                        return (TVal){};
-                    }
-                } else {
-                    // Data property: copy directly
-                    val = source.prop_values()[i];
-                }
-
-                if (!target.put_prop(key, val, hobject::PROP_FLAGS_WEC)) {
-                    return VM_ERROR~;
-                }
+                if (key == null || !source.get_prop_flags(i).enumerable) continue;
+                HString* khs = (HString*)key;
+                if (khs.is_arridx() || khs.is_symbol()) continue;
+                CopyPropResult r = copy_data_property(vm, source, target, i, key);
+                if (r.vm_error) return VM_ERROR~;
+                if (!r.cont) return (TVal){};
+            }
+            // Pass 3: Symbol keys, insertion (table) order.
+            for (uint i = 0; i < source.prop_count; i++) {
+                void* key = source.prop_key_at(i);
+                if (key == null || !source.get_prop_flags(i).enumerable) continue;
+                if (!((HString*)key).is_symbol()) continue;
+                CopyPropResult r = copy_data_property(vm, source, target, i, key);
+                if (r.vm_error) return VM_ERROR~;
+                if (!r.cont) return (TVal){};
             }
             return (TVal){};
         }

@@ -237,12 +237,79 @@ fn void builtin_parse_float(BuiltinContext* ctx) {
         ctx.result.set_number(double::nan);
         return;
     }
-    char* end;
-    double d = libc::strtod((ZString)h.get_cstr(), &end);
-    if (end == h.get_cstr()) {
+
+    char* cstr = h.get_cstr();
+    usz blen = h.blen;
+    usz i = 0;
+
+    // ── Strip leading StrWhiteSpace (WhiteSpace + LineTerminator) ──────────
+    while (i < blen) {
+        char c = cstr[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r'
+                || c == 0x0B || c == 0x0C) { i++; continue; }
+        usz adv = utf8_whitespace_len(cstr, blen, i);
+        if (adv > 0) { i += adv; continue; }
+        break;
+    }
+
+    // ── Match the longest StrDecimalLiteral prefix (ES2015 §7.1.3.1 Table 10) ──
+    // Grammar: [+-]? (Infinity | DecimalDigits? "." DecimalDigits? Exponent?
+    //                  | DecimalDigits Exponent?)
+    // Crucially, this does NOT include the "0x"/"0X" hex prefix that
+    // StringNumericLiteral (used by ToNumber) accepts — parseFloat rejects hex.
+    usz start = i;
+    if (i < blen && (cstr[i] == '+' || cstr[i] == '-')) i++;
+
+    if (i + 8 <= blen && libc::strncmp(&cstr[i], "Infinity", 8) == 0) {
+        double inf = (cstr[start] == '-') ? -double::inf : double::inf;
+        ctx.result.set_number(inf);
+        return;
+    }
+
+    usz digits_start = i;
+    while (i < blen && cstr[i] >= '0' && cstr[i] <= '9') i++;
+    bool saw_int_digit = (i > digits_start);
+
+    bool saw_frac_digit = false;
+    if (i < blen && cstr[i] == '.') {
+        i++;
+        usz frac_start = i;
+        while (i < blen && cstr[i] >= '0' && cstr[i] <= '9') i++;
+        saw_frac_digit = (i > frac_start);
+    }
+
+    if (!saw_int_digit && !saw_frac_digit) {
+        // No digits at all (bare sign, bare '.', or neither) — not a number.
         ctx.result.set_number(double::nan);
         return;
     }
+
+    // Optional exponent — only valid once a mantissa digit was seen.
+    if (i < blen && (cstr[i] == 'e' || cstr[i] == 'E')) {
+        usz exp_save = i;
+        usz j = i + 1;
+        if (j < blen && (cstr[j] == '+' || cstr[j] == '-')) j++;
+        usz exp_digits_start = j;
+        while (j < blen && cstr[j] >= '0' && cstr[j] <= '9') j++;
+        if (j > exp_digits_start) {
+            i = j;
+        } else {
+            i = exp_save; // malformed exponent — not part of the literal
+        }
+    }
+
+    // Copy just the matched StrDecimalLiteral prefix into a bounded, NUL-terminated
+    // buffer before handing it to strtod — passing `&cstr[start]` directly would let
+    // strtod's own scanner run past our match (e.g. re-parsing "0x1" as a hex float
+    // after we correctly stopped at "0"), producing a value parseFloat must reject.
+    usz match_len = i - start;
+    char[512] lit_buf;
+    usz copy_len = (match_len < 511) ? match_len : 511;
+    for (usz k = 0; k < copy_len; k++) lit_buf[k] = cstr[start + k];
+    lit_buf[copy_len] = 0;
+
+    char* end;
+    double d = libc::strtod((ZString)&lit_buf[0], &end);
     ctx.result.set_number(d);
 }
 
@@ -285,10 +352,25 @@ fn void builtin_eval(BuiltinContext* ctx) {
     char* src_cstr = source.get_cstr();
     usz src_len = source.blen;
 
+    // Direct eval shares the caller's lexical environment (checked again,
+    // and used to pick env_for_eval, below) — including any `__super__`
+    // hidden binding, so `super.x`/`super[x]` may legally appear in the
+    // source. Detect this before compiling so the eval CompilerContext can
+    // permit the syntax (see compile_eval's allow_super doc comment).
+    bool caller_has_direct_eval = false;
+    {
+        vm::Vm* precheck_vm = (vm::Vm*)ctx.vm;
+        usz precheck_act_count = precheck_vm.activation_count;
+        if (precheck_act_count > 0) {
+            vm::Activation* precheck_caller = &precheck_vm.activations[precheck_act_count - 1];
+            caller_has_direct_eval = (precheck_caller.flags & vm::ACT_FLAG_DIRECT_EVAL) != 0;
+        }
+    }
+
     // Compile the source string as eval code
     Lexer lex = lexer::lexer_init(src_cstr[:src_len], ctx.heap);
     lex.skip_hashbang();
-    CompiledFunction*? cf = compiler::compile_eval(&lex, ctx.heap);
+    CompiledFunction*? cf = compiler::compile_eval(&lex, ctx.heap, caller_has_direct_eval);
     CompiledFunction* func;
     if (try f = cf) {
         func = f;
