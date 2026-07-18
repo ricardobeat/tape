@@ -1183,6 +1183,12 @@ fn void builtin_bound_call(BuiltinContext* ctx) {
         inner_ctx.re_nargs = 0;
         inner_ctx.should_throw = false;
 
+        // Lightfunc builtins read their receiver from ctx.regs[base_reg - 1]
+        // (and the callee from base_reg - 2), not ctx.this_val — mirror the
+        // object-downstream branch below so a bound lightfunc builtin (e.g.
+        // Promise.resolve.bind(Promise)) sees bound_this, not a stale slot.
+        ctx.regs[ctx.base_reg - 2] = downstream;
+        ctx.regs[ctx.base_reg - 1] = bound_this;
         for (uint i = 0; i < total_argc && i < 65535; i++) {
             ctx.regs[ctx.base_reg + i] = all_args[i];
         }
