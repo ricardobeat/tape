@@ -197,7 +197,9 @@ fn void builtin_regexp(BuiltinContext* ctx) {
         if (ctor_check_obj != null) {
             // Check if the pattern's constructor is the RegExp constructor itself
             HString* ctor_key = builtin_intern_string(ctx.heap, "constructor");
-            if (try cv = ctor_check_obj.get_prop_proto(ctor_key)) {
+            TVal? ctor_opt = builtins_generic_get(ctor_check_obj, ctor_key, ctx);
+            if (ctx.should_throw) return;
+            if (try cv = ctor_opt) {
                 if (cv.is_object() && cv.get_heapptr() != null) {
                     HObject* ctor_obj = (HObject*)cv.get_heapptr();
                     // Check if ctor_obj is the global RegExp constructor (has builtin_fn_index == BUILTIN_REGEXP)
@@ -528,12 +530,12 @@ fn HObject* regexp_build_match_result(BuiltinContext* ctx, void* re_data, HStrin
         if (try indices_arr = indices_raw) {
             indices_arr.prototype = ctx.heap.array_proto;
 
-            // indices[0]
+            // indices[0] — convert byte offsets to character (UTF-16 code unit) indices
             HObject*? pair0_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
             if (try pair0 = pair0_raw) {
                 pair0.prototype = ctx.heap.array_proto;
-                TVal p0s; p0s.set_fastint((long)out_start);
-                TVal p0e; p0e.set_fastint((long)out_end);
+                TVal p0s; p0s.set_fastint((long)hstring::compute_charlen(input[:out_start]));
+                TVal p0e; p0e.set_fastint((long)hstring::compute_charlen(input[:out_end]));
                 pair0.put_prop(builtin_intern_string(ctx.heap, "0"), p0s, hobject::PROP_FLAGS_WEC);
                 pair0.put_prop(builtin_intern_string(ctx.heap, "1"), p0e, hobject::PROP_FLAGS_WEC);
                 TVal pair0_tv; pair0_tv.set_object(pair0);
@@ -547,8 +549,8 @@ fn HObject* regexp_build_match_result(BuiltinContext* ctx, void* re_data, HStrin
                 pair.prototype = ctx.heap.array_proto;
                 TVal pair_tv;
                 if (caps_start[i] >= 0 && caps_end[i] >= 0) {
-                    TVal ps; ps.set_fastint((long)caps_start[i]);
-                    TVal pe; pe.set_fastint((long)caps_end[i]);
+                    TVal ps; ps.set_fastint((long)hstring::compute_charlen(input[:caps_start[i]]));
+                    TVal pe; pe.set_fastint((long)hstring::compute_charlen(input[:caps_end[i]]));
                     pair.put_prop(builtin_intern_string(ctx.heap, "0"), ps, hobject::PROP_FLAGS_WEC);
                     pair.put_prop(builtin_intern_string(ctx.heap, "1"), pe, hobject::PROP_FLAGS_WEC);
                     pair_tv.set_object(pair);
@@ -574,8 +576,8 @@ fn HObject* regexp_build_match_result(BuiltinContext* ctx, void* re_data, HStrin
                                 HObject*? pair_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
                                 if (try pair = pair_raw) {
                                     pair.prototype = ctx.heap.array_proto;
-                                    TVal ps; ps.set_fastint((long)caps_start[gi]);
-                                    TVal pe; pe.set_fastint((long)caps_end[gi]);
+                                    TVal ps; ps.set_fastint((long)hstring::compute_charlen(input[:caps_start[gi]]));
+                                    TVal pe; pe.set_fastint((long)hstring::compute_charlen(input[:caps_end[gi]]));
                                     pair.put_prop(builtin_intern_string(ctx.heap, "0"), ps, hobject::PROP_FLAGS_WEC);
                                     pair.put_prop(builtin_intern_string(ctx.heap, "1"), pe, hobject::PROP_FLAGS_WEC);
                                     pair_tv.set_object(pair);
