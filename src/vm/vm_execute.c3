@@ -2593,10 +2593,14 @@ fn TVal? Vm.run(Vm* vm) {
 
             vm.activation_count--;
 
-            // Async function: settle promise with return value and return the promise
+            // Async function: resolve the promise with the return value and
+            // return the promise. This must go through promise_resolve_with_value
+            // (not a bare promise_settle) so that a returned thenable/Promise is
+            // adopted per ES2015 §25.5.5.4 AsyncFunctionStart / §27.2.1.3.2 — the
+            // async function's promise takes on the eventual settlement of the
+            // returned promise rather than fulfilling with the promise object.
             if ((callee_act.flags & ACT_FLAG_ASYNC) != 0 && callee_act.async_promise != null) {
-                builtins::promise_settle(callee_act.async_promise, 1, &val, vm.heap);
-                builtins::promise_trigger_reactions(callee_act.async_promise, vm.heap, (void*)vm);
+                builtins::promise_resolve_with_value(callee_act.async_promise, val, vm.heap, (void*)vm);
                 // Release pin on original return value (promise now holds a ref)
                 if (val_pinned) {
                     vm.heap.decref_tval(&val);
