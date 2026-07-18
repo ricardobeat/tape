@@ -9,6 +9,7 @@ import duktape::heap;
 import duktape::hobject;
 import duktape::env;
 import duktape::bytecode;
+import duktape::vm;
 
 // ============================================================================
 // Promise helpers (ES6 §25.4)
@@ -119,7 +120,7 @@ fn void promise_call_cap_fn(Heap* heap, void* vm, TVal cap_fn, TVal val) {
     heap.call_fn(vm, cap_fn, &arg, 1, undef);
     // Swallow any error from the cap function — the promise is already
     // committed to resolve/reject; errors here are non-recoverable.
-    if (heap.has_error) heap.has_error = false;
+    if (heap.has_error) promise_clear_error_channels(heap, vm);
 }
 
 /// Build a capability-wrapper object for use as the `downstream` slot of a
@@ -1499,16 +1500,18 @@ fn void promise_finally_wrapper_body(BuiltinContext* ctx, bool is_reject) {
     TVal leaf_true; leaf_true.set_boolean(true);
     if (leaf_key != null) thunk.put_prop(leaf_key, leaf_true, hobject::PROP_FLAGS_WEC);
 
-    // Invoke resolved_promise.then(thunk) [ThenFinally] or
-    // resolved_promise.then(thunk) used as onRejected via a second call
-    // shape [CatchFinally] — both cases just need `.then` invoked with the
-    // thunk in the correct slot; the thunk itself decides passthrough vs
-    // rethrow based on `is_reject` baked into its own builtin_fn_index.
+    // ES2018 §27.2.5.3 step 4.a.vi/4.b.vi: Return ? Invoke(promise, "then",
+    // « valueThunk ») [ThenFinally] / « thrower » [CatchFinally] — the thunk
+    // is always passed as the single onFulfilled argument (promise, wrapping
+    // onFinally()'s return value via PromiseResolve, is virtually always
+    // fulfilled); the thunk itself decides passthrough vs rethrow based on
+    // `is_reject` baked into its own builtin_fn_index. onRejected is left
+    // undefined so a rejected `promise` (onFinally() returned/threw via a
+    // rejected thenable) propagates that new rejection instead.
     TVal undef_fulfill; undef_fulfill.set_undefined();
     TVal thunk_tv; thunk_tv.set_object(thunk);
-    TVal on_ful = is_reject ? undef_fulfill : thunk_tv;
-    TVal on_rej = is_reject ? thunk_tv : undef_fulfill;
-    if (!promise_invoke_then(heap, ctx.vm, resolved_promise, on_ful, on_rej)) {
+    TVal invoke_result;
+    if (!promise_invoke_then(heap, ctx.vm, resolved_promise, thunk_tv, undef_fulfill, &invoke_result)) {
         if (heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = heap.error_value;
@@ -1516,6 +1519,7 @@ fn void promise_finally_wrapper_body(BuiltinContext* ctx, bool is_reject) {
         }
         return;
     }
+    *ctx.result = invoke_result;
 }
 
 fn void builtin_promise_then_finally(BuiltinContext* ctx) {
@@ -2091,7 +2095,7 @@ fn void capability_invoke(Heap* heap, void* vm, HObject* state, TVal* val, bool 
         TVal cap_ret = heap.call_fn(vm, capr, &cap_args[0], 1, this_val);
         if (heap.has_error) {
             TVal err_val = heap.error_value;
-            heap.has_error = false;
+            promise_clear_error_channels(heap, vm);
             if (is_resolve) {
                 // Per IfAbruptRejectPromise (ES6 §25.4.1.1.1): a throw from
                 // Call(resultCapability.[[Resolve]], ...) must reject the
@@ -2952,6 +2956,24 @@ fn bool promise_get_iterator(Heap* heap, void* vm, TVal iterable, TVal* out_iter
                 found = true;
             }
         }
+    } else if (iterable.is_string() && iterable.get_heapptr() != null
+               && ((HString*)iterable.get_heapptr()).is_symbol() && heap.symbol_proto != null) {
+        // Symbols share the STRING tag internally — Symbol.prototype has no
+        // @@iterator, so GetIterator must fail (found stays false) rather
+        // than falling through to String.prototype's iterator below.
+        hobject::PropLookupResult res = heap.symbol_proto.get_prop_or_accessor_proto(iter_sym, true);
+        if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+            iter_method = res.data_val;
+            found = true;
+        } else if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+            TVal getter = res.acc.accessor_fn;
+            if (!getter.is_undefined() && !getter.is_null()) {
+                if (heap.call_fn == null || vm == null) return false;
+                iter_method = heap.call_fn(vm, getter, null, 0, iterable);
+                if (heap.has_error) return false;
+                found = true;
+            }
+        }
     } else if (iterable.is_string() && heap.string_proto != null) {
         hobject::PropLookupResult res = heap.string_proto.get_prop_or_accessor_proto(iter_sym, true);
         if (res.kind == hobject::PropLookupKind.PROP_DATA) {
@@ -2995,6 +3017,20 @@ fn bool promise_get_iterator(Heap* heap, void* vm, TVal iterable, TVal* out_iter
     return true;
 }
 
+/// Clear both error-propagation channels after a caller has captured
+/// `heap.error_value` into its own local completion. `heap.call_fn`
+/// propagates a callee's uncaught throw on two channels simultaneously
+/// (heap.has_error/heap.error_value AND vm.throw_pending/vm.throw_value —
+/// see vm_call_fn_impl); clearing only the former leaves the latter to
+/// resurface as a spurious top-level uncaught exception (and leaves its
+/// error object unrooted) the next time the interpreter checks
+/// vm.throw_pending after this builtin returns.
+fn void promise_clear_error_channels(Heap* heap, void* vm) {
+    heap.has_error = false;
+    Vm* v = (Vm*)vm;
+    if (v != null) v.throw_pending = false;
+}
+
 /// Call iterator.next() and return the result record.
 /// On success *out_result is the {done,value} object and the function returns true.
 /// On failure heap.has_error is set and the function returns false.
@@ -3022,7 +3058,14 @@ fn bool promise_iterator_step(Heap* heap, void* vm, TVal iterator, TVal* out_res
 /// Call iterator.return() if present, swallowing any error (IteratorClose).
 /// The completion passed as argument is the abrupt completion to eventually
 /// surface — the iterator.return() result is ignored per spec.
-fn void promise_iterator_close(Heap* heap, void* vm, TVal iterator) {
+/// IteratorClose(iteratorRecord, completion) — ES2022 §7.4.11.
+/// `completion` is the in-flight abrupt completion that triggered the close;
+/// when non-null it is updated in place if GetMethod(iterator, "return")
+/// itself throws (step 3/5: "if innerResult is a throw completion, return ?
+/// innerResult" — replacing, not just accompanying, the original completion).
+/// A successful or non-existent return() leaves `completion` untouched and
+/// its own result/error is otherwise discarded, per spec.
+fn void promise_iterator_close(Heap* heap, void* vm, TVal iterator, TVal* completion = null) {
     if (!iterator.is_object() || iterator.get_heapptr() == null) return;
     HObject* iter_obj = (HObject*)iterator.get_heapptr();
     HString* return_key = builtin_intern_string(heap, "return");
@@ -3034,11 +3077,20 @@ fn void promise_iterator_close(Heap* heap, void* vm, TVal iterator) {
     bool callable = return_method.is_lightfunc() ||
         (return_method.is_object() && return_method.get_heapptr() != null &&
          ((HObject*)return_method.get_heapptr()).is_callable());
-    if (!callable) return;
+    if (!callable) {
+        if (completion != null) {
+            species_throw_typeerror(heap, "'return' method is not a function");
+            if (heap.has_error) {
+                *completion = heap.error_value;
+                promise_clear_error_channels(heap, vm);
+            }
+        }
+        return;
+    }
     if (heap.call_fn == null || vm == null) return;
     heap.call_fn(vm, return_method, null, 0, iterator);
     // Per spec, swallow the error from return() itself.
-    heap.has_error = false;
+    promise_clear_error_channels(heap, vm);
 }
 
 /// Reject the promise capability identified by `cap_reject_tv` with `reason`.
@@ -3052,13 +3104,18 @@ fn void promise_combinator_reject(Heap* heap, void* vm, TVal cap_reject_tv, TVal
     if (heap.call_fn == null || vm == null) return;
     TVal undef; undef.set_undefined();
     heap.call_fn(vm, cap_reject_tv, reason, 1, undef);
-    if (heap.has_error) heap.has_error = false;
+    promise_clear_error_channels(heap, vm);
 }
 
 /// Invoke nextPromise.then(onFulfilled, onRejected) per spec step.
-/// Returns true on success; on failure sets heap.has_error.
+/// Returns true on success; on failure sets heap.has_error. When `out_result`
+/// is non-null, receives the value returned by the `.then()` call itself
+/// (the newly created downstream promise) — needed by callers whose own
+/// return value must be that promise (e.g. ThenFinally/CatchFinallyFunctions
+/// returning `? Invoke(promise, "then", « valueThunk »)` verbatim), as
+/// opposed to combinator callers that only care about success/failure.
 fn bool promise_invoke_then(Heap* heap, void* vm, TVal next_promise,
-                             TVal on_fulfilled, TVal on_rejected) {
+                             TVal on_fulfilled, TVal on_rejected, TVal* out_result = null) {
     if (!next_promise.is_object() || next_promise.get_heapptr() == null) return false;
     HObject* np_obj = (HObject*)next_promise.get_heapptr();
     HString* then_key = builtin_intern_string(heap, "then");
@@ -3081,8 +3138,9 @@ fn bool promise_invoke_then(Heap* heap, void* vm, TVal next_promise,
     TVal[2] then_args;
     then_args[0] = on_fulfilled;
     then_args[1] = on_rejected;
-    heap.call_fn(vm, then_method, &then_args[0], 2, next_promise);
+    TVal then_ret = heap.call_fn(vm, then_method, &then_args[0], 2, next_promise);
     if (heap.has_error) return false;
+    if (out_result != null) *out_result = then_ret;
     return true;
 }
 
@@ -3177,7 +3235,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
     bool have_iter = promise_get_iterator(heap, ctx.vm, iterable, &iterator);
     if (!have_iter) {
         TVal err_val; err_val.set_undefined();
-        if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
+        if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
         promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
         if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
         return;
@@ -3211,7 +3269,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
             // and ReturnIfAbrupt is applied WITHOUT calling IteratorClose first.
             if (heap.has_error) {
                 TVal err_val = heap.error_value;
-                heap.has_error = false;
+                promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             }
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
@@ -3226,7 +3284,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
             TVal dv_done; dv_done.set_undefined();
             if (!promise_object_get(heap, ctx.vm, step_obj, done_key, &dv_done)) {
                 // IteratorComplete abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3240,7 +3298,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         if (value_key != null) {
             if (!promise_object_get(heap, ctx.vm, step_obj, value_key, &next_value)) {
                 // IteratorValue abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3254,7 +3312,7 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         if (heap.has_error) {
             TVal err_val = heap.error_value;
             heap.has_error = false;
-            promise_iterator_close(heap, ctx.vm, iterator);
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
             return;
@@ -3306,8 +3364,8 @@ fn void builtin_promise_all(BuiltinContext* ctx) {
         // Invoke nextPromise.then(fulfill, cap_reject)
         if (!promise_invoke_then(heap, ctx.vm, next_promise, fulfill_tv, cap_reject_tv)) {
             TVal err_val; err_val.set_undefined();
-            if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
-            promise_iterator_close(heap, ctx.vm, iterator);
+            if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
             return;
@@ -3393,7 +3451,7 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
         promise_object_get(heap, ctx.vm, ctor_obj, resolve_key, &resolve_fn);
     }
     if (heap.has_error) {
-        TVal err_val = heap.error_value; heap.has_error = false;
+        TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
         promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
         if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
     }
@@ -3416,7 +3474,7 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
     TVal iterator; iterator.set_undefined();
     if (!promise_get_iterator(heap, ctx.vm, iterable, &iterator)) {
         TVal err_val; err_val.set_undefined();
-        if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
+        if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
         promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
         if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
     }
@@ -3439,9 +3497,13 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
     while (!iter_done) {
         TVal step_result; step_result.set_undefined();
         if (!promise_iterator_step(heap, ctx.vm, iterator, &step_result)) {
+            // IteratorStep abrupt: per spec, iteratorRecord.[[done]] is set to
+            // true and ReturnIfAbrupt is applied WITHOUT calling IteratorClose
+            // first (the failure came from next() itself, not from processing
+            // its result — ES2022 §7.4.7 IteratorStep step 3).
             if (heap.has_error) {
-                TVal err_val = heap.error_value; heap.has_error = false;
-                promise_iterator_close(heap, ctx.vm, iterator);
+                TVal err_val = heap.error_value;
+                promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             }
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
@@ -3455,7 +3517,7 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
             TVal dv_done; dv_done.set_undefined();
             if (!promise_object_get(heap, ctx.vm, step_obj, done_key, &dv_done)) {
                 // IteratorComplete abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3469,7 +3531,7 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
         if (value_key != null) {
             if (!promise_object_get(heap, ctx.vm, step_obj, value_key, &next_value)) {
                 // IteratorValue abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3480,8 +3542,9 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
         res_args[0] = next_value;
         TVal next_promise = heap.call_fn(ctx.vm, resolve_fn, &res_args[0], 1, this_ctor_val);
         if (heap.has_error) {
-            TVal err_val = heap.error_value; heap.has_error = false;
-            promise_iterator_close(heap, ctx.vm, iterator);
+            TVal err_val = heap.error_value;
+            promise_clear_error_channels(heap, ctx.vm);
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }
@@ -3521,8 +3584,8 @@ fn void builtin_promise_allsettled(BuiltinContext* ctx) {
 
         if (!promise_invoke_then(heap, ctx.vm, next_promise, fulfill_tv, reject_tv)) {
             TVal err_val; err_val.set_undefined();
-            if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
-            promise_iterator_close(heap, ctx.vm, iterator);
+            if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }
@@ -3599,7 +3662,7 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         promise_object_get(heap, ctx.vm, ctor_obj, resolve_key, &resolve_fn);
     }
     if (heap.has_error) {
-        TVal err_val = heap.error_value; heap.has_error = false;
+        TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
         promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
         if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
     }
@@ -3622,7 +3685,7 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
     TVal iterator; iterator.set_undefined();
     if (!promise_get_iterator(heap, ctx.vm, iterable, &iterator)) {
         TVal err_val; err_val.set_undefined();
-        if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
+        if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
         promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
         if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
     }
@@ -3676,9 +3739,13 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
     while (!iter_done) {
         TVal step_result; step_result.set_undefined();
         if (!promise_iterator_step(heap, ctx.vm, iterator, &step_result)) {
+            // IteratorStep abrupt: per spec, iteratorRecord.[[done]] is set to
+            // true and ReturnIfAbrupt is applied WITHOUT calling IteratorClose
+            // first (the failure came from next() itself, not from processing
+            // its result — ES2022 §7.4.7 IteratorStep step 3).
             if (heap.has_error) {
-                TVal err_val = heap.error_value; heap.has_error = false;
-                promise_iterator_close(heap, ctx.vm, iterator);
+                TVal err_val = heap.error_value;
+                promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             }
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
@@ -3692,7 +3759,7 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
             TVal dv_done; dv_done.set_undefined();
             if (!promise_object_get(heap, ctx.vm, step_obj, done_key, &dv_done)) {
                 // IteratorComplete abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3706,7 +3773,7 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         if (value_key != null) {
             if (!promise_object_get(heap, ctx.vm, step_obj, value_key, &next_value)) {
                 // IteratorValue abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3717,8 +3784,9 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
         res_args[0] = next_value;
         TVal next_promise = heap.call_fn(ctx.vm, resolve_fn, &res_args[0], 1, this_ctor_val);
         if (heap.has_error) {
-            TVal err_val = heap.error_value; heap.has_error = false;
-            promise_iterator_close(heap, ctx.vm, iterator);
+            TVal err_val = heap.error_value;
+            promise_clear_error_channels(heap, ctx.vm);
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }
@@ -3758,8 +3826,8 @@ fn void builtin_promise_any(BuiltinContext* ctx) {
 
         if (!promise_invoke_then(heap, ctx.vm, next_promise, fulfill_tv, reject_tv2)) {
             TVal err_val; err_val.set_undefined();
-            if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
-            promise_iterator_close(heap, ctx.vm, iterator);
+            if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }
@@ -3851,7 +3919,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
         promise_object_get(heap, ctx.vm, ctor_obj, resolve_key, &resolve_fn);
     }
     if (heap.has_error) {
-        TVal err_val = heap.error_value; heap.has_error = false;
+        TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
         promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
         if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
     }
@@ -3874,7 +3942,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
     TVal iterator; iterator.set_undefined();
     if (!promise_get_iterator(heap, ctx.vm, iterable, &iterator)) {
         TVal err_val; err_val.set_undefined();
-        if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
+        if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
         promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
         if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
     }
@@ -3893,9 +3961,13 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
     while (!iter_done) {
         TVal step_result; step_result.set_undefined();
         if (!promise_iterator_step(heap, ctx.vm, iterator, &step_result)) {
+            // IteratorStep abrupt: per spec, iteratorRecord.[[done]] is set to
+            // true and ReturnIfAbrupt is applied WITHOUT calling IteratorClose
+            // first (the failure came from next() itself, not from processing
+            // its result — ES2022 §7.4.7 IteratorStep step 3).
             if (heap.has_error) {
-                TVal err_val = heap.error_value; heap.has_error = false;
-                promise_iterator_close(heap, ctx.vm, iterator);
+                TVal err_val = heap.error_value;
+                promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             }
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
@@ -3909,7 +3981,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
             TVal dv_done; dv_done.set_undefined();
             if (!promise_object_get(heap, ctx.vm, step_obj, done_key, &dv_done)) {
                 // IteratorComplete abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3923,7 +3995,7 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
         if (value_key != null) {
             if (!promise_object_get(heap, ctx.vm, step_obj, value_key, &next_value)) {
                 // IteratorValue abrupt: iteratorRecord.[[done]] = true, no IteratorClose.
-                TVal err_val = heap.error_value; heap.has_error = false;
+                TVal err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm);
                 promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
                 if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); }
                 return;
@@ -3934,8 +4006,9 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
         res_args[0] = next_value;
         TVal next_promise = heap.call_fn(ctx.vm, resolve_fn, &res_args[0], 1, this_ctor_val);
         if (heap.has_error) {
-            TVal err_val = heap.error_value; heap.has_error = false;
-            promise_iterator_close(heap, ctx.vm, iterator);
+            TVal err_val = heap.error_value;
+            promise_clear_error_channels(heap, ctx.vm);
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }
@@ -3943,8 +4016,8 @@ fn void builtin_promise_race(BuiltinContext* ctx) {
         // For race, onFulfilled = cap_resolve, onRejected = cap_reject
         if (!promise_invoke_then(heap, ctx.vm, next_promise, cap_resolve_tv, cap_reject_tv)) {
             TVal err_val; err_val.set_undefined();
-            if (heap.has_error) { err_val = heap.error_value; heap.has_error = false; }
-            promise_iterator_close(heap, ctx.vm, iterator);
+            if (heap.has_error) { err_val = heap.error_value; promise_clear_error_channels(heap, ctx.vm); }
+            promise_iterator_close(heap, ctx.vm, iterator, &err_val);
             promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
             if (cap_promise_tv.is_object()) { *ctx.result = cap_promise_tv; } else { ctx.result.set_undefined(); } return;
         }

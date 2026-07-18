@@ -1053,6 +1053,7 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 gs.pending_resume_reg = 0xFFFF;
 
                 gs.func = target;
+                gs.func_obj = hobj;
                 gs.num_regs = target.num_regs;
 
                 // Allocate saved register storage
@@ -1083,6 +1084,14 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     ds.regs_base[result_reg].set_undefined();
                     return (TVal){};
                 }
+                // ES2015 §25.3.3 GeneratorFunction instance creation step 1:
+                // OrdinaryCreateFromConstructor(functionObject, "%GeneratorPrototype%").
+                // Deferred to GEN_START (after FunctionDeclarationInstantiation/
+                // param-init has run) rather than resolved here: a default
+                // parameter's side effect can still mutate functionObject.prototype
+                // between this point and GEN_START, and step 1 must observe that
+                // (generator-created-after-decl-inst.js). Default to the shared
+                // Generator.prototype for now; GEN_START corrects it if needed.
                 gen_obj.prototype = vm.heap.generator_proto;
                 (*gen_obj.extra_ptr()).gen.generator_data = gs;
 

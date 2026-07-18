@@ -124,6 +124,11 @@ enum ResumeKind : char {
 struct GeneratorState {
     GeneratorStateType state;
     void* func;               // CompiledFunction* (opaque to avoid circular deps)
+    void* func_obj;           // HObject* of the generator function itself (opaque)
+                              // — read at GEN_START (after param-init) to resolve
+                              // the generator instance's [[Prototype]] per ES2015
+                              // §25.3.3, since a default-parameter side effect can
+                              // still mutate functionObject.prototype up to that point.
     TVal* saved_regs;         // malloc'd array of register values
     uint num_regs;
     void* saved_pc;           // Instruction* (opaque)

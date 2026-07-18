@@ -1343,6 +1343,50 @@ fn bool proxy_mop_prevent_extensions(void* vm, Heap* heap, HObject* proxy, bool*
     return true;
 }
 
+/// SetIntegrityLevel(O, level) — ES2015 §7.3.13 — for a Proxy target.
+/// Routes [[PreventExtensions]] then [[DefineOwnProperty]] for every own key
+/// through the MOP so a `defineProperty`/`preventExtensions` trap observes
+/// the same partial descriptors an ordinary object walk would apply: data
+/// properties get {writable:false} (frozen only) and every property gets
+/// {configurable:false}; accessor properties only ever get {configurable:false}.
+fn bool proxy_set_integrity_level(void* vm, Heap* heap, HObject* proxy, bool frozen) {
+    bool pok;
+    if (!proxy_mop_prevent_extensions(vm, heap, proxy, &pok)) return false;
+    if (!pok) {
+        proxy_throw_type(heap, "'preventExtensions' on proxy: trap returned falsish");
+        return false;
+    }
+
+    HObject* karr;
+    if (!proxy_mop_own_keys(vm, heap, proxy, &karr)) return false;
+    for (uint i = 0; i < karr.array_used; i++) {
+        TVal el = karr.array_part()[i];
+        if (!el.is_string()) continue;
+        HString* k = (HString*)el.get_heapptr();
+
+        ProxyDesc desc = (ProxyDesc){};
+        if (frozen) {
+            ProxyDesc current;
+            if (!proxy_mop_get_own(vm, heap, proxy, k, &current)) return false;
+            if (!current.found) continue;
+            if (current.is_data_desc()) {
+                desc.has_writable = true;
+                desc.writable = false;
+            }
+        }
+        desc.has_configurable = true;
+        desc.configurable = false;
+
+        bool dok;
+        if (!proxy_mop_define(vm, heap, proxy, k, &desc, &dok)) return false;
+        if (!dok) {
+            proxy_throw_type(heap, "'defineProperty' on proxy: trap returned falsish");
+            return false;
+        }
+    }
+    return true;
+}
+
 // ============================================================================
 // IsArray recursion (§7.2.2) — a Proxy is an array iff its target is.
 // ============================================================================

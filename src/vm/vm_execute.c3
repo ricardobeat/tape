@@ -428,6 +428,7 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                     GeneratorState* cfn_gs = (GeneratorState*)cfn_gs_raw;
                     cfn_gs.pending_resume_reg = 0xFFFF;
                     cfn_gs.func = target;
+                    cfn_gs.func_obj = hobj;
                     cfn_gs.num_regs = target.num_regs;
                     usz cfn_regs_bytes = (usz)target.num_regs * TVal::size;
                     void* cfn_regs_raw = (cfn_regs_bytes > 0)
@@ -440,6 +441,12 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                         cfn_gs.saved_regs = (TVal*)cfn_regs_raw;
                         HObject*? cfn_gen_obj_raw = vm.heap.alloc_object(hobject::ObjClass.GENERATOR);
                         if (try cfn_gen_obj = cfn_gen_obj_raw) {
+                            // ES2015 §25.3.3 step 1: OrdinaryCreateFromConstructor(
+                            // functionObject, "%GeneratorPrototype%"). Deferred to
+                            // GEN_START (see vm_calls.c3's matching comment) so a
+                            // default-parameter side effect on functionObject.prototype
+                            // is observed; default to the shared Generator.prototype
+                            // here, corrected by GEN_START if needed.
                             cfn_gen_obj.prototype = vm.heap.generator_proto;
                             (*cfn_gen_obj.extra_ptr()).gen.generator_data = cfn_gs;
                             vm.heap.gen_initial_gs  = cfn_gs;

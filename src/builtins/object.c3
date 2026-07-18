@@ -2037,6 +2037,42 @@ fn bool obj_assign_set(BuiltinContext* ctx, HObject* obj, hstring::HString* key,
         }
         return true;
     }
+    // Array exotic "length" (ES2015 §9.4.2.1 ArraySetLength via OrdinarySet):
+    // a Set on "length" must go through ArraySetLength, not a plain data-
+    // property write, so growing/shrinking the array and dropping
+    // out-of-range elements happens as it would for a direct assignment.
+    if (obj.get_class() == hobject::ObjClass.ARRAY && key.equals("length")) {
+        bool len_writable = true;
+        if (obj.flags.exotic_array) len_writable = obj.flags.array_len_writable;
+        int len_idx = obj.find_prop_idx(key);
+        if (len_idx >= 0) len_writable = obj.get_prop_flags((uint)len_idx).writable;
+        double num = builtin_to_number_vm(ctx, val);
+        if (ctx.should_throw) return false;
+        if (num != num || num < 0.0 || num > 4294967295.0 || num != math::floor(num)) {
+            builtin_throw(ctx, ctx.heap.range_err_proto, "Invalid array length");
+            return false;
+        }
+        if (!len_writable) {
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property 'length'");
+            return false;
+        }
+        array_set_length(obj, (uint)num, ctx.heap);
+        return true;
+    }
+
+    // String exotic own character index (ES2015 §9.4.3.1): a non-configurable,
+    // non-writable, enumerable data property for every index < the string's
+    // length. Not materialized as a real own property, so it must be checked
+    // before the general own-property lookup below.
+    if (obj.flags.exotic_stringobj && key.is_arridx()
+        && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null && (ulong)key.array_index() < (ulong)prim.char_length()) {
+            builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property");
+            return false;
+        }
+    }
+
     // Step 1: own property
     int idx = obj.find_prop_idx((void*)key);
     if (idx >= 0) {
@@ -3597,14 +3633,11 @@ fn void builtin_object_seal(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
-    // Proxy: route [[PreventExtensions]] through the MOP so traps fire.
+    // Proxy: SetIntegrityLevel(O, sealed) — ES2015 §7.3.13 — routes
+    // [[PreventExtensions]] then [[DefineOwnProperty]]({configurable:false})
+    // for every own key through the MOP so both traps fire.
     if (obj.flags.exotic_proxyobj) {
-        bool pok;
-        if (!proxy_mop_prevent_extensions(ctx.vm, ctx.heap, obj, &pok)) { proxy_ctx_ok(ctx); return; }
-        if (!pok) {
-            builtin_throw(ctx, ctx.heap.type_err_proto, "'preventExtensions' on proxy: trap returned falsish");
-            return;
-        }
+        if (!proxy_set_integrity_level(ctx.vm, ctx.heap, obj, false)) { proxy_ctx_ok(ctx); return; }
         ctx.result.set_object(obj);
         return;
     }
@@ -3628,14 +3661,12 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)arg.get_heapptr();
-    // Proxy: route [[PreventExtensions]] through the MOP so traps fire.
+    // Proxy: SetIntegrityLevel(O, frozen) — ES2015 §7.3.13 — routes
+    // [[PreventExtensions]] then [[DefineOwnProperty]] for every own key
+    // through the MOP so both traps fire (non-writable for data properties,
+    // non-configurable for all).
     if (obj.flags.exotic_proxyobj) {
-        bool pok;
-        if (!proxy_mop_prevent_extensions(ctx.vm, ctx.heap, obj, &pok)) { proxy_ctx_ok(ctx); return; }
-        if (!pok) {
-            builtin_throw(ctx, ctx.heap.type_err_proto, "'preventExtensions' on proxy: trap returned falsish");
-            return;
-        }
+        if (!proxy_set_integrity_level(ctx.vm, ctx.heap, obj, true)) { proxy_ctx_ok(ctx); return; }
         ctx.result.set_object(obj);
         return;
     }
@@ -4155,18 +4186,18 @@ fn void builtin_object_hasOwn(BuiltinContext* ctx) {
 // ============================================================================
 /// Shared ordinary-object prototype-set logic with extensible and cycle checks.
 /// Returns true if the prototype was set (or no change was needed), false if
-/// the operation was rejected (non-extensible object with different proto, or
-/// proto cycle). Throws TypeError for immutable-prototype exotic objects.
+/// the operation was rejected — non-extensible object with different proto,
+/// proto cycle, or an immutable-prototype exotic object given a different
+/// value. Never throws itself (ES2022 §10.4.7.1 [[SetPrototypeOf]] just
+/// returns false); callers that need Set-with-Throw semantics (e.g.
+/// Object.setPrototypeOf, unlike Reflect.setPrototypeOf) throw on a false
+/// result themselves.
 fn bool ordinary_set_proto(BuiltinContext* ctx, HObject* obj, HObject* new_proto) {
     // Immutable-prototype exotic object check (ES2022 §10.4.7.1):
     // Object.prototype is an immutable-prototype exotic object — its [[Prototype]]
-    // can only be set to the SAME value (null). Any other value throws TypeError.
+    // can only be set to the SAME value (null); any other value is rejected.
     if (obj == ctx.heap.object_proto) {
-        if (new_proto != obj.prototype) {
-            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot set prototype of immutable prototype object");
-            return false;
-        }
-        return true;
+        return new_proto == obj.prototype;
     }
 
     // Same value — no change needed.

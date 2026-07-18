@@ -3314,6 +3314,7 @@ fn ushort? CompilerContext.object_literal(&self) {
             // Parse property key
             ushort key_reg;
             uint shorthand_name_idx = 0;  // 0 = not a shorthand-eligible key
+            char[] shorthand_name = {};   // identifier text, for local-var resolution
             bool is_shorthand_key = false;  // true iff the key came from a plain identifier
             bool is_computed_key = false;  // true iff the key came from `[expr]`
             // Source start for Function.prototype.toString retention. Captured
@@ -3473,6 +3474,7 @@ fn ushort? CompilerContext.object_literal(&self) {
 
                 uint key_idx = self.add_string_constant(key_tok.str_value);
                 shorthand_name_idx = key_idx;  // shorthand `{ name }` = GETVAR this name
+                shorthand_name = key_tok.str_value;
                 key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
 
@@ -3588,10 +3590,23 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // async modifier requires a method).
                 if (is_generator_method || is_async_method) return COMPILE_ERROR~;
                 // Read the binding into a register, then PUTPROP as usual.
-                ushort val_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)val_reg, shorthand_name_idx));
-                self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
-                self.free_reg(val_reg);
+                // Resolve as a local (parameter/let/const/var register) first —
+                // matching plain IdentifierReference resolution in primary_expr
+                // — and only fall back to a dynamic GETVAR-by-name lookup when
+                // it isn't a local (global scope, or a name not locally bound).
+                bool resolved_local = false;
+                if (!self.is_global) {
+                    if (try val_reg = self.resolve_var(shorthand_name)) {
+                        self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
+                        resolved_local = true;
+                    }
+                }
+                if (!resolved_local) {
+                    ushort val_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)val_reg, shorthand_name_idx));
+                    self.emit_abc(Opcode.INITPROP, (uint)obj_reg, (uint)key_reg, (uint)val_reg);
+                    self.free_reg(val_reg);
+                }
                 self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
                 self.is_async = saved_is_async;

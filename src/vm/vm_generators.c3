@@ -1312,6 +1312,26 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             HObject* gen_obj_g = (HObject*)vm.heap.gen_initial_obj;
             TVal* retval_g = ds.act.retval;
 
+            // ES2015 §25.3.3 step 1: OrdinaryCreateFromConstructor(functionObject,
+            // "%GeneratorPrototype%") — resolved here (after FunctionDeclaration-
+            // Instantiation/param-init has run, per EvaluateBody step ordering) so
+            // a default parameter's side effect on functionObject.prototype is
+            // observed (generator-created-after-decl-inst.js). Falls back to the
+            // shared Generator.prototype set at creation time if .prototype isn't
+            // an object at this point.
+            if (gen_obj_g != null && gs.func_obj != null) {
+                HObject* func_obj_g = (HObject*)gs.func_obj;
+                HString* gen_proto_key_g = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
+                TVal? gen_proto_val_g = func_obj_g.get_prop_proto(gen_proto_key_g);
+                if (try gpv_g = gen_proto_val_g) {
+                    if (gpv_g.is_object() && gpv_g.get_heapptr() != null) {
+                        gen_obj_g.prototype = (HObject*)gpv_g.get_heapptr();
+                    } else {
+                        gen_obj_g.prototype = vm.heap.generator_proto;
+                    }
+                }
+            }
+
             // Restore any enclosing generator's initial-call state that was
             // saved when this inner generator was called during an outer
             // generator's param-init phase (e.g. `*outer([[,] = innerGen()])`).

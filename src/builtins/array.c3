@@ -4647,13 +4647,9 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
         }
     }
 
-    // Set @@toStringTag on Array.prototype
-    HString* tag_key = ensure_tostringtag_symbol(heap);
-    if (tag_key != null) {
-        TVal tag_tv;
-        tag_tv.set_string(builtin_intern_string(heap, "Array"));
-        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
-    }
+    // Array.prototype has no own @@toStringTag (ES2022 §23.1.3.31): the
+    // "Array" tag in Object.prototype.toString comes from the IsArray()
+    // internal-slot check, not from a @@toStringTag property.
 
     // Add Array.isArray (ES6 §22.1.2.2) as static method on the constructor
     HString* isarray_key = builtin_intern_string(heap, "isArray");

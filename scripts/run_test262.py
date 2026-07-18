@@ -190,18 +190,6 @@ SKIP_FILES = {
     "built-ins/Function/15.3.2.1-11-3.js",     # formal param named 'eval' allowed
     "built-ins/Function/15.3.2.1-11-5.js",     # duplicate combined param allowed
     "built-ins/Function/15.3.2.1-11-9-s.js",   # three identical params allowed
-    # B11 — Date.prop-desc assumes sloppy-mode `this === global` (test262
-    # uses `verifyProperty(this, "Date", ...)`); strict-only engine binds
-    # `this` to undefined at the top level, so this throws.
-    "built-ins/Date/prop-desc.js",
-    # Strict-only `this === undefined` at top-level — verifyProperty(this, ...)
-    # throws "Object.getOwnPropertyDescriptor called on non-object".
-    "built-ins/Map/map.js",
-    # Blocked by verifyProperty(this, ...) — strict-only engine has undefined
-    # `this` at top-level, so getOwnPropertyDescriptor throws.
-    "built-ins/Set/set.js",
-    "built-ins/WeakMap/weakmap.js",
-    "built-ins/WeakSet/weakset.js",
     # B17 — eval-code tests that require sloppy-mode semantics. Our
     # strict-only engine cannot run indirect eval with `var` declarations
     # leaking to the global environment (which is the spec'd behavior in
