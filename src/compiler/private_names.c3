@@ -223,6 +223,7 @@ fn void? CompilerContext.prescan_private_names(&self) {
     // for THIS element so far; a HASH_IDENT at depth==1 consumes them.
     bool elem_saw_static = false;
     char elem_get_set = 0;  // 'g', 's', or 0 (none)
+    TokenType prev_tok_type = TokenType.EOF_TOKEN;
     while (depth > 0) {
         Token? tok_opt = self.lexer.next_token();
         if (catch _e2 = tok_opt) break;
@@ -273,11 +274,15 @@ fn void? CompilerContext.prescan_private_names(&self) {
                 elem_saw_static = false;
                 elem_get_set = 0;
             }
-        } else if (depth == 1 && tok.type == TokenType.HASH_IDENT) {
-            // A HASH_IDENT at the class body's own nesting level is always a
-            // declaration (method bodies/computed keys/initializers push
-            // depth past 1 via their own `{`/`(`/`[`; `this.#x` accesses
-            // never occur directly inside the class-body braces).
+        } else if (depth == 1 && tok.type == TokenType.HASH_IDENT
+                   && prev_tok_type != TokenType.DOT && prev_tok_type != TokenType.OPT_CHAIN) {
+            // A HASH_IDENT at the class body's own nesting level is a
+            // declaration UNLESS it's a `this.#x` / `obj?.#x` access — those
+            // can appear directly at this depth too (field initializers and
+            // default-parameter expressions are not wrapped in their own
+            // `{`/`(`/`[`, so parens in `f=(()=>this.#s)` or `m(x=this.#p)`
+            // don't push depth past 1). Only `.`/`?.` immediately precede a
+            // private-name access; every declaration site starts an element.
             char[] name = tok.str_value;
             bool is_ctor_name = str_eq(name, "constructor");
             if (is_ctor_name) {
@@ -325,6 +330,7 @@ fn void? CompilerContext.prescan_private_names(&self) {
             // to the current element and must not clear static/get/set that
             // were already seen for it.
         }
+        prev_tok_type = tok.type;
     }
 
     self.restore_prescan_lexer(saved_pos, saved_line, saved_col, saved_cur, saved_look, saved_haslk, saved_push, saved_haspb, saved_slt);

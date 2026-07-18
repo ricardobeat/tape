@@ -430,6 +430,9 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                 target_ctx.super_is_static_method = is_static;
                 target_ctx.is_constructable = false;  // super() forbidden in initializers
                 target_ctx.forbid_arguments = true;
+                target_ctx.adopt_private_names(self);
+                target_ctx.private_scope_start = self.private_scope_start;
+                target_ctx.private_scope_depth = self.private_scope_depth;
                 target_ctx.emit_simple(Opcode.PUSH_LEX);
             }
 
