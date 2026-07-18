@@ -1202,6 +1202,38 @@ fn void CompilerContext.skip_braced_block(&self) {
     }
 }
 
+/// Skip past a full class declaration/expression, starting with the lexer
+/// positioned just after the `class` keyword. Consumes the optional binding
+/// name, an optional `extends <LeftHandSideExpression>`, and the class body
+/// `{ ... }`. A class body is its own scope for VarDeclaredNames — none of
+/// its element bodies (methods, accessors, static blocks, field
+/// initializers) contribute `var`/`function` declarations to the enclosing
+/// function or Program scope — so hoist_decls must skip it wholesale rather
+/// than brace-walk into a method and mis-hoist that method's locals.
+fn void CompilerContext.skip_class_body(&self) {
+    // Advance to the class body's opening '{', which is the first LBRACE at
+    // paren/bracket depth 0. The heading before it (name, `extends expr`)
+    // may itself contain parens/brackets (e.g. `extends f(a[0])`) whose
+    // braces must not be mistaken for the body opener.
+    uint paren_depth = 0;
+    uint bracket_depth = 0;
+    for (;;) {
+        Token? tok_opt = self.lexer.next_token();
+        if (catch _err = tok_opt) return;
+        TokenType tt = tok_opt.type;
+        if (tt == TokenType.EOF_TOKEN) return;
+        if (tt == TokenType.LPAREN) { paren_depth++; }
+        else if (tt == TokenType.RPAREN) { if (paren_depth > 0) paren_depth--; }
+        else if (tt == TokenType.LBRACKET) { bracket_depth++; }
+        else if (tt == TokenType.RBRACKET) { if (bracket_depth > 0) bracket_depth--; }
+        else if (tt == TokenType.LBRACE && paren_depth == 0 && bracket_depth == 0) {
+            // Found the class body's opening brace — skip the balanced body.
+            self.skip_braced_block();
+            return;
+        }
+    }
+}
+
 /// Skip past a full function declaration body starting from '('.
 /// Consumes '(' params ')' '{' body '}'.
 /// Template-aware: a '}' that closes a template substitution is consumed via
@@ -1490,6 +1522,17 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global) {
                 Token async_tok = async_peek;
                 self.lexer.pushback(async_tok);
             }
+        }
+
+        if (tt == TokenType.CLASS) {
+            // A class body is its own VarDeclaredNames scope — skip it whole
+            // so a method/field-initializer's `var` locals never leak into
+            // this scope. This applies at any depth the scan reaches (a class
+            // at the scope's top level, or one nested in an if/for/try block);
+            // class bodies inside a nested function are already unreachable
+            // here because that function was skipped wholesale above.
+            self.skip_class_body();
+            continue;
         }
 
         if (brace_depth == own_depth && tt == TokenType.FUNCTION) {

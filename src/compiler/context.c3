@@ -1538,6 +1538,11 @@ const uint MAX_PRESCAN_NAMES = 64;
 struct NameSpan {
     uint pos;   // byte offset into the source buffer
     uint len;   // length in bytes
+    // Interned decoded name, used instead of the source span when the
+    // identifier contained a unicode escape (\uXXXX): the lexer decodes such
+    // names into a reused scratch buffer, so str_value points neither into
+    // the source nor at stable storage. Empty for plain (unescaped) names.
+    char[] name;
 }
 
 const uint MAX_CLASS_METHODS = 32;

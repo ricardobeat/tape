@@ -150,12 +150,10 @@ fn void class_initaccessor_set_name(Vm* vm, HObject* fn_obj, TVal* key_tval, cha
         HString* key_hstr = (HString*)key_tval.get_heapptr();
         if (key_hstr != null && key_hstr.is_symbol()) {
             // Symbol key: append "[description]" or "" for anonymous symbols.
-            uint sym_blen = key_hstr.blen;
-            if (sym_blen > 1) {
-                // description is bytes [1 .. blen-1] after the 0xFF prefix
-                char* sym_cstr = key_hstr.get_cstr();
+            if (builtins::symbol_has_description(key_hstr)) {
+                char[] desc = builtins::symbol_description(key_hstr);
                 buf[pos++] = '[';
-                for (uint i = 1; i < sym_blen && pos < 254; i++) buf[pos++] = sym_cstr[i];
+                for (uint i = 0; i < desc.len && pos < 254; i++) buf[pos++] = desc[i];
                 if (pos < 255) buf[pos++] = ']';
             }
             // anonymous Symbol(): name stays just prefix (e.g. "get ")

@@ -341,11 +341,54 @@ fn bool is_restricted_global_name(char[] name) {
     return false;
 }
 
+/// Record a prescanned binding name into `spans[idx]`. A plain identifier's
+/// str_value points into the source buffer, so it is stored as a (pos, len)
+/// span reconstructed later from `lexer.source`. An identifier that contained
+/// a unicode escape (`\uXXXX`) is decoded by the lexer into a reused scratch
+/// buffer whose contents don't survive the next token — so its bytes are
+/// interned to stable storage and kept directly in the span instead.
+fn void CompilerContext.record_name_span(&self, NameSpan* span, Token name_tok, char* source_base) {
+    char* end = &self.lexer.source[self.lexer.source.len - 1];
+    if (name_tok.str_value.ptr >= source_base && name_tok.str_value.ptr <= end) {
+        span.pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
+        span.len = (uint)name_tok.str_value.len;
+        span.name = {};
+    } else {
+        span.pos = 0;
+        span.len = 0;
+        span.name = self.intern_slot_name(name_tok.str_value);
+    }
+}
+
+/// Reconstruct a prescanned binding name from a NameSpan — either its
+/// interned decoded bytes (escaped identifiers) or a slice of the source.
+fn char[] CompilerContext.name_span_text(&self, NameSpan span) {
+    if (span.name.len > 0) return span.name;
+    return self.lexer.source[span.pos..span.pos + span.len - 1];
+}
+
+/// True when a `class` following `prev_tt` is a ClassDeclaration (statement
+/// position — its BindingIdentifier is a block-scoped lexical binding),
+/// rather than a ClassExpression (`x = class C {}`, `f(class C {})`, etc.,
+/// where `C` binds only inside the class body). A declaration only begins a
+/// Statement, so the token before it is a statement boundary; an expression
+/// `class` follows an operator, `=`, `(`, `,`, `return`, `[`, `:`, etc.
+fn bool class_is_declaration(TokenType prev_tt) {
+    switch (prev_tt) {
+        case TokenType.SEMICOLON:
+        case TokenType.LBRACE:
+        case TokenType.RBRACE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 fn void CompilerContext.hoist_lexical_tdz(&self) {
     NameSpan[MAX_PRESCAN_NAMES] spans;
     uint n = self.pre_scan_lexical_decls(&spans, MAX_PRESCAN_NAMES);
     for (uint i = 0; i < n; i++) {
-        char[] name = self.lexer.source[spans[i].pos..spans[i].pos + spans[i].len - 1];
+        char[] name = self.name_span_text(spans[i]);
         // Only Script/eval top-level lexical declarations collide with the
         // global object's restricted properties (HasRestrictedGlobalProperty,
         // ES6+ §15.1.8). Module top-level `let`/`const` bindings instead live
@@ -388,6 +431,11 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
 
     uint     count       = 0;
     uint     brace_depth = 0;
+    // Previous significant token — used to tell a class DECLARATION from a
+    // class EXPRESSION (see class_is_declaration). Branches that consume
+    // extra tokens and `continue` reset this to a statement boundary, since
+    // a let/const/class declaration is always statement-terminated.
+    TokenType prev_tt = TokenType.SEMICOLON;
 
     while (count < capacity) {
         Token? tok_opt = self.lexer.next_token();
@@ -403,6 +451,7 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
 
         if (tt == TokenType.LBRACE) {
             brace_depth++;
+            prev_tt = tt;
             continue;
         }
 
@@ -411,6 +460,7 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
                 break;   // end of the block we are scanning
             }
             brace_depth--;
+            prev_tt = tt;
             continue;
         }
 
@@ -428,8 +478,7 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
                 }
                 // Store the name's position in the source text.
                 if (count < capacity) {
-                    spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
-                    spans[count].len = (uint)name_tok.str_value.len;
+                    self.record_name_span(&spans[count], name_tok, source_base);
                     count++;
                 }
                 // Check for comma (multiple declarations).
@@ -443,25 +492,31 @@ fn uint CompilerContext.pre_scan_lexical_decls(&self, NameSpan* spans, uint capa
                 }
                 // continue to the next declarator name
             }
+            prev_tt = TokenType.SEMICOLON;
             continue;
         }
 
         // class Name { ... } — collect the binding name. Class declarations
         // are lexically scoped exactly like let/const (ES2015 §14.5.15
         // BlockDeclarationInstantiation), so a `typeof C` before `class C {}`
-        // must observe the TDZ, not fall through to "undefined".
-        if (brace_depth == 0 && tt == TokenType.CLASS) {
+        // must observe the TDZ, not fall through to "undefined". A class
+        // EXPRESSION's name (`var A = class B {}`) is NOT such a binding and
+        // must not be collected — distinguished by statement position.
+        if (brace_depth == 0 && tt == TokenType.CLASS && class_is_declaration(prev_tt)) {
             Token? name_opt = self.lexer.next_token();
             if (catch _err4 = name_opt) {
                 break;
             }
             Token name_tok = name_opt;
             if (name_tok.type == TokenType.IDENTIFIER && count < capacity) {
-                spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
-                spans[count].len = (uint)name_tok.str_value.len;
+                self.record_name_span(&spans[count], name_tok, source_base);
                 count++;
             }
+            prev_tt = tt;
+            continue;
         }
+
+        prev_tt = tt;
     }
 
     // --- Restore lexer state ---
@@ -507,6 +562,9 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
 
     uint     count       = 0;
     uint     brace_depth = 0;
+    // See pre_scan_lexical_decls: tells a class DECLARATION from an
+    // expression so `case 0: var A = class B {}` doesn't leak `B`.
+    TokenType prev_tt = TokenType.SEMICOLON;
 
     while (count < capacity) {
         Token? tok_opt = self.lexer.next_token();
@@ -522,6 +580,7 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
 
         if (tt == TokenType.LBRACE) {
             brace_depth++;
+            prev_tt = tt;
             continue;
         }
 
@@ -530,10 +589,12 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
                 break;   // end of the CaseBlock we are scanning
             }
             brace_depth--;
+            prev_tt = tt;
             continue;
         }
 
         if (brace_depth != 0) {
+            prev_tt = tt;
             continue;
         }
 
@@ -549,8 +610,7 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
                     break;
                 }
                 if (count < capacity) {
-                    spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
-                    spans[count].len = (uint)name_tok.str_value.len;
+                    self.record_name_span(&spans[count], name_tok, source_base);
                     count++;
                 }
                 Token? sep_opt = self.lexer.next_token();
@@ -562,21 +622,22 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
                     break;
                 }
             }
+            prev_tt = TokenType.SEMICOLON;
             continue;
         }
 
-        // class Name { ... } — collect the binding name.
-        if (tt == TokenType.CLASS) {
+        // class Name { ... } — collect the binding name (declaration only).
+        if (tt == TokenType.CLASS && class_is_declaration(prev_tt)) {
             Token? name_opt = self.lexer.next_token();
             if (catch _err4 = name_opt) {
                 break;
             }
             Token name_tok = name_opt;
             if (name_tok.type == TokenType.IDENTIFIER && count < capacity) {
-                spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
-                spans[count].len = (uint)name_tok.str_value.len;
+                self.record_name_span(&spans[count], name_tok, source_base);
                 count++;
             }
+            prev_tt = TokenType.SEMICOLON;
             continue;
         }
 
@@ -595,11 +656,13 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
             if (peek_tok.type != TokenType.FUNCTION) {
                 // Not `async function` — this identifier is a plain expression
                 // token; nothing further to do here (statement parsing handles it).
+                prev_tt = peek_tok.type;
                 continue;
             }
             // Fall through to the FUNCTION handling below via tok=peek_tok.
             tt = TokenType.FUNCTION;
         } else if (tt != TokenType.FUNCTION) {
+            prev_tt = tt;
             continue;
         }
 
@@ -621,11 +684,11 @@ fn uint CompilerContext.pre_scan_switch_lexical_decls(&self, NameSpan* spans, ui
                 name_tok = star_tok;
             }
             if (name_tok.type == TokenType.IDENTIFIER && count < capacity) {
-                spans[count].pos = (uint)((usz)name_tok.str_value.ptr - (usz)source_base);
-                spans[count].len = (uint)name_tok.str_value.len;
+                self.record_name_span(&spans[count], name_tok, source_base);
                 count++;
             }
         }
+        prev_tt = TokenType.SEMICOLON;
     }
 
     // --- Restore lexer state ---
@@ -690,7 +753,7 @@ fn void? CompilerContext.block(&self, bool check_directives, bool suppress_regex
     // throws a ReferenceError (temporal dead zone) instead of finding
     // an outer `var` binding or returning undefined.
     for (uint i = 0; i < num_lex; i++) {
-        char[] name = self.lexer.source[lex_spans[i].pos..lex_spans[i].pos + lex_spans[i].len - 1];
+        char[] name = self.name_span_text(lex_spans[i]);
         uint name_idx = self.add_string_constant(name);
         self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
 
@@ -3400,7 +3463,7 @@ fn void? CompilerContext.switch_statement(&self) {
     // declaration (or from outside the switch after it ends) throws a
     // ReferenceError instead of resolving to an outer binding.
     for (uint i = 0; i < num_switch_lex; i++) {
-        char[] name = self.lexer.source[switch_lex_spans[i].pos..switch_lex_spans[i].pos + switch_lex_spans[i].len - 1];
+        char[] name = self.name_span_text(switch_lex_spans[i]);
         uint name_idx = self.add_string_constant(name);
         self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
 
