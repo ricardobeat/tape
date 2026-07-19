@@ -2091,9 +2091,9 @@ fn bool register_json_object(EnvRecord* global_env, Heap* heap) {
     json.prototype = heap.object_proto;
 
     // Register JSON.parse
-    if (!register_math_method(json, heap, "parse", BUILTIN_JSON_PARSE)) return false;
+    if (!register_math_method(json, heap, "parse", Builtin.JSON_PARSE.ordinal)) return false;
     // Register JSON.stringify
-    if (!register_math_method(json, heap, "stringify", BUILTIN_JSON_STRINGIFY)) return false;
+    if (!register_math_method(json, heap, "stringify", Builtin.JSON_STRINGIFY.ordinal)) return false;
 
     // Set @@toStringTag on JSON
     HString* tag_key = ensure_tostringtag_symbol(heap);

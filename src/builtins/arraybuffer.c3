@@ -521,7 +521,7 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAYBUFFER;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.ARRAYBUFFER.ordinal;
 
     // .constructor on the prototype
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -541,11 +541,11 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Accessors
-    if (!register_arraybuffer_accessor(proto, heap, "byteLength", BUILTIN_ARRAYBUFFER_PROTO_BYTELENGTH_GET)) return false;
-    if (!register_arraybuffer_accessor(proto, heap, "detached", BUILTIN_ARRAYBUFFER_PROTO_DETACHED_GET)) return false;
+    if (!register_arraybuffer_accessor(proto, heap, "byteLength", Builtin.ARRAYBUFFER_PROTO_BYTELENGTH_GET.ordinal)) return false;
+    if (!register_arraybuffer_accessor(proto, heap, "detached", Builtin.ARRAYBUFFER_PROTO_DETACHED_GET.ordinal)) return false;
 
     // Methods
-    if (!register_string_proto_method(proto, heap, "slice", BUILTIN_ARRAYBUFFER_PROTO_SLICE)) return false;
+    if (!register_string_proto_method(proto, heap, "slice", Builtin.ARRAYBUFFER_PROTO_SLICE.ordinal)) return false;
 
     // @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);
@@ -556,7 +556,7 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
     }
 
     // Static ArrayBuffer.isView — proper HObject so .length/.name are accessible.
-    if (!register_string_proto_method(ctor, heap, "isView", BUILTIN_ARRAYBUFFER_ISVIEW)) return false;
+    if (!register_string_proto_method(ctor, heap, "isView", Builtin.ARRAYBUFFER_ISVIEW.ordinal)) return false;
 
     // Static @@species accessor (returns `this` constructor).
     HString* species_sym = ensure_species_symbol(heap);
@@ -566,7 +566,7 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
             getter.flags.callable = true;
             getter.flags.constructable = false;
             getter.prototype = heap.function_proto;
-            (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAYBUFFER_SPECIES_GET;
+            (*getter.extra_ptr()).func.builtin_fn_index = (int)Builtin.ARRAYBUFFER_SPECIES_GET.ordinal;
 
             HString* getter_name = builtin_intern_string(heap, "get [Symbol.species]");
             if (getter_name != null) {

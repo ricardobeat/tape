@@ -707,7 +707,7 @@ fn void builtin_function_proto_bind(BuiltinContext* ctx) {
     bound_obj.flags.callable = true;
     bound_obj.flags.is_bound = true;
     bound_obj.prototype = ctx.heap.function_proto;
-    (*bound_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_BOUND_CALL;
+    (*bound_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.BOUND_CALL.ordinal;
 
     // Also maintain constructable flag if downstream is constructable
     bool downstream_constructable = false;
@@ -1333,7 +1333,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? func_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = func_raw) return false;
     HObject* func_obj = func_raw;
-    (*func_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_FUNCTION;
+    (*func_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.FUNCTION.ordinal;
 
     // Create Function.prototype
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
@@ -1349,25 +1349,25 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .call method
     HString* call_key = builtin_intern_string(heap, "call");
     TVal call_tv;
-    call_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_CALL);
+    call_tv.set_lightfunc((void*)(usz)Builtin.FUNCTION_PROTO_CALL.ordinal);
     proto.put_prop(call_key, call_tv, hobject::PROP_FLAGS_WC);
 
     // Add .apply method
     HString* apply_key = builtin_intern_string(heap, "apply");
     TVal apply_tv;
-    apply_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_APPLY);
+    apply_tv.set_lightfunc((void*)(usz)Builtin.FUNCTION_PROTO_APPLY.ordinal);
     proto.put_prop(apply_key, apply_tv, hobject::PROP_FLAGS_WC);
 
     // Add .bind method
     HString* bind_key = builtin_intern_string(heap, "bind");
     TVal bind_tv;
-    bind_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_BIND);
+    bind_tv.set_lightfunc((void*)(usz)Builtin.FUNCTION_PROTO_BIND.ordinal);
     proto.put_prop(bind_key, bind_tv, hobject::PROP_FLAGS_WC);
 
     // Add .toString method
     HString* tostring_key = builtin_intern_string(heap, "toString");
     TVal tostring_tv;
-    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_TOSTRING);
+    tostring_tv.set_lightfunc((void*)(usz)Builtin.FUNCTION_PROTO_TOSTRING.ordinal);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add [Symbol.hasInstance] method (ES6 §19.2.3.6).
@@ -1375,7 +1375,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     HString* hasinst_sym = ensure_hasinstance_symbol(heap);
     if (hasinst_sym != null) {
         TVal hasinst_tv;
-        hasinst_tv.set_lightfunc((void*)(usz)BUILTIN_FUNCTION_PROTO_HASINSTANCE);
+        hasinst_tv.set_lightfunc((void*)(usz)Builtin.FUNCTION_PROTO_HASINSTANCE.ordinal);
         PropFlags hi_flags;
         hi_flags.writable = false;
         hi_flags.enumerable = false;
@@ -1419,7 +1419,7 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
         HObject*? get_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try get_fn = get_raw) {
             (*get_fn.extra_ptr()).func.builtin_fn_index =
-                (int)BUILTIN_FUNCTION_PROTO_RESTRICTED_GETTER;
+                (int)Builtin.FUNCTION_PROTO_RESTRICTED_GETTER.ordinal;
             get_fn.flags.callable = true;
             get_fn.flags.constructable = false;
             get_fn.prototype = heap.function_proto;

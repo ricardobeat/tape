@@ -3436,7 +3436,7 @@ fn bool is_builtin_array_ctor(HObject* obj) {
     if (obj == null) return false;
     if (!obj.is_callable()) return false;
     return obj.callable_kind() == hobject::CallableKind.BUILTIN_FN &&
-           (*obj.extra_ptr()).func.builtin_fn_index == (int)BUILTIN_ARRAY;
+           (*obj.extra_ptr()).func.builtin_fn_index == (int)Builtin.ARRAY.ordinal;
 }
 
 /// ArraySpeciesCreate helper — ES2022 §9.4.2.3
@@ -4534,7 +4534,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = arr_raw) return false;
     HObject* arr = arr_raw;
-    (*arr.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY;
+    (*arr.extra_ptr()).func.builtin_fn_index = (int)Builtin.ARRAY.ordinal;
 
     // Set .constructor on Array.prototype to point to the actual Array constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -4554,48 +4554,48 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     arr.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Register Array.prototype methods
-    if (!register_array_proto_method(proto, heap, "toString",  BUILTIN_ARRAY_PROTO_TOSTRING))  return false;
-    if (!register_array_proto_method(proto, heap, "join",      BUILTIN_ARRAY_PROTO_JOIN))      return false;
-    if (!register_array_proto_method(proto, heap, "pop",       BUILTIN_ARRAY_PROTO_POP))       return false;
-    if (!register_array_proto_method(proto, heap, "push",      BUILTIN_ARRAY_PROTO_PUSH))      return false;
-    if (!register_array_proto_method(proto, heap, "reverse",   BUILTIN_ARRAY_PROTO_REVERSE))   return false;
-    if (!register_array_proto_method(proto, heap, "shift",     BUILTIN_ARRAY_PROTO_SHIFT))     return false;
-    if (!register_array_proto_method(proto, heap, "slice",     BUILTIN_ARRAY_PROTO_SLICE))     return false;
-    if (!register_array_proto_method(proto, heap, "sort",      BUILTIN_ARRAY_PROTO_SORT))      return false;
-    if (!register_array_proto_method(proto, heap, "splice",    BUILTIN_ARRAY_PROTO_SPLICE))    return false;
-    if (!register_array_proto_method(proto, heap, "unshift",   BUILTIN_ARRAY_PROTO_UNSHIFT))   return false;
-    if (!register_array_proto_method(proto, heap, "indexOf",   BUILTIN_ARRAY_PROTO_INDEXOF))   return false;
-    if (!register_array_proto_method(proto, heap, "lastIndexOf", BUILTIN_ARRAY_PROTO_LASTINDEXOF)) return false;
-    if (!register_array_proto_method(proto, heap, "concat",    BUILTIN_ARRAY_PROTO_CONCAT))    return false;
-    if (!register_array_proto_method(proto, heap, "fill",      BUILTIN_ARRAY_PROTO_FILL))      return false;
-    if (!register_array_proto_method(proto, heap, "includes",  BUILTIN_ARRAY_PROTO_INCLUDES))  return false;
-    if (!register_array_proto_method(proto, heap, "at",        BUILTIN_ARRAY_PROTO_AT))        return false;
-    if (!register_array_proto_method(proto, heap, "copyWithin", BUILTIN_ARRAY_PROTO_COPYWITHIN)) return false;
-    if (!register_array_proto_method(proto, heap, "find",       BUILTIN_ARRAY_PROTO_FIND))       return false;
-    if (!register_array_proto_method(proto, heap, "findIndex",  BUILTIN_ARRAY_PROTO_FINDINDEX))  return false;
-    if (!register_array_proto_method(proto, heap, "findLast",      BUILTIN_ARRAY_PROTO_FINDLAST))      return false;
-    if (!register_array_proto_method(proto, heap, "findLastIndex", BUILTIN_ARRAY_PROTO_FINDLASTINDEX)) return false;
-    if (!register_array_proto_method(proto, heap, "flat",      BUILTIN_ARRAY_PROTO_FLAT))      return false;
-    if (!register_array_proto_method(proto, heap, "flatMap",    BUILTIN_ARRAY_PROTO_FLATMAP))   return false;
-    if (!register_array_proto_method(proto, heap, "toReversed", BUILTIN_ARRAY_PROTO_TOREVERSED)) return false;
-    if (!register_array_proto_method(proto, heap, "toSorted",  BUILTIN_ARRAY_PROTO_TOSORTED))  return false;
-    if (!register_array_proto_method(proto, heap, "toSpliced", BUILTIN_ARRAY_PROTO_TOSPLICED)) return false;
-    if (!register_array_proto_method(proto, heap, "with",      BUILTIN_ARRAY_PROTO_WITH))      return false;
+    if (!register_array_proto_method(proto, heap, "toString",  Builtin.ARRAY_PROTO_TOSTRING.ordinal))  return false;
+    if (!register_array_proto_method(proto, heap, "join",      Builtin.ARRAY_PROTO_JOIN.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "pop",       Builtin.ARRAY_PROTO_POP.ordinal))       return false;
+    if (!register_array_proto_method(proto, heap, "push",      Builtin.ARRAY_PROTO_PUSH.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "reverse",   Builtin.ARRAY_PROTO_REVERSE.ordinal))   return false;
+    if (!register_array_proto_method(proto, heap, "shift",     Builtin.ARRAY_PROTO_SHIFT.ordinal))     return false;
+    if (!register_array_proto_method(proto, heap, "slice",     Builtin.ARRAY_PROTO_SLICE.ordinal))     return false;
+    if (!register_array_proto_method(proto, heap, "sort",      Builtin.ARRAY_PROTO_SORT.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "splice",    Builtin.ARRAY_PROTO_SPLICE.ordinal))    return false;
+    if (!register_array_proto_method(proto, heap, "unshift",   Builtin.ARRAY_PROTO_UNSHIFT.ordinal))   return false;
+    if (!register_array_proto_method(proto, heap, "indexOf",   Builtin.ARRAY_PROTO_INDEXOF.ordinal))   return false;
+    if (!register_array_proto_method(proto, heap, "lastIndexOf", Builtin.ARRAY_PROTO_LASTINDEXOF.ordinal)) return false;
+    if (!register_array_proto_method(proto, heap, "concat",    Builtin.ARRAY_PROTO_CONCAT.ordinal))    return false;
+    if (!register_array_proto_method(proto, heap, "fill",      Builtin.ARRAY_PROTO_FILL.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "includes",  Builtin.ARRAY_PROTO_INCLUDES.ordinal))  return false;
+    if (!register_array_proto_method(proto, heap, "at",        Builtin.ARRAY_PROTO_AT.ordinal))        return false;
+    if (!register_array_proto_method(proto, heap, "copyWithin", Builtin.ARRAY_PROTO_COPYWITHIN.ordinal)) return false;
+    if (!register_array_proto_method(proto, heap, "find",       Builtin.ARRAY_PROTO_FIND.ordinal))       return false;
+    if (!register_array_proto_method(proto, heap, "findIndex",  Builtin.ARRAY_PROTO_FINDINDEX.ordinal))  return false;
+    if (!register_array_proto_method(proto, heap, "findLast",      Builtin.ARRAY_PROTO_FINDLAST.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "findLastIndex", Builtin.ARRAY_PROTO_FINDLASTINDEX.ordinal)) return false;
+    if (!register_array_proto_method(proto, heap, "flat",      Builtin.ARRAY_PROTO_FLAT.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "flatMap",    Builtin.ARRAY_PROTO_FLATMAP.ordinal))   return false;
+    if (!register_array_proto_method(proto, heap, "toReversed", Builtin.ARRAY_PROTO_TOREVERSED.ordinal)) return false;
+    if (!register_array_proto_method(proto, heap, "toSorted",  Builtin.ARRAY_PROTO_TOSORTED.ordinal))  return false;
+    if (!register_array_proto_method(proto, heap, "toSpliced", Builtin.ARRAY_PROTO_TOSPLICED.ordinal)) return false;
+    if (!register_array_proto_method(proto, heap, "with",      Builtin.ARRAY_PROTO_WITH.ordinal))      return false;
 
 // Array.prototype.keys/values/entries (ES2015 §22.1.3.x)
-    if (!register_array_proto_method(proto, heap, "keys",      BUILTIN_ARRAY_PROTO_KEYS))      return false;
-    if (!register_array_proto_method(proto, heap, "values",    BUILTIN_ARRAY_PROTO_VALUES))    return false;
-    if (!register_array_proto_method(proto, heap, "entries",   BUILTIN_ARRAY_PROTO_ENTRIES))   return false;
+    if (!register_array_proto_method(proto, heap, "keys",      Builtin.ARRAY_PROTO_KEYS.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "values",    Builtin.ARRAY_PROTO_VALUES.ordinal))    return false;
+    if (!register_array_proto_method(proto, heap, "entries",   Builtin.ARRAY_PROTO_ENTRIES.ordinal))   return false;
 
     // Register callback-based Array.prototype methods as native builtins.
     // Uses heap.call_fn for proper this-binding via Function.prototype.call semantics.
-    if (!register_array_proto_method(proto, heap, "forEach",   BUILTIN_ARRAY_PROTO_FOREACH))   return false;
-    if (!register_array_proto_method(proto, heap, "map",        BUILTIN_ARRAY_PROTO_MAP))        return false;
-    if (!register_array_proto_method(proto, heap, "filter",     BUILTIN_ARRAY_PROTO_FILTER))     return false;
-    if (!register_array_proto_method(proto, heap, "every",      BUILTIN_ARRAY_PROTO_EVERY))      return false;
-    if (!register_array_proto_method(proto, heap, "some",       BUILTIN_ARRAY_PROTO_SOME))       return false;
-    if (!register_array_proto_method(proto, heap, "reduce",     BUILTIN_ARRAY_PROTO_REDUCE))     return false;
-    if (!register_array_proto_method(proto, heap, "reduceRight",BUILTIN_ARRAY_PROTO_REDUCERIGHT)) return false;
+    if (!register_array_proto_method(proto, heap, "forEach",   Builtin.ARRAY_PROTO_FOREACH.ordinal))   return false;
+    if (!register_array_proto_method(proto, heap, "map",        Builtin.ARRAY_PROTO_MAP.ordinal))        return false;
+    if (!register_array_proto_method(proto, heap, "filter",     Builtin.ARRAY_PROTO_FILTER.ordinal))     return false;
+    if (!register_array_proto_method(proto, heap, "every",      Builtin.ARRAY_PROTO_EVERY.ordinal))      return false;
+    if (!register_array_proto_method(proto, heap, "some",       Builtin.ARRAY_PROTO_SOME.ordinal))       return false;
+    if (!register_array_proto_method(proto, heap, "reduce",     Builtin.ARRAY_PROTO_REDUCE.ordinal))     return false;
+    if (!register_array_proto_method(proto, heap, "reduceRight",Builtin.ARRAY_PROTO_REDUCERIGHT.ordinal)) return false;
 
     // Array.prototype.toLocaleString — ES5 §15.4.4.3
     // Delegates to Object.prototype.toLocaleString for each element, then joins with ", ".
@@ -4655,21 +4655,21 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     HString* isarray_key = builtin_intern_string(heap, "isArray");
     if (isarray_key == null) return false;
     TVal isarray_tv;
-    isarray_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_ISARRAY);
+    isarray_tv.set_lightfunc((void*)(usz)Builtin.ARRAY_ISARRAY.ordinal);
     arr.put_prop(isarray_key, isarray_tv, hobject::PROP_FLAGS_WC);
 
     // Add Array.of (ES6 §22.1.2.3) as static method on the constructor
     HString* of_key = builtin_intern_string(heap, "of");
     if (of_key == null) return false;
     TVal of_tv;
-    of_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_OF);
+    of_tv.set_lightfunc((void*)(usz)Builtin.ARRAY_OF.ordinal);
     arr.put_prop(of_key, of_tv, hobject::PROP_FLAGS_WC);
 
     // Add Array.from (ES6 §22.1.2.1) as static method on the constructor
     HString* from_key = builtin_intern_string(heap, "from");
     if (from_key == null) return false;
     TVal from_tv;
-    from_tv.set_lightfunc((void*)(usz)BUILTIN_ARRAY_FROM);
+    from_tv.set_lightfunc((void*)(usz)Builtin.ARRAY_FROM.ordinal);
     arr.put_prop(from_key, from_tv, hobject::PROP_FLAGS_WC);
 
     // Add @@species accessor (ES2022 §23.1.2.5): getter returns `this`.
@@ -4677,7 +4677,7 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     if (species_sym != null) {
         HObject*? getter_fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try getter_fn = getter_fn_raw) {
-            (*getter_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ARRAY_SPECIES_GETTER;
+            (*getter_fn.extra_ptr()).func.builtin_fn_index = (int)Builtin.ARRAY_SPECIES_GETTER.ordinal;
             getter_fn.flags.callable = true;
             getter_fn.prototype = heap.function_proto;
             HString* getter_name = builtin_intern_string(heap, "get [Symbol.species]");

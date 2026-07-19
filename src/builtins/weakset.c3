@@ -79,9 +79,9 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     proto.prototype = null;
     heap.weakset_proto = proto;
 
-    if (!register_string_proto_method(proto, heap, "add", BUILTIN_WEAKSET_PROTO_ADD)) return false;
-    if (!register_string_proto_method(proto, heap, "has", BUILTIN_WEAKSET_PROTO_HAS)) return false;
-    if (!register_string_proto_method(proto, heap, "delete", BUILTIN_WEAKSET_PROTO_DELETE)) return false;
+    if (!register_string_proto_method(proto, heap, "add", Builtin.WEAKSET_PROTO_ADD.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "has", Builtin.WEAKSET_PROTO_HAS.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "delete", Builtin.WEAKSET_PROTO_DELETE.ordinal)) return false;
 
     // Set @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);
@@ -94,7 +94,7 @@ fn bool register_weakset_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_WEAKSET;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.WEAKSET.ordinal;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;

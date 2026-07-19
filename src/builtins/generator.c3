@@ -467,9 +467,9 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     heap.generator_proto = proto;
 
     // Register prototype methods
-    if (!register_string_proto_method(proto, heap, "next",   BUILTIN_GENERATOR_PROTO_NEXT))   return false;
-    if (!register_string_proto_method(proto, heap, "throw",  BUILTIN_GENERATOR_PROTO_THROW))  return false;
-    if (!register_string_proto_method(proto, heap, "return", BUILTIN_GENERATOR_PROTO_RETURN)) return false;
+    if (!register_string_proto_method(proto, heap, "next",   Builtin.GENERATOR_PROTO_NEXT.ordinal))   return false;
+    if (!register_string_proto_method(proto, heap, "throw",  Builtin.GENERATOR_PROTO_THROW.ordinal))  return false;
+    if (!register_string_proto_method(proto, heap, "return", Builtin.GENERATOR_PROTO_RETURN.ordinal)) return false;
 
     // Add [Symbol.iterator]() → returns `this` (ES6 §25.3.1.12)
     {
@@ -478,7 +478,7 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
             HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
             if (catch err = fn_raw) return false;
             HObject* fn_obj = fn_raw;
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ITERATOR_PROTO_SYMBOL_ITER;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.ITERATOR_PROTO_SYMBOL_ITER.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal iter_tv;
@@ -533,7 +533,7 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_GENERATOR_FUNCTION;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.GENERATOR_FUNCTION.ordinal;
     ctor.flags.callable = true;
     ctor.prototype = heap.function_proto;
 
@@ -618,7 +618,7 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? af_ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = af_ctor_raw) return false;
     HObject* af_ctor = af_ctor_raw;
-    (*af_ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ASYNC_FUNCTION;
+    (*af_ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.ASYNC_FUNCTION.ordinal;
     af_ctor.flags.callable = true;
     af_ctor.prototype = heap.function_proto;
 

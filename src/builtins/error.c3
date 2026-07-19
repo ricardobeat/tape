@@ -378,7 +378,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     // Add .toString() method to Error.prototype
     HString* tostring_key = (HString*)heap.strs[heap::BuiltinStr.TO_STRING];
     TVal tostring_tv;
-    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_PROTO_TOSTRING);
+    tostring_tv.set_lightfunc((void*)(usz)Builtin.ERROR_PROTO_TOSTRING.ordinal);
     err_proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // constructor_key used throughout — HObject ctors are wired by register_native_error_ctor below.
@@ -418,7 +418,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     HObject*? err_ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch e2 = err_ctor_raw) return false;
     HObject* err_ctor = err_ctor_raw;
-    (*err_ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_ERROR;
+    (*err_ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.ERROR.ordinal;
 
     // Wire Error.prototype.constructor → err_ctor
     {
@@ -444,7 +444,7 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     {
         HString* capture_key = builtin_intern_string(heap, "captureStackTrace");
         TVal capture_tv;
-        capture_tv.set_lightfunc((void*)(usz)BUILTIN_ERROR_CAPTURE_STACK_TRACE);
+        capture_tv.set_lightfunc((void*)(usz)Builtin.ERROR_CAPTURE_STACK_TRACE.ordinal);
         err_ctor.put_prop(capture_key, capture_tv, hobject::PROP_FLAGS_WC);
     }
 
@@ -471,19 +471,19 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
     // Per ES2015 §19.5.6.1: [[Prototype]] of each NativeError constructor is the Error constructor.
     // Each has an own "prototype" property (NWC) pointing to its prototype object.
 
-    if (!register_native_error_ctor(global_env, heap, "TypeError",       BUILTIN_TYPE_ERROR,       type_err_proto,   err_ctor)) return false;
-    if (!register_native_error_ctor(global_env, heap, "RangeError",      BUILTIN_RANGE_ERROR,      range_err_proto,  err_ctor)) return false;
-    if (!register_native_error_ctor(global_env, heap, "ReferenceError",  BUILTIN_REFERENCE_ERROR,  ref_err_proto,    err_ctor)) return false;
-    if (!register_native_error_ctor(global_env, heap, "SyntaxError",     BUILTIN_SYNTAX_ERROR,     syntax_err_proto, err_ctor)) return false;
-    if (!register_native_error_ctor(global_env, heap, "EvalError",       BUILTIN_EVAL_ERROR,       eval_err_proto,   err_ctor)) return false;
-    if (!register_native_error_ctor(global_env, heap, "URIError",        BUILTIN_URI_ERROR,        uri_err_proto,    err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "TypeError",       Builtin.TYPE_ERROR.ordinal,       type_err_proto,   err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "RangeError",      Builtin.RANGE_ERROR.ordinal,      range_err_proto,  err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "ReferenceError",  Builtin.REFERENCE_ERROR.ordinal,  ref_err_proto,    err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "SyntaxError",     Builtin.SYNTAX_ERROR.ordinal,     syntax_err_proto, err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "EvalError",       Builtin.EVAL_ERROR.ordinal,       eval_err_proto,   err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "URIError",        Builtin.URI_ERROR.ordinal,        uri_err_proto,    err_ctor)) return false;
 
     // --- Create AggregateError.prototype (parent = err_proto) ---
     HObject* aggregate_err_proto = register_error_prototype(heap, err_proto, "AggregateError");
     if (aggregate_err_proto == null) return false;
     heap.aggregate_err_proto = aggregate_err_proto;
 
-    if (!register_native_error_ctor(global_env, heap, "AggregateError", BUILTIN_AGGREGATE_ERROR, aggregate_err_proto, err_ctor)) return false;
+    if (!register_native_error_ctor(global_env, heap, "AggregateError", Builtin.AGGREGATE_ERROR.ordinal, aggregate_err_proto, err_ctor)) return false;
 
     return true;
 }

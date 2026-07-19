@@ -767,14 +767,14 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
     // any user constructor with an empty or trivial body.
     if (target == null) {
         // Built-in constructor — dispatch directly. Bound functions also
-        // dispatch through builtin_fn_index (BUILTIN_BOUND_CALL), so route
+        // dispatch through builtin_fn_index (Builtin.BOUND_CALL.ordinal), so route
         // them through the same builtin-dispatch path as BUILTIN_FN.
         if (ctor.callable_kind() == hobject::CallableKind.BUILTIN_FN
             || ctor.callable_kind() == hobject::CallableKind.BOUND_FN) {
             int builtin_idx = (*ctor.extra_ptr()).func.builtin_fn_index;
             // For Promise, allocate as PROMISE class so builtin_promise
             // initialises the right internal slots.
-            if (builtin_idx == (int)builtins::BUILTIN_PROMISE) {
+            if (builtin_idx == (int)builtins::Builtin.PROMISE.ordinal) {
                 HObject*? prom_this_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
                 if (catch err_p = prom_this_raw) return undef;
                 HObject* prom_this = prom_this_raw;

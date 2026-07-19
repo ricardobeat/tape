@@ -481,7 +481,7 @@ fn bool register_dataview(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_DATAVIEW;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.DATAVIEW.ordinal;
     ctor.flags.callable = true;
     ctor.flags.constructable = true;
     ctor.prototype = heap.function_proto;
@@ -504,31 +504,31 @@ fn bool register_dataview(EnvRecord* global_env, Heap* heap) {
     ctor.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Accessors
-    if (!register_dataview_accessor(proto, heap, "buffer", BUILTIN_DATAVIEW_PROTO_BUFFER_GET)) return false;
-    if (!register_dataview_accessor(proto, heap, "byteLength", BUILTIN_DATAVIEW_PROTO_BYTELENGTH_GET)) return false;
-    if (!register_dataview_accessor(proto, heap, "byteOffset", BUILTIN_DATAVIEW_PROTO_BYTEOFFSET_GET)) return false;
+    if (!register_dataview_accessor(proto, heap, "buffer", Builtin.DATAVIEW_PROTO_BUFFER_GET.ordinal)) return false;
+    if (!register_dataview_accessor(proto, heap, "byteLength", Builtin.DATAVIEW_PROTO_BYTELENGTH_GET.ordinal)) return false;
+    if (!register_dataview_accessor(proto, heap, "byteOffset", Builtin.DATAVIEW_PROTO_BYTEOFFSET_GET.ordinal)) return false;
 
     // get/set methods
-    if (!register_string_proto_method(proto, heap, "getInt8", BUILTIN_DATAVIEW_GET_INT8)) return false;
-    if (!register_string_proto_method(proto, heap, "getUint8", BUILTIN_DATAVIEW_GET_UINT8)) return false;
-    if (!register_string_proto_method(proto, heap, "getInt16", BUILTIN_DATAVIEW_GET_INT16)) return false;
-    if (!register_string_proto_method(proto, heap, "getUint16", BUILTIN_DATAVIEW_GET_UINT16)) return false;
-    if (!register_string_proto_method(proto, heap, "getInt32", BUILTIN_DATAVIEW_GET_INT32)) return false;
-    if (!register_string_proto_method(proto, heap, "getUint32", BUILTIN_DATAVIEW_GET_UINT32)) return false;
-    if (!register_string_proto_method(proto, heap, "getFloat32", BUILTIN_DATAVIEW_GET_FLOAT32)) return false;
-    if (!register_string_proto_method(proto, heap, "getFloat64", BUILTIN_DATAVIEW_GET_FLOAT64)) return false;
-    if (!register_string_proto_method(proto, heap, "setInt8", BUILTIN_DATAVIEW_SET_INT8)) return false;
-    if (!register_string_proto_method(proto, heap, "setUint8", BUILTIN_DATAVIEW_SET_UINT8)) return false;
-    if (!register_string_proto_method(proto, heap, "setInt16", BUILTIN_DATAVIEW_SET_INT16)) return false;
-    if (!register_string_proto_method(proto, heap, "setUint16", BUILTIN_DATAVIEW_SET_UINT16)) return false;
-    if (!register_string_proto_method(proto, heap, "setInt32", BUILTIN_DATAVIEW_SET_INT32)) return false;
-    if (!register_string_proto_method(proto, heap, "setUint32", BUILTIN_DATAVIEW_SET_UINT32)) return false;
-    if (!register_string_proto_method(proto, heap, "setFloat32", BUILTIN_DATAVIEW_SET_FLOAT32)) return false;
-    if (!register_string_proto_method(proto, heap, "setFloat64", BUILTIN_DATAVIEW_SET_FLOAT64)) return false;
-    if (!register_string_proto_method(proto, heap, "getBigInt64", BUILTIN_DATAVIEW_GET_BIGINT64)) return false;
-    if (!register_string_proto_method(proto, heap, "getBigUint64", BUILTIN_DATAVIEW_GET_BIGUINT64)) return false;
-    if (!register_string_proto_method(proto, heap, "setBigInt64", BUILTIN_DATAVIEW_SET_BIGINT64)) return false;
-    if (!register_string_proto_method(proto, heap, "setBigUint64", BUILTIN_DATAVIEW_SET_BIGUINT64)) return false;
+    if (!register_string_proto_method(proto, heap, "getInt8", Builtin.DATAVIEW_GET_INT8.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getUint8", Builtin.DATAVIEW_GET_UINT8.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getInt16", Builtin.DATAVIEW_GET_INT16.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getUint16", Builtin.DATAVIEW_GET_UINT16.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getInt32", Builtin.DATAVIEW_GET_INT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getUint32", Builtin.DATAVIEW_GET_UINT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getFloat32", Builtin.DATAVIEW_GET_FLOAT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getFloat64", Builtin.DATAVIEW_GET_FLOAT64.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setInt8", Builtin.DATAVIEW_SET_INT8.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setUint8", Builtin.DATAVIEW_SET_UINT8.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setInt16", Builtin.DATAVIEW_SET_INT16.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setUint16", Builtin.DATAVIEW_SET_UINT16.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setInt32", Builtin.DATAVIEW_SET_INT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setUint32", Builtin.DATAVIEW_SET_UINT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setFloat32", Builtin.DATAVIEW_SET_FLOAT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setFloat64", Builtin.DATAVIEW_SET_FLOAT64.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getBigInt64", Builtin.DATAVIEW_GET_BIGINT64.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getBigUint64", Builtin.DATAVIEW_GET_BIGUINT64.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setBigInt64", Builtin.DATAVIEW_SET_BIGINT64.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setBigUint64", Builtin.DATAVIEW_SET_BIGUINT64.ordinal)) return false;
 
     // @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);

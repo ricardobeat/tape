@@ -1430,11 +1430,11 @@ fn HObject* proxy_create(BuiltinContext* ctx, TVal target_tv, TVal handler_tv) {
     // proxy call builtin.
     if (target.is_callable()) {
         p.flags.callable = true;
-        (*p.extra_ptr()).proxy.builtin_fn_index = (int)BUILTIN_PROXY_CALL;
+        (*p.extra_ptr()).proxy.builtin_fn_index = (int)Builtin.PROXY_CALL.ordinal;
     }
     if (target.is_constructable()) {
         p.flags.constructable = true;
-        (*p.extra_ptr()).proxy.builtin_fn_index = (int)BUILTIN_PROXY_CALL;
+        (*p.extra_ptr()).proxy.builtin_fn_index = (int)Builtin.PROXY_CALL.ordinal;
     }
     return p;
 }
@@ -1465,7 +1465,7 @@ fn void builtin_proxy_revocable(BuiltinContext* ctx) {
     HObject*? fn_raw = ctx.heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch e = fn_raw) { ctx.result.set_undefined(); return; }
     HObject* revoker = fn_raw;
-    (*revoker.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROXY_REVOKE;
+    (*revoker.extra_ptr()).func.builtin_fn_index = (int)Builtin.PROXY_REVOKE.ordinal;
     revoker.flags.callable = true;
     revoker.flags.constructable = false;
     revoker.prototype = ctx.heap.function_proto;
@@ -1633,7 +1633,7 @@ fn bool register_proxy_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch e = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_PROXY;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.PROXY.ordinal;
     ctor.prototype = heap.function_proto;
 
     TVal len_tv; len_tv.set_fastint(2);
@@ -1644,7 +1644,7 @@ fn bool register_proxy_constructor(EnvRecord* global_env, Heap* heap) {
 
     HString* revocable_key = builtin_intern_string(heap, "revocable");
     TVal rev_tv;
-    rev_tv.set_lightfunc((void*)(usz)BUILTIN_PROXY_REVOCABLE);
+    rev_tv.set_lightfunc((void*)(usz)Builtin.PROXY_REVOCABLE.ordinal);
     ctor.put_prop(revocable_key, rev_tv, hobject::PROP_FLAGS_WC);
 
     TVal ctor_tv; ctor_tv.set_object(ctor);

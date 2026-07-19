@@ -3312,7 +3312,7 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     HObject*? intr_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = intr_raw) return false;
     HObject* intrinsic = intr_raw;
-    (*intrinsic.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_TYPEDARRAY_INTRINSIC;
+    (*intrinsic.extra_ptr()).func.builtin_fn_index = (int)Builtin.TYPEDARRAY_INTRINSIC.ordinal;
     intrinsic.flags.callable = true;
     intrinsic.flags.constructable = true;
     intrinsic.prototype = heap.function_proto;
@@ -3342,49 +3342,49 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     set_func_ctor_name_length(intrinsic, heap, "TypedArray", 0);
 
     // Shared prototype accessors (length/byteLength/byteOffset/buffer).
-    if (!register_typedarray_accessor(proto, heap, "length", BUILTIN_TYPEDARRAY_PROTO_LENGTH_GET)) return false;
-    if (!register_typedarray_accessor(proto, heap, "byteLength", BUILTIN_TYPEDARRAY_PROTO_BYTELENGTH_GET)) return false;
-    if (!register_typedarray_accessor(proto, heap, "byteOffset", BUILTIN_TYPEDARRAY_PROTO_BYTEOFFSET_GET)) return false;
-    if (!register_typedarray_accessor(proto, heap, "buffer", BUILTIN_TYPEDARRAY_PROTO_BUFFER_GET)) return false;
+    if (!register_typedarray_accessor(proto, heap, "length", Builtin.TYPEDARRAY_PROTO_LENGTH_GET.ordinal)) return false;
+    if (!register_typedarray_accessor(proto, heap, "byteLength", Builtin.TYPEDARRAY_PROTO_BYTELENGTH_GET.ordinal)) return false;
+    if (!register_typedarray_accessor(proto, heap, "byteOffset", Builtin.TYPEDARRAY_PROTO_BYTEOFFSET_GET.ordinal)) return false;
+    if (!register_typedarray_accessor(proto, heap, "buffer", Builtin.TYPEDARRAY_PROTO_BUFFER_GET.ordinal)) return false;
 
     // [Symbol.toStringTag] getter on the shared prototype: returns the
     // per-instance class name, or undefined for non-TA receivers.
     HString* tag_key = ensure_tostringtag_symbol(heap);
     if (tag_key != null) {
-        if (!register_typedarray_symbol_accessor(proto, heap, tag_key, BUILTIN_TYPEDARRAY_PROTO_TOSTRINGTAG_GET)) return false;
+        if (!register_typedarray_symbol_accessor(proto, heap, tag_key, Builtin.TYPEDARRAY_PROTO_TOSTRINGTAG_GET.ordinal)) return false;
     }
 
     // Wave A prototype methods (plan 049 stage 4)
-    if (!register_string_proto_method(proto, heap, "values",      BUILTIN_TA_PROTO_VALUES))      return false;
-    if (!register_string_proto_method(proto, heap, "keys",        BUILTIN_TA_PROTO_KEYS))        return false;
-    if (!register_string_proto_method(proto, heap, "entries",     BUILTIN_TA_PROTO_ENTRIES))     return false;
-    if (!register_string_proto_method(proto, heap, "set",         BUILTIN_TA_PROTO_SET))         return false;
-    if (!register_string_proto_method(proto, heap, "subarray",    BUILTIN_TA_PROTO_SUBARRAY))    return false;
-    if (!register_string_proto_method(proto, heap, "fill",        BUILTIN_TA_PROTO_FILL))        return false;
-    if (!register_string_proto_method(proto, heap, "copyWithin",  BUILTIN_TA_PROTO_COPYWITHIN))  return false;
-    if (!register_string_proto_method(proto, heap, "slice",       BUILTIN_TA_PROTO_SLICE))       return false;
+    if (!register_string_proto_method(proto, heap, "values",      Builtin.TA_PROTO_VALUES.ordinal))      return false;
+    if (!register_string_proto_method(proto, heap, "keys",        Builtin.TA_PROTO_KEYS.ordinal))        return false;
+    if (!register_string_proto_method(proto, heap, "entries",     Builtin.TA_PROTO_ENTRIES.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "set",         Builtin.TA_PROTO_SET.ordinal))         return false;
+    if (!register_string_proto_method(proto, heap, "subarray",    Builtin.TA_PROTO_SUBARRAY.ordinal))    return false;
+    if (!register_string_proto_method(proto, heap, "fill",        Builtin.TA_PROTO_FILL.ordinal))        return false;
+    if (!register_string_proto_method(proto, heap, "copyWithin",  Builtin.TA_PROTO_COPYWITHIN.ordinal))  return false;
+    if (!register_string_proto_method(proto, heap, "slice",       Builtin.TA_PROTO_SLICE.ordinal))       return false;
 
     // Wave B prototype methods (plan 049 stage 5)
-    if (!register_string_proto_method(proto, heap, "indexOf",         BUILTIN_TA_PROTO_INDEX_OF))        return false;
-    if (!register_string_proto_method(proto, heap, "lastIndexOf",     BUILTIN_TA_PROTO_LAST_INDEX_OF))   return false;
-    if (!register_string_proto_method(proto, heap, "includes",        BUILTIN_TA_PROTO_INCLUDES))        return false;
-    if (!register_string_proto_method(proto, heap, "join",            BUILTIN_TA_PROTO_JOIN))            return false;
-    if (!register_string_proto_method(proto, heap, "forEach",         BUILTIN_TA_PROTO_FOR_EACH))        return false;
-    if (!register_string_proto_method(proto, heap, "every",           BUILTIN_TA_PROTO_EVERY))           return false;
-    if (!register_string_proto_method(proto, heap, "some",            BUILTIN_TA_PROTO_SOME))            return false;
-    if (!register_string_proto_method(proto, heap, "reduce",          BUILTIN_TA_PROTO_REDUCE))          return false;
-    if (!register_string_proto_method(proto, heap, "reduceRight",     BUILTIN_TA_PROTO_REDUCE_RIGHT))    return false;
-    if (!register_string_proto_method(proto, heap, "map",             BUILTIN_TA_PROTO_MAP))             return false;
-    if (!register_string_proto_method(proto, heap, "filter",          BUILTIN_TA_PROTO_FILTER))          return false;
-    if (!register_string_proto_method(proto, heap, "find",            BUILTIN_TA_PROTO_FIND))            return false;
-    if (!register_string_proto_method(proto, heap, "findIndex",       BUILTIN_TA_PROTO_FIND_INDEX))      return false;
-    if (!register_string_proto_method(proto, heap, "findLast",        BUILTIN_TA_PROTO_FIND_LAST))       return false;
-    if (!register_string_proto_method(proto, heap, "findLastIndex",   BUILTIN_TA_PROTO_FIND_LAST_INDEX)) return false;
-    if (!register_string_proto_method(proto, heap, "reverse",         BUILTIN_TA_PROTO_REVERSE))         return false;
-    if (!register_string_proto_method(proto, heap, "toReversed",      BUILTIN_TA_PROTO_TO_REVERSED))     return false;
-    if (!register_string_proto_method(proto, heap, "at",              BUILTIN_TA_PROTO_AT))              return false;
-    if (!register_string_proto_method(proto, heap, "sort",            BUILTIN_TA_PROTO_SORT))            return false;
-    if (!register_string_proto_method(proto, heap, "toSorted",        BUILTIN_TA_PROTO_TO_SORTED))       return false;
+    if (!register_string_proto_method(proto, heap, "indexOf",         Builtin.TA_PROTO_INDEX_OF.ordinal))        return false;
+    if (!register_string_proto_method(proto, heap, "lastIndexOf",     Builtin.TA_PROTO_LAST_INDEX_OF.ordinal))   return false;
+    if (!register_string_proto_method(proto, heap, "includes",        Builtin.TA_PROTO_INCLUDES.ordinal))        return false;
+    if (!register_string_proto_method(proto, heap, "join",            Builtin.TA_PROTO_JOIN.ordinal))            return false;
+    if (!register_string_proto_method(proto, heap, "forEach",         Builtin.TA_PROTO_FOR_EACH.ordinal))        return false;
+    if (!register_string_proto_method(proto, heap, "every",           Builtin.TA_PROTO_EVERY.ordinal))           return false;
+    if (!register_string_proto_method(proto, heap, "some",            Builtin.TA_PROTO_SOME.ordinal))            return false;
+    if (!register_string_proto_method(proto, heap, "reduce",          Builtin.TA_PROTO_REDUCE.ordinal))          return false;
+    if (!register_string_proto_method(proto, heap, "reduceRight",     Builtin.TA_PROTO_REDUCE_RIGHT.ordinal))    return false;
+    if (!register_string_proto_method(proto, heap, "map",             Builtin.TA_PROTO_MAP.ordinal))             return false;
+    if (!register_string_proto_method(proto, heap, "filter",          Builtin.TA_PROTO_FILTER.ordinal))          return false;
+    if (!register_string_proto_method(proto, heap, "find",            Builtin.TA_PROTO_FIND.ordinal))            return false;
+    if (!register_string_proto_method(proto, heap, "findIndex",       Builtin.TA_PROTO_FIND_INDEX.ordinal))      return false;
+    if (!register_string_proto_method(proto, heap, "findLast",        Builtin.TA_PROTO_FIND_LAST.ordinal))       return false;
+    if (!register_string_proto_method(proto, heap, "findLastIndex",   Builtin.TA_PROTO_FIND_LAST_INDEX.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "reverse",         Builtin.TA_PROTO_REVERSE.ordinal))         return false;
+    if (!register_string_proto_method(proto, heap, "toReversed",      Builtin.TA_PROTO_TO_REVERSED.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "at",              Builtin.TA_PROTO_AT.ordinal))              return false;
+    if (!register_string_proto_method(proto, heap, "sort",            Builtin.TA_PROTO_SORT.ordinal))            return false;
+    if (!register_string_proto_method(proto, heap, "toSorted",        Builtin.TA_PROTO_TO_SORTED.ordinal))       return false;
     // toString must be the same function object as Array.prototype.toString (§22.2.3.28).
     {
         HString* tostr_key = builtin_intern_string(heap, "toString");
@@ -3393,13 +3393,13 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
             if (try atv = arr_tostr) {
                 proto.put_prop(tostr_key, atv, hobject::PROP_FLAGS_WC);
             } else {
-                if (!register_string_proto_method(proto, heap, "toString", BUILTIN_TA_PROTO_TO_STRING)) return false;
+                if (!register_string_proto_method(proto, heap, "toString", Builtin.TA_PROTO_TO_STRING.ordinal)) return false;
             }
         } else {
-            if (!register_string_proto_method(proto, heap, "toString", BUILTIN_TA_PROTO_TO_STRING)) return false;
+            if (!register_string_proto_method(proto, heap, "toString", Builtin.TA_PROTO_TO_STRING.ordinal)) return false;
         }
     }
-    if (!register_string_proto_method(proto, heap, "toLocaleString",  BUILTIN_TA_PROTO_TO_LOCALE_STRING)) return false;
+    if (!register_string_proto_method(proto, heap, "toLocaleString",  Builtin.TA_PROTO_TO_LOCALE_STRING.ordinal)) return false;
 
     // %TypedArray%.prototype[@@iterator] = %TypedArray%.prototype.values (same object).
     // The spec says the @@iterator property must be the same function as .values.
@@ -3417,20 +3417,20 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     }
 
     // Register each typed array constructor
-    if (!register_ta_ctor(global_env, heap, "Int8Array",               BUILTIN_INT8ARRAY,              proto, 1)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint8Array",              BUILTIN_UINT8ARRAY,             proto, 1)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint8ClampedArray",       BUILTIN_UINT8CLAMPEDARRAY,      proto, 1)) return false;
-    if (!register_ta_ctor(global_env, heap, "Int16Array",              BUILTIN_INT16ARRAY,             proto, 2)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint16Array",             BUILTIN_UINT16ARRAY,            proto, 2)) return false;
-    if (!register_ta_ctor(global_env, heap, "Int32Array",              BUILTIN_INT32ARRAY,             proto, 4)) return false;
-    if (!register_ta_ctor(global_env, heap, "Uint32Array",             BUILTIN_UINT32ARRAY,            proto, 4)) return false;
-    if (!register_ta_ctor(global_env, heap, "Float32Array",            BUILTIN_FLOAT32ARRAY,           proto, 4)) return false;
-    if (!register_ta_ctor(global_env, heap, "Float64Array",            BUILTIN_FLOAT64ARRAY,           proto, 8)) return false;
+    if (!register_ta_ctor(global_env, heap, "Int8Array",               Builtin.INT8ARRAY.ordinal,              proto, 1)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint8Array",              Builtin.UINT8ARRAY.ordinal,             proto, 1)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint8ClampedArray",       Builtin.UINT8CLAMPEDARRAY.ordinal,      proto, 1)) return false;
+    if (!register_ta_ctor(global_env, heap, "Int16Array",              Builtin.INT16ARRAY.ordinal,             proto, 2)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint16Array",             Builtin.UINT16ARRAY.ordinal,            proto, 2)) return false;
+    if (!register_ta_ctor(global_env, heap, "Int32Array",              Builtin.INT32ARRAY.ordinal,             proto, 4)) return false;
+    if (!register_ta_ctor(global_env, heap, "Uint32Array",             Builtin.UINT32ARRAY.ordinal,            proto, 4)) return false;
+    if (!register_ta_ctor(global_env, heap, "Float32Array",            Builtin.FLOAT32ARRAY.ordinal,           proto, 4)) return false;
+    if (!register_ta_ctor(global_env, heap, "Float64Array",            Builtin.FLOAT64ARRAY.ordinal,           proto, 8)) return false;
 
     // Install of/from on the %TypedArray% intrinsic so all 9 per-class ctors
     // inherit them via [[Prototype]] chain (§22.2.2.1, §22.2.2.2).
-    if (!register_string_proto_method(intrinsic, heap, "of",   BUILTIN_TA_OF))   return false;
-    if (!register_string_proto_method(intrinsic, heap, "from", BUILTIN_TA_FROM)) return false;
+    if (!register_string_proto_method(intrinsic, heap, "of",   Builtin.TA_OF.ordinal))   return false;
+    if (!register_string_proto_method(intrinsic, heap, "from", Builtin.TA_FROM.ordinal)) return false;
 
     // %TypedArray%[@@species] — getter that returns `this` (§22.2.2.4).
     {
@@ -3441,7 +3441,7 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
                 getter.flags.callable = true;
                 getter.flags.constructable = false;
                 getter.prototype = heap.function_proto;
-                (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_TA_SPECIES_GET;
+                (*getter.extra_ptr()).func.builtin_fn_index = (int)Builtin.TA_SPECIES_GET.ordinal;
                 // Set getter.name = "get [Symbol.species]"
                 HString* gname_key = builtin_intern_string(heap, "name");
                 HString* gname_val = builtin_intern_string(heap, "get [Symbol.species]");

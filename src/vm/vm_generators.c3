@@ -307,7 +307,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                     return (TVal){};
                 }
                 HObject* resume_fn = resume_raw;
-                (*resume_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::BUILTIN_ASYNC_RESUME;
+                (*resume_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_RESUME.ordinal;
                 (*resume_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
                 resume_fn.flags.is_async_state = true;
                 TVal resume_tv;
@@ -329,7 +329,7 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                     return (TVal){};
                 }
                 HObject* reject_fn = reject_raw;
-                (*reject_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::BUILTIN_ASYNC_REJECT;
+                (*reject_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_REJECT.ordinal;
                 (*reject_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
                 reject_fn.flags.is_async_state = true;
                 TVal reject_tv;

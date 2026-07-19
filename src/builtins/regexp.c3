@@ -202,9 +202,9 @@ fn void builtin_regexp(BuiltinContext* ctx) {
             if (try cv = ctor_opt) {
                 if (cv.is_object() && cv.get_heapptr() != null) {
                     HObject* ctor_obj = (HObject*)cv.get_heapptr();
-                    // Check if ctor_obj is the global RegExp constructor (has builtin_fn_index == BUILTIN_REGEXP)
+                    // Check if ctor_obj is the global RegExp constructor (has builtin_fn_index == Builtin.REGEXP.ordinal)
                     if (ctor_obj.get_class() == hobject::ObjClass.FUNCTION &&
-                        (*ctor_obj.extra_ptr()).func.builtin_fn_index == (int)BUILTIN_REGEXP) {
+                        (*ctor_obj.extra_ptr()).func.builtin_fn_index == (int)Builtin.REGEXP.ordinal) {
                         // SameValue: same constructor → return the original pattern object
                         *ctx.result = pattern_arg;
                         return;
@@ -2045,7 +2045,7 @@ fn void builtin_regexp_proto_symbol_matchAll(BuiltinContext* ctx) {
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_REGEXP_STRING_ITERATOR_NEXT;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.REGEXP_STRING_ITERATOR_NEXT.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -2570,32 +2570,32 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     heap.regexp_proto = proto;
 
     // Add RegExp.prototype.test()
-    if (!register_string_proto_method(proto, heap, "test", BUILTIN_REGEXP_PROTO_TEST)) return false;
+    if (!register_string_proto_method(proto, heap, "test", Builtin.REGEXP_PROTO_TEST.ordinal)) return false;
 
     // Add RegExp.prototype.exec()
-    if (!register_string_proto_method(proto, heap, "exec", BUILTIN_REGEXP_PROTO_EXEC)) return false;
+    if (!register_string_proto_method(proto, heap, "exec", Builtin.REGEXP_PROTO_EXEC.ordinal)) return false;
 
     // Add RegExp.prototype.toString()
-    if (!register_string_proto_method(proto, heap, "toString", BUILTIN_REGEXP_PROTO_TOSTRING)) return false;
+    if (!register_string_proto_method(proto, heap, "toString", Builtin.REGEXP_PROTO_TOSTRING.ordinal)) return false;
 
     // Add RegExp.prototype accessor getters (ES6 §21.2.5)
-    if (!register_proto_accessor(proto, heap, "flags", BUILTIN_REGEXP_PROTO_GET_FLAGS)) return false;
-    if (!register_proto_accessor(proto, heap, "source", BUILTIN_REGEXP_PROTO_GET_SOURCE)) return false;
-    if (!register_proto_accessor(proto, heap, "global", BUILTIN_REGEXP_PROTO_GET_GLOBAL)) return false;
-    if (!register_proto_accessor(proto, heap, "ignoreCase", BUILTIN_REGEXP_PROTO_GET_IGNORECASE)) return false;
-    if (!register_proto_accessor(proto, heap, "multiline", BUILTIN_REGEXP_PROTO_GET_MULTILINE)) return false;
-    if (!register_proto_accessor(proto, heap, "dotAll", BUILTIN_REGEXP_PROTO_GET_DOTALL)) return false;
-    if (!register_proto_accessor(proto, heap, "sticky", BUILTIN_REGEXP_PROTO_GET_STICKY)) return false;
-    if (!register_proto_accessor(proto, heap, "unicode", BUILTIN_REGEXP_PROTO_GET_UNICODE)) return false;
-    if (!register_proto_accessor(proto, heap, "hasIndices", BUILTIN_REGEXP_PROTO_GET_HASINDICES)) return false;
-    if (!register_proto_accessor(proto, heap, "unicodeSets", BUILTIN_REGEXP_PROTO_GET_UNICODESETS)) return false;
+    if (!register_proto_accessor(proto, heap, "flags", Builtin.REGEXP_PROTO_GET_FLAGS.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "source", Builtin.REGEXP_PROTO_GET_SOURCE.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "global", Builtin.REGEXP_PROTO_GET_GLOBAL.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "ignoreCase", Builtin.REGEXP_PROTO_GET_IGNORECASE.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "multiline", Builtin.REGEXP_PROTO_GET_MULTILINE.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "dotAll", Builtin.REGEXP_PROTO_GET_DOTALL.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "sticky", Builtin.REGEXP_PROTO_GET_STICKY.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "unicode", Builtin.REGEXP_PROTO_GET_UNICODE.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "hasIndices", Builtin.REGEXP_PROTO_GET_HASINDICES.ordinal)) return false;
+    if (!register_proto_accessor(proto, heap, "unicodeSets", Builtin.REGEXP_PROTO_GET_UNICODESETS.ordinal)) return false;
 
     // Register RegExp.prototype[@@match] (ES6 §21.2.5.6)
     {
         HString* match_sym = ensure_match_symbol(heap);
         if (match_sym != null) {
             TVal match_fn;
-            match_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_MATCH);
+            match_fn.set_lightfunc((void*)(usz)Builtin.REGEXP_PROTO_SYMBOL_MATCH.ordinal);
             proto.put_prop(match_sym, match_fn, hobject::PROP_FLAGS_WC);
         }
     }
@@ -2605,7 +2605,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         HString* search_sym = ensure_search_symbol(heap);
         if (search_sym != null) {
             TVal search_fn;
-            search_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_SEARCH);
+            search_fn.set_lightfunc((void*)(usz)Builtin.REGEXP_PROTO_SYMBOL_SEARCH.ordinal);
             proto.put_prop(search_sym, search_fn, hobject::PROP_FLAGS_WC);
         }
     }
@@ -2615,7 +2615,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         HString* replace_sym = ensure_replace_symbol(heap);
         if (replace_sym != null) {
             TVal replace_fn;
-            replace_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_REPLACE);
+            replace_fn.set_lightfunc((void*)(usz)Builtin.REGEXP_PROTO_SYMBOL_REPLACE.ordinal);
             proto.put_prop(replace_sym, replace_fn, hobject::PROP_FLAGS_WC);
         }
     }
@@ -2625,7 +2625,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         HString* split_sym = ensure_split_symbol(heap);
         if (split_sym != null) {
             TVal split_fn;
-            split_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_SPLIT);
+            split_fn.set_lightfunc((void*)(usz)Builtin.REGEXP_PROTO_SYMBOL_SPLIT.ordinal);
             proto.put_prop(split_sym, split_fn, hobject::PROP_FLAGS_WC);
         }
     }
@@ -2638,7 +2638,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
         HString* matchall_sym = ensure_matchall_symbol(heap);
         if (matchall_sym != null) {
             TVal matchall_fn;
-            matchall_fn.set_lightfunc((void*)(usz)BUILTIN_REGEXP_PROTO_SYMBOL_MATCHALL);
+            matchall_fn.set_lightfunc((void*)(usz)Builtin.REGEXP_PROTO_SYMBOL_MATCHALL.ordinal);
             proto.put_prop(matchall_sym, matchall_fn, hobject::PROP_FLAGS_WC);
         }
     }
@@ -2647,7 +2647,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? regexp_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = regexp_raw) return false;
     HObject* regexp_obj = regexp_raw;
-    (*regexp_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_REGEXP;
+    (*regexp_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.REGEXP.ordinal;
 
     // Set .constructor on RegExp.prototype to the actual constructor object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -2677,7 +2677,7 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     if (species_sym != null) {
         HObject*? getter_fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try getter_fn = getter_fn_raw) {
-            (*getter_fn.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_REGEXP_SPECIES_GETTER;
+            (*getter_fn.extra_ptr()).func.builtin_fn_index = (int)Builtin.REGEXP_SPECIES_GETTER.ordinal;
             getter_fn.flags.callable = true;
             getter_fn.prototype = heap.function_proto;
             // Set .name = "get [Symbol.species]"

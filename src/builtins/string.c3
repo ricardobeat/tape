@@ -3021,7 +3021,7 @@ fn HObject* create_regexp_string_iterator(Heap* heap, HObject* rx, HString* s_hs
     if (next_key != null) {
         HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
         if (try fn_obj = fn_raw) {
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_REGEXP_STRING_ITERATOR_NEXT;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.REGEXP_STRING_ITERATOR_NEXT.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             TVal fn_tv;
@@ -3598,49 +3598,49 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .toString() method
     HString* tostring_key = (HString*)heap.strs[heap::BuiltinStr.TO_STRING];
     TVal tostring_tv;
-    tostring_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_TOSTRING);
+    tostring_tv.set_lightfunc((void*)(usz)Builtin.STRING_PROTO_TOSTRING.ordinal);
     proto.put_prop(tostring_key, tostring_tv, hobject::PROP_FLAGS_WC);
 
     // Add .valueOf() method
     HString* valueof_key = (HString*)heap.strs[heap::BuiltinStr.VALUE_OF];
     TVal valueof_tv;
-    valueof_tv.set_lightfunc((void*)(usz)BUILTIN_STRING_PROTO_VALUEOF);
+    valueof_tv.set_lightfunc((void*)(usz)Builtin.STRING_PROTO_VALUEOF.ordinal);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
 
     // Add String.prototype methods (Phase 6b)
-    if (!register_string_proto_method(proto, heap, "charAt",     BUILTIN_STRING_PROTO_CHARAT))     return false;
-    if (!register_string_proto_method(proto, heap, "charCodeAt", BUILTIN_STRING_PROTO_CHARCODEAT)) return false;
-    if (!register_string_proto_method(proto, heap, "indexOf",    BUILTIN_STRING_PROTO_INDEXOF))    return false;
-    if (!register_string_proto_method(proto, heap, "slice",      BUILTIN_STRING_PROTO_SLICE))      return false;
-    if (!register_string_proto_method(proto, heap, "substring",  BUILTIN_STRING_PROTO_SUBSTRING))  return false;
-    if (!register_string_proto_method(proto, heap, "substr",     BUILTIN_STRING_PROTO_SUBSTR))     return false;
-    if (!register_string_proto_method(proto, heap, "toLowerCase",BUILTIN_STRING_PROTO_TOLOWERCASE)) return false;
-    if (!register_string_proto_method(proto, heap, "toUpperCase",BUILTIN_STRING_PROTO_TOUPPERCASE)) return false;
-    if (!register_string_proto_method(proto, heap, "trim",       BUILTIN_STRING_PROTO_TRIM))       return false;
-    if (!register_string_proto_method(proto, heap, "split",      BUILTIN_STRING_PROTO_SPLIT))      return false;
-    if (!register_string_proto_method(proto, heap, "concat",     BUILTIN_STRING_PROTO_CONCAT))     return false;
-    if (!register_string_proto_method(proto, heap, "replace",    BUILTIN_STRING_PROTO_REPLACE))    return false;
-    if (!register_string_proto_method(proto, heap, "replaceAll", BUILTIN_STRING_PROTO_REPLACEALL)) return false;
-    if (!register_string_proto_method(proto, heap, "includes",   BUILTIN_STRING_PROTO_INCLUDES))   return false;
-    if (!register_string_proto_method(proto, heap, "startsWith", BUILTIN_STRING_PROTO_STARTSWITH)) return false;
-    if (!register_string_proto_method(proto, heap, "endsWith",   BUILTIN_STRING_PROTO_ENDSWITH))   return false;
-    if (!register_string_proto_method(proto, heap, "repeat",     BUILTIN_STRING_PROTO_REPEAT))     return false;
-    if (!register_string_proto_method(proto, heap, "trimStart",  BUILTIN_STRING_PROTO_TRIMSTART))  return false;
-    if (!register_string_proto_method(proto, heap, "trimEnd",    BUILTIN_STRING_PROTO_TRIMEND))    return false;
-    if (!register_string_proto_method(proto, heap, "codePointAt", BUILTIN_STRING_PROTO_CODEPOINTAT)) return false;
-    if (!register_string_proto_method(proto, heap, "at",         BUILTIN_STRING_PROTO_AT))         return false;
-    if (!register_string_proto_method(proto, heap, "padStart",   BUILTIN_STRING_PROTO_PADSTART))   return false;
-    if (!register_string_proto_method(proto, heap, "padEnd",     BUILTIN_STRING_PROTO_PADEND))     return false;
-    if (!register_string_proto_method(proto, heap, "lastIndexOf", BUILTIN_STRING_PROTO_LASTINDEXOF)) return false;
-    if (!register_string_proto_method(proto, heap, "match",      BUILTIN_STRING_PROTO_MATCH))      return false;
-    if (!register_string_proto_method(proto, heap, "matchAll",   BUILTIN_STRING_PROTO_MATCHALL))   return false;
-    if (!register_string_proto_method(proto, heap, "search",     BUILTIN_STRING_PROTO_SEARCH))     return false;
-    if (!register_string_proto_method(proto, heap, "toLocaleLowerCase", BUILTIN_STRING_PROTO_TOLOCALELOWERCASE)) return false;
-    if (!register_string_proto_method(proto, heap, "toLocaleUpperCase", BUILTIN_STRING_PROTO_TOLOCALEUPPERCASE)) return false;
-    if (!register_string_proto_method(proto, heap, "localeCompare", BUILTIN_STRING_PROTO_LOCALECOMPARE)) return false;
-    if (!register_string_proto_method(proto, heap, "normalize",      BUILTIN_STRING_PROTO_NORMALIZE))      return false;
-    if (!register_string_proto_method(proto, heap, "isWellFormed",   BUILTIN_STRING_PROTO_ISWELLFORMED))   return false;
-    if (!register_string_proto_method(proto, heap, "toWellFormed",   BUILTIN_STRING_PROTO_TOWELLFORMED))   return false;
+    if (!register_string_proto_method(proto, heap, "charAt",     Builtin.STRING_PROTO_CHARAT.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "charCodeAt", Builtin.STRING_PROTO_CHARCODEAT.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "indexOf",    Builtin.STRING_PROTO_INDEXOF.ordinal))    return false;
+    if (!register_string_proto_method(proto, heap, "slice",      Builtin.STRING_PROTO_SLICE.ordinal))      return false;
+    if (!register_string_proto_method(proto, heap, "substring",  Builtin.STRING_PROTO_SUBSTRING.ordinal))  return false;
+    if (!register_string_proto_method(proto, heap, "substr",     Builtin.STRING_PROTO_SUBSTR.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "toLowerCase",Builtin.STRING_PROTO_TOLOWERCASE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "toUpperCase",Builtin.STRING_PROTO_TOUPPERCASE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "trim",       Builtin.STRING_PROTO_TRIM.ordinal))       return false;
+    if (!register_string_proto_method(proto, heap, "split",      Builtin.STRING_PROTO_SPLIT.ordinal))      return false;
+    if (!register_string_proto_method(proto, heap, "concat",     Builtin.STRING_PROTO_CONCAT.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "replace",    Builtin.STRING_PROTO_REPLACE.ordinal))    return false;
+    if (!register_string_proto_method(proto, heap, "replaceAll", Builtin.STRING_PROTO_REPLACEALL.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "includes",   Builtin.STRING_PROTO_INCLUDES.ordinal))   return false;
+    if (!register_string_proto_method(proto, heap, "startsWith", Builtin.STRING_PROTO_STARTSWITH.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "endsWith",   Builtin.STRING_PROTO_ENDSWITH.ordinal))   return false;
+    if (!register_string_proto_method(proto, heap, "repeat",     Builtin.STRING_PROTO_REPEAT.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "trimStart",  Builtin.STRING_PROTO_TRIMSTART.ordinal))  return false;
+    if (!register_string_proto_method(proto, heap, "trimEnd",    Builtin.STRING_PROTO_TRIMEND.ordinal))    return false;
+    if (!register_string_proto_method(proto, heap, "codePointAt", Builtin.STRING_PROTO_CODEPOINTAT.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "at",         Builtin.STRING_PROTO_AT.ordinal))         return false;
+    if (!register_string_proto_method(proto, heap, "padStart",   Builtin.STRING_PROTO_PADSTART.ordinal))   return false;
+    if (!register_string_proto_method(proto, heap, "padEnd",     Builtin.STRING_PROTO_PADEND.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "lastIndexOf", Builtin.STRING_PROTO_LASTINDEXOF.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "match",      Builtin.STRING_PROTO_MATCH.ordinal))      return false;
+    if (!register_string_proto_method(proto, heap, "matchAll",   Builtin.STRING_PROTO_MATCHALL.ordinal))   return false;
+    if (!register_string_proto_method(proto, heap, "search",     Builtin.STRING_PROTO_SEARCH.ordinal))     return false;
+    if (!register_string_proto_method(proto, heap, "toLocaleLowerCase", Builtin.STRING_PROTO_TOLOCALELOWERCASE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "toLocaleUpperCase", Builtin.STRING_PROTO_TOLOCALEUPPERCASE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "localeCompare", Builtin.STRING_PROTO_LOCALECOMPARE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "normalize",      Builtin.STRING_PROTO_NORMALIZE.ordinal))      return false;
+    if (!register_string_proto_method(proto, heap, "isWellFormed",   Builtin.STRING_PROTO_ISWELLFORMED.ordinal))   return false;
+    if (!register_string_proto_method(proto, heap, "toWellFormed",   Builtin.STRING_PROTO_TOWELLFORMED.ordinal))   return false;
 
     // Register String.prototype[@@iterator] (ES6 §21.1.3.30)
     {
@@ -3649,7 +3649,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
             HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
             if (catch err = fn_raw) return false;
             HObject* fn_obj = fn_raw;
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_STRING_PROTO_SYMBOL_ITER;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.STRING_PROTO_SYMBOL_ITER.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.flags.constructable = false;
             fn_obj.prototype = heap.function_proto;
@@ -3677,7 +3677,7 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? str_obj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = str_obj_raw) return false;
     HObject* str_obj = str_obj_raw;
-    (*str_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_STRING;
+    (*str_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.STRING.ordinal;
 
     // Set .constructor on String.prototype to point to the actual String object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -3697,9 +3697,9 @@ fn bool register_string_constructor(EnvRecord* global_env, Heap* heap) {
     str_obj.put_prop(prototype_key, proto_tv, proto_pflags);
 
     // Add String.fromCharCode (ES5 §15.5.3.2)
-    if (!register_string_proto_method(str_obj, heap, "fromCharCode", BUILTIN_STRING_FROMCHARCODE)) return false;
-    if (!register_string_proto_method(str_obj, heap, "fromCodePoint", BUILTIN_STRING_FROMCODEPOINT)) return false;
-    if (!register_string_proto_method(str_obj, heap, "raw", BUILTIN_STRING_RAW)) return false;
+    if (!register_string_proto_method(str_obj, heap, "fromCharCode", Builtin.STRING_FROMCHARCODE.ordinal)) return false;
+    if (!register_string_proto_method(str_obj, heap, "fromCodePoint", Builtin.STRING_FROMCODEPOINT.ordinal)) return false;
+    if (!register_string_proto_method(str_obj, heap, "raw", Builtin.STRING_RAW.ordinal)) return false;
 
     // Register String constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("String");

@@ -666,7 +666,7 @@ fn bool symbol_proto_toprimitive_is_original(Heap* heap) {
     if (!v.is_object() || v.get_heapptr() == null) return false;
     HObject* fn_obj = (HObject*)v.get_heapptr();
     if (!fn_obj.is_callable()) return false;
-    return (*fn_obj.extra_ptr()).func.builtin_fn_index == (int)BUILTIN_SYMBOL_PROTO_TOPRIMITIVE;
+    return (*fn_obj.extra_ptr()).func.builtin_fn_index == (int)Builtin.SYMBOL_PROTO_TOPRIMITIVE.ordinal;
 }
 
 // ============================================================================
@@ -715,8 +715,8 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     heap.symbol_proto = proto;
 
     // Register prototype methods
-    if (!register_string_proto_method(proto, heap, "toString", BUILTIN_SYMBOL_PROTO_TOSTRING)) return false;
-    if (!register_string_proto_method(proto, heap, "valueOf", BUILTIN_SYMBOL_PROTO_VALUEOF)) return false;
+    if (!register_string_proto_method(proto, heap, "toString", Builtin.SYMBOL_PROTO_TOSTRING.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "valueOf", Builtin.SYMBOL_PROTO_VALUEOF.ordinal)) return false;
 
     // Register Symbol.prototype[Symbol.toPrimitive] — ES6 §19.4.3.5
     // This is a function that returns the this value (the symbol itself).
@@ -730,7 +730,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
             HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
             if (catch err = fn_raw) return false;
             HObject* fn_obj = fn_raw;
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SYMBOL_PROTO_TOPRIMITIVE;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.SYMBOL_PROTO_TOPRIMITIVE.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
 
@@ -771,7 +771,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
             HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
             if (catch err = fn_raw) return false;
             HObject* fn_obj = fn_raw;
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SYMBOL_PROTO_DESCRIPTION_GET;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.SYMBOL_PROTO_DESCRIPTION_GET.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
 
@@ -809,7 +809,7 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_SYMBOL;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.SYMBOL.ordinal;
 
     // Wire prototype.constructor → ctor
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -837,13 +837,13 @@ fn bool register_symbol_constructor(EnvRecord* global_env, Heap* heap) {
     // Register Symbol.for as a property of the Symbol function
     HString* for_key = builtin_intern_string(heap, "for");
     TVal for_tv;
-    for_tv.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_FOR);
+    for_tv.set_lightfunc((void*)(usz)Builtin.SYMBOL_FOR.ordinal);
     ctor.put_prop(for_key, for_tv, hobject::PROP_FLAGS_WC);
 
     // Register Symbol.keyFor as a property of the Symbol function
     HString* keyfor_key = builtin_intern_string(heap, "keyFor");
     TVal keyfor_tv;
-    keyfor_tv.set_lightfunc((void*)(usz)BUILTIN_SYMBOL_KEYFOR);
+    keyfor_tv.set_lightfunc((void*)(usz)Builtin.SYMBOL_KEYFOR.ordinal);
     ctor.put_prop(keyfor_key, keyfor_tv, hobject::PROP_FLAGS_WC);
 
     // Register Symbol.toStringTag as a well-known symbol property

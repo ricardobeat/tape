@@ -250,29 +250,29 @@ fn void* get_prop_key(Vm* vm, TVal* val) {
 /// Returns the .prototype object for a constructor lightfunc, or null for non-constructor lightfuncs.
 fn HObject* lightfunc_get_proto(Vm* vm, uint fn_idx) {
     switch (fn_idx) {
-        case builtins::BUILTIN_ERROR:           return vm.heap.err_proto;
-        case builtins::BUILTIN_TYPE_ERROR:      return vm.heap.type_err_proto;
-        case builtins::BUILTIN_RANGE_ERROR:     return vm.heap.range_err_proto;
-        case builtins::BUILTIN_REFERENCE_ERROR: return vm.heap.ref_err_proto;
-        case builtins::BUILTIN_SYNTAX_ERROR:    return vm.heap.syntax_err_proto;
-        case builtins::BUILTIN_EVAL_ERROR:      return vm.heap.eval_err_proto;
-        case builtins::BUILTIN_BOOLEAN:         return vm.heap.bool_proto;
-        case builtins::BUILTIN_STRING:          return vm.heap.string_proto;
-        case builtins::BUILTIN_NUMBER:          return vm.heap.number_proto;
-        case builtins::BUILTIN_OBJECT:          return vm.heap.object_proto;
-        case builtins::BUILTIN_ARRAY:           return vm.heap.array_proto;
-        case builtins::BUILTIN_FUNCTION:        return vm.heap.function_proto;
-        case builtins::BUILTIN_DATE:            return vm.heap.date_proto;
-        case builtins::BUILTIN_REGEXP:          return vm.heap.regexp_proto;
-        case builtins::BUILTIN_MAP:             return vm.heap.map_proto;
-        case builtins::BUILTIN_SET:             return vm.heap.set_proto;
-        case builtins::BUILTIN_WEAKMAP:         return vm.heap.weakmap_proto;
-        case builtins::BUILTIN_WEAKSET:         return vm.heap.weakset_proto;
-        case builtins::BUILTIN_SYMBOL:          return vm.heap.symbol_proto;
-        case builtins::BUILTIN_PROMISE:         return vm.heap.promise_proto;
-        case builtins::BUILTIN_GENERATOR_FUNCTION: return vm.heap.generator_proto;
-        case builtins::BUILTIN_URI_ERROR: return vm.heap.uri_err_proto;
-        case builtins::BUILTIN_AGGREGATE_ERROR: return vm.heap.aggregate_err_proto;
+        case builtins::Builtin.ERROR.ordinal:           return vm.heap.err_proto;
+        case builtins::Builtin.TYPE_ERROR.ordinal:      return vm.heap.type_err_proto;
+        case builtins::Builtin.RANGE_ERROR.ordinal:     return vm.heap.range_err_proto;
+        case builtins::Builtin.REFERENCE_ERROR.ordinal: return vm.heap.ref_err_proto;
+        case builtins::Builtin.SYNTAX_ERROR.ordinal:    return vm.heap.syntax_err_proto;
+        case builtins::Builtin.EVAL_ERROR.ordinal:      return vm.heap.eval_err_proto;
+        case builtins::Builtin.BOOLEAN.ordinal:         return vm.heap.bool_proto;
+        case builtins::Builtin.STRING.ordinal:          return vm.heap.string_proto;
+        case builtins::Builtin.NUMBER.ordinal:          return vm.heap.number_proto;
+        case builtins::Builtin.OBJECT.ordinal:          return vm.heap.object_proto;
+        case builtins::Builtin.ARRAY.ordinal:           return vm.heap.array_proto;
+        case builtins::Builtin.FUNCTION.ordinal:        return vm.heap.function_proto;
+        case builtins::Builtin.DATE.ordinal:            return vm.heap.date_proto;
+        case builtins::Builtin.REGEXP.ordinal:          return vm.heap.regexp_proto;
+        case builtins::Builtin.MAP.ordinal:             return vm.heap.map_proto;
+        case builtins::Builtin.SET.ordinal:             return vm.heap.set_proto;
+        case builtins::Builtin.WEAKMAP.ordinal:         return vm.heap.weakmap_proto;
+        case builtins::Builtin.WEAKSET.ordinal:         return vm.heap.weakset_proto;
+        case builtins::Builtin.SYMBOL.ordinal:          return vm.heap.symbol_proto;
+        case builtins::Builtin.PROMISE.ordinal:         return vm.heap.promise_proto;
+        case builtins::Builtin.GENERATOR_FUNCTION.ordinal: return vm.heap.generator_proto;
+        case builtins::Builtin.URI_ERROR.ordinal: return vm.heap.uri_err_proto;
+        case builtins::Builtin.AGGREGATE_ERROR.ordinal: return vm.heap.aggregate_err_proto;
         default: return null;
     }
 }
@@ -286,24 +286,24 @@ fn HObject* lightfunc_get_proto(Vm* vm, uint fn_idx) {
 fn bool builtin_fn_is_constructor(Vm* vm, uint fn_idx) {
     if (lightfunc_get_proto(vm, fn_idx) != null) return true;
     switch (fn_idx) {
-        case builtins::BUILTIN_INT8ARRAY:
-        case builtins::BUILTIN_UINT8ARRAY:
-        case builtins::BUILTIN_UINT8CLAMPEDARRAY:
-        case builtins::BUILTIN_INT16ARRAY:
-        case builtins::BUILTIN_UINT16ARRAY:
-        case builtins::BUILTIN_INT32ARRAY:
-        case builtins::BUILTIN_UINT32ARRAY:
-        case builtins::BUILTIN_FLOAT32ARRAY:
-        case builtins::BUILTIN_FLOAT64ARRAY:
-        case builtins::BUILTIN_ARRAYBUFFER:
-        case builtins::BUILTIN_DATAVIEW:
-        case builtins::BUILTIN_PROXY:
+        case builtins::Builtin.INT8ARRAY.ordinal:
+        case builtins::Builtin.UINT8ARRAY.ordinal:
+        case builtins::Builtin.UINT8CLAMPEDARRAY.ordinal:
+        case builtins::Builtin.INT16ARRAY.ordinal:
+        case builtins::Builtin.UINT16ARRAY.ordinal:
+        case builtins::Builtin.INT32ARRAY.ordinal:
+        case builtins::Builtin.UINT32ARRAY.ordinal:
+        case builtins::Builtin.FLOAT32ARRAY.ordinal:
+        case builtins::Builtin.FLOAT64ARRAY.ordinal:
+        case builtins::Builtin.ARRAYBUFFER.ordinal:
+        case builtins::Builtin.DATAVIEW.ordinal:
+        case builtins::Builtin.PROXY.ordinal:
             return true;
-        case builtins::BUILTIN_PROXY_CALL:
+        case builtins::Builtin.PROXY_CALL.ordinal:
             // Callable proxy trampoline: constructability mirrors the proxy
             // target and is checked via flags.constructable before dispatch.
             return true;
-        case builtins::BUILTIN_ASYNC_FUNCTION:
+        case builtins::Builtin.ASYNC_FUNCTION.ordinal:
             // %AsyncFunction% / %AsyncGeneratorFunction% intrinsic constructor.
             return true;
         default:

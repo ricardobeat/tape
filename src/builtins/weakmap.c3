@@ -96,10 +96,10 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     proto.prototype = null;
     heap.weakmap_proto = proto;
 
-    if (!register_string_proto_method(proto, heap, "set", BUILTIN_WEAKMAP_PROTO_SET)) return false;
-    if (!register_string_proto_method(proto, heap, "get", BUILTIN_WEAKMAP_PROTO_GET)) return false;
-    if (!register_string_proto_method(proto, heap, "has", BUILTIN_WEAKMAP_PROTO_HAS)) return false;
-    if (!register_string_proto_method(proto, heap, "delete", BUILTIN_WEAKMAP_PROTO_DELETE)) return false;
+    if (!register_string_proto_method(proto, heap, "set", Builtin.WEAKMAP_PROTO_SET.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "get", Builtin.WEAKMAP_PROTO_GET.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "has", Builtin.WEAKMAP_PROTO_HAS.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "delete", Builtin.WEAKMAP_PROTO_DELETE.ordinal)) return false;
 
     // Set @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);
@@ -112,7 +112,7 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_WEAKMAP;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.WEAKMAP.ordinal;
 
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
     TVal constructor_tv;

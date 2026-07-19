@@ -410,23 +410,23 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     heap.map_proto = proto;
 
     // Add .set(key, value) method
-    if (!register_string_proto_method(proto, heap, "set", BUILTIN_MAP_PROTO_SET)) return false;
+    if (!register_string_proto_method(proto, heap, "set", Builtin.MAP_PROTO_SET.ordinal)) return false;
     // Add .get(key) method
-    if (!register_string_proto_method(proto, heap, "get", BUILTIN_MAP_PROTO_GET)) return false;
+    if (!register_string_proto_method(proto, heap, "get", Builtin.MAP_PROTO_GET.ordinal)) return false;
     // Add .has(key) method
-    if (!register_string_proto_method(proto, heap, "has", BUILTIN_MAP_PROTO_HAS)) return false;
+    if (!register_string_proto_method(proto, heap, "has", Builtin.MAP_PROTO_HAS.ordinal)) return false;
     // Add .delete(key) method
-    if (!register_string_proto_method(proto, heap, "delete", BUILTIN_MAP_PROTO_DELETE)) return false;
+    if (!register_string_proto_method(proto, heap, "delete", Builtin.MAP_PROTO_DELETE.ordinal)) return false;
     // Add .clear() method
-    if (!register_string_proto_method(proto, heap, "clear", BUILTIN_MAP_PROTO_CLEAR)) return false;
+    if (!register_string_proto_method(proto, heap, "clear", Builtin.MAP_PROTO_CLEAR.ordinal)) return false;
     // Add .keys() method
-    if (!register_string_proto_method(proto, heap, "keys", BUILTIN_MAP_PROTO_KEYS)) return false;
+    if (!register_string_proto_method(proto, heap, "keys", Builtin.MAP_PROTO_KEYS.ordinal)) return false;
     // Add .values() method
-    if (!register_string_proto_method(proto, heap, "values", BUILTIN_MAP_PROTO_VALUES)) return false;
+    if (!register_string_proto_method(proto, heap, "values", Builtin.MAP_PROTO_VALUES.ordinal)) return false;
     // Add .entries() method
-    if (!register_string_proto_method(proto, heap, "entries", BUILTIN_MAP_PROTO_ENTRIES)) return false;
+    if (!register_string_proto_method(proto, heap, "entries", Builtin.MAP_PROTO_ENTRIES.ordinal)) return false;
     // Add .forEach() method
-    if (!register_string_proto_method(proto, heap, "forEach", BUILTIN_MAP_PROTO_FOREACH)) return false;
+    if (!register_string_proto_method(proto, heap, "forEach", Builtin.MAP_PROTO_FOREACH.ordinal)) return false;
     // Map.prototype[Symbol.iterator] must be the *same function object* as
     // .entries (ES6 §23.1.3.10), not merely an equivalent implementation.
     {
@@ -455,7 +455,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
             HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
             if (catch err = fn_raw) return false;
             HObject* fn_obj = fn_raw;
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MAP_PROTO_SIZE_GET;
+            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.MAP_PROTO_SIZE_GET.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
             // Set .name = "get size"
@@ -490,7 +490,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
-    (*ctor.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MAP;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.MAP.ordinal;
 
     // Set .constructor on Map.prototype
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -524,7 +524,7 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
                 getter.flags.callable = true;
                 getter.flags.constructable = false;
                 getter.prototype = heap.function_proto;
-                (*getter.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_MAP_SPECIES_GETTER;
+                (*getter.extra_ptr()).func.builtin_fn_index = (int)Builtin.MAP_SPECIES_GETTER.ordinal;
                 HString* getter_name_key = builtin_intern_string(heap, "name");
                 HString* getter_name_str = builtin_intern_string(heap, "get [Symbol.species]");
                 if (getter_name_key != null && getter_name_str != null) {

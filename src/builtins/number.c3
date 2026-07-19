@@ -537,7 +537,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? tostring_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = tostring_raw) return false;
     HObject* tostring_obj = tostring_raw;
-    (*tostring_obj.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_NUMBER_PROTO_TOSTRING;
+    (*tostring_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.NUMBER_PROTO_TOSTRING.ordinal;
     tostring_obj.flags.callable = true;
     tostring_obj.flags.constructable = false;
     tostring_obj.prototype = heap.function_proto;
@@ -560,26 +560,26 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     // Add .valueOf() method
     HString* valueof_key = (HString*)heap.strs[heap::BuiltinStr.VALUE_OF];
     TVal valueof_tv;
-    valueof_tv.set_lightfunc((void*)(usz)BUILTIN_NUMBER_PROTO_VALUEOF);
+    valueof_tv.set_lightfunc((void*)(usz)Builtin.NUMBER_PROTO_VALUEOF.ordinal);
     proto.put_prop(valueof_key, valueof_tv, hobject::PROP_FLAGS_WC);
 
     // Add .toFixed() method (Phase 6d)
-    if (!register_string_proto_method(proto, heap, "toFixed", BUILTIN_NUMBER_PROTO_TOFIXED)) return false;
+    if (!register_string_proto_method(proto, heap, "toFixed", Builtin.NUMBER_PROTO_TOFIXED.ordinal)) return false;
     // Add .toExponential() method
-    if (!register_string_proto_method(proto, heap, "toExponential", BUILTIN_NUMBER_PROTO_TOEXPONENTIAL)) return false;
+    if (!register_string_proto_method(proto, heap, "toExponential", Builtin.NUMBER_PROTO_TOEXPONENTIAL.ordinal)) return false;
     // Add .toPrecision() method
-    if (!register_string_proto_method(proto, heap, "toPrecision", BUILTIN_NUMBER_PROTO_TOPRECISION)) return false;
+    if (!register_string_proto_method(proto, heap, "toPrecision", Builtin.NUMBER_PROTO_TOPRECISION.ordinal)) return false;
 
     // Number.prototype.toLocaleString — ES5 §15.7.4.5
     // Delegates to Number.prototype.toString (handles number primitives correctly).
-    if (!register_string_proto_method(proto, heap, "toLocaleString", BUILTIN_NUMBER_PROTO_TOSTRING)) return false;
+    if (!register_string_proto_method(proto, heap, "toLocaleString", Builtin.NUMBER_PROTO_TOSTRING.ordinal)) return false;
 
     // Create Number constructor as a proper function object (not LIGHTFUNC)
     // so it can carry static properties like Number.MAX_VALUE, Number.NaN, etc.
     HObject*? num_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = num_raw) return false;
     HObject* num = num_raw;
-    (*num.extra_ptr()).func.builtin_fn_index = (int)BUILTIN_NUMBER;
+    (*num.extra_ptr()).func.builtin_fn_index = (int)Builtin.NUMBER.ordinal;
 
     // Set .constructor on Number.prototype to point to the actual Number object
     HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
@@ -610,13 +610,13 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
     if (!set_num_static_prop(num, heap, "POSITIVE_INFINITY", double::inf)) return false;
 
     // Add Number.isNaN (ES6 §20.1.2.4)
-    if (!register_string_proto_method(num, heap, "isNaN", BUILTIN_NUMBER_ISNAN)) return false;
+    if (!register_string_proto_method(num, heap, "isNaN", Builtin.NUMBER_ISNAN.ordinal)) return false;
     // Add Number.isFinite (ES6 §20.1.2.2)
-    if (!register_string_proto_method(num, heap, "isFinite", BUILTIN_NUMBER_ISFINITE)) return false;
+    if (!register_string_proto_method(num, heap, "isFinite", Builtin.NUMBER_ISFINITE.ordinal)) return false;
     // Add Number.isInteger (ES6 §20.1.2.3)
-    if (!register_string_proto_method(num, heap, "isInteger", BUILTIN_NUMBER_ISINTEGER)) return false;
+    if (!register_string_proto_method(num, heap, "isInteger", Builtin.NUMBER_ISINTEGER.ordinal)) return false;
     // Add Number.isSafeInteger (ES6 §20.1.2.5)
-    if (!register_string_proto_method(num, heap, "isSafeInteger", BUILTIN_NUMBER_ISSAFEINTEGER)) return false;
+    if (!register_string_proto_method(num, heap, "isSafeInteger", Builtin.NUMBER_ISSAFEINTEGER.ordinal)) return false;
 
     // Add Number.EPSILON (ES6 §20.1.2.1) — 2^-52
     if (!set_num_static_prop(num, heap, "EPSILON", 2.220446049250313e-16)) return false;
@@ -635,7 +635,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
             global_pi = pi;
         } else {
             // Fallback: create a new lightfunc if global lookup fails
-            global_pi.set_lightfunc((void*)(usz)BUILTIN_PARSE_INT);
+            global_pi.set_lightfunc((void*)(usz)Builtin.PARSE_INT.ordinal);
         }
         num.put_prop(parse_int_key, global_pi, hobject::PROP_FLAGS_WC);
     }
@@ -648,7 +648,7 @@ fn bool register_number_constructor(EnvRecord* global_env, Heap* heap) {
         if (try pf = global_pf_opt) {
             global_pf = pf;
         } else {
-            global_pf.set_lightfunc((void*)(usz)BUILTIN_PARSE_FLOAT);
+            global_pf.set_lightfunc((void*)(usz)Builtin.PARSE_FLOAT.ordinal);
         }
         num.put_prop(parse_float_key, global_pf, hobject::PROP_FLAGS_WC);
     }
