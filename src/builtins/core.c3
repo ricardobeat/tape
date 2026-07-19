@@ -364,7 +364,10 @@ const uint BUILTIN_DATAVIEW_GET_BIGUINT64      = 449;
 const uint BUILTIN_DATAVIEW_SET_BIGINT64       = 450;
 const uint BUILTIN_DATAVIEW_SET_BIGUINT64      = 451;
 
-const uint BUILTIN_COUNT                       = 452;
+const uint BUILTIN_FUNCTION_PROTO_RESTRICTED_GETTER = 452;
+const uint BUILTIN_FUNCTION_PROTO_RESTRICTED_SETTER = 453;
+
+const uint BUILTIN_COUNT                       = 454;
 
 const uint BUILTIN_MAP                       = 112;
 const uint BUILTIN_MAP_PROTO_SET             = 113;
@@ -3136,6 +3139,8 @@ BuiltinFunc[BUILTIN_COUNT] builtin_dispatch_table = {
     [BUILTIN_DATAVIEW_GET_BIGUINT64]      = &builtin_dataview_get_biguint64,
     [BUILTIN_DATAVIEW_SET_BIGINT64]       = &builtin_dataview_set_bigint64,
     [BUILTIN_DATAVIEW_SET_BIGUINT64]      = &builtin_dataview_set_biguint64,
+    [BUILTIN_FUNCTION_PROTO_RESTRICTED_GETTER] = &builtin_function_proto_restricted_getter,
+    [BUILTIN_FUNCTION_PROTO_RESTRICTED_SETTER] = &builtin_function_proto_restricted_setter,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

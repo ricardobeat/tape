@@ -695,6 +695,35 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
         new_target_obj = (HObject*)new_target.get_heapptr();
     }
 
+    // Bound function [[Construct]] (ES2015 §9.4.1.2):
+    //   5. If SameValue(F, newTarget) is true, let newTarget be target.
+    //   6. Return ? Construct(target, args, newTarget).
+    // Without the unwrap, a plain `new bound()` would pass the bound function
+    // itself as new.target and ordinary `Reflect.construct(bound, [], X)` would
+    // not retarget to the underlying target when X === bound.
+    if (ctor.flags.is_bound) {
+        // Intern the bound-target key on demand. Using builtin_intern_string
+        // (not Heap.strs[]) keeps this self-contained — strs[] entries are
+        // pinned at vm_create, so a new BuiltinStr slot would need
+        // init_builtin_strs() changes too. The string is short and shared
+        // across all bound functions, so intern churn is negligible.
+        HString* key_downstream = builtins::builtin_intern_string(heap,
+            { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 't', 'a', 'r', 'g', 'e', 't' });
+        if (key_downstream == null) return undef;
+        int di = ctor.find_prop_idx(key_downstream);
+        if (di < 0) return undef;  // malformed bound fn
+        TVal target_tv = ctor.prop_values()[di];
+        TVal target_as_new = new_target;
+        // SameValue(F, newTarget): if the caller passed the bound fn itself
+        // as newTarget, swap it for the underlying target so downstream's
+        // `new.target` reflects the original target.
+        TVal f_as_tv; f_as_tv.set_object(ctor);
+        if (builtins::same_value(f_as_tv, new_target)) {
+            target_as_new = target_tv;
+        }
+        return vm_construct_fn_impl(vm_ptr, target_tv, args, nargs, target_as_new);
+    }
+
     // Allocate a fresh plain object as `this`.
     // GetPrototypeFromConstructor(new_target, "%Object.prototype%") — ES2022
     // §9.1.14: read new_target.prototype; if it isn't an object, fall back to

@@ -2323,6 +2323,82 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             }
                             if (setter_fn.is_object() && setter_fn.get_heapptr() != null) {
                                 HObject* setter_obj = (HObject*)setter_fn.get_heapptr();
+                                // BUILTIN_FN setter (e.g. Function.prototype.caller/arguments
+                                // thrower). Stage a call frame with [callee, this, value]
+                                // mirroring the regular BUILTIN_FN dispatch — the setter
+                                // receives one argument (the assigned value) and the receiver
+                                // is the accessor-owning object. Stage above the current
+                                // activation's frame (not at vm.valstack[0..2]) so parent
+                                // activation data is preserved.
+                                if (setter_obj.is_callable()
+                                    && setter_obj.callable_kind() == hobject::CallableKind.BUILTIN_FN
+                                    && (*setter_obj.extra_ptr()).func.builtin_fn_index >= 0) {
+                                    uint setter_fn_idx = (uint)(*setter_obj.extra_ptr()).func.builtin_fn_index;
+                                    // Determine staging slot above the current activation's
+                                    // register frame. PUTPROP's A/B/C are arbitrary live
+                                    // locals so A+1.. cannot be used as scratch (unlike
+                                    // GETPROP). num_regs may be unreliable for builtin-driven
+                                    // frames; use vm.valstack_top clamped to bottom+num_regs.
+                                    uint cur_num_regs = ds.act.func != null
+                                        ? ((CompiledFunction*)ds.act.func).num_regs
+                                        : (uint)(vm.valstack_top - ds.act.bottom);
+                                    uint stage_offset = cur_num_regs;
+                                    uint needed = (uint)(ds.act.bottom - vm.valstack) + stage_offset + 4;
+                                    if (!ensure_valstack(vm, needed)) {
+                                        return VM_ERROR~;
+                                    }
+                                    ds.regs_base = ds.act.bottom;
+                                    TVal* stage = ds.act.bottom + stage_offset;
+                                    // Advance valstack_top past the staged frame so builtin
+                                    // dispatchers (e.g. those that re-enter the VM) see
+                                    // GC-visible memory.
+                                    TVal* stage_top = stage + 4;
+                                    if (stage_top > vm.valstack_top) { vm.valstack_top = stage_top; }
+
+                                    TVal setter_result; setter_result.set_undefined();
+                                    builtins::BuiltinContext sctx;
+                                    sctx.vm = vm;
+                                    // regs = vm.valstack; base_reg = offset to stage, so the
+                                    // builtin reads regs[base_reg-2] = stage[0] = callee,
+                                    // regs[base_reg-1] = stage[1] = this, regs[base_reg] =
+                                    // stage[2] = put_val. No incref on the staged callee/this
+                                    // slots because the thrower builtin never reads its args
+                                    // (and any future builtin setter would own these slots
+                                    // for the dispatch's lifetime).
+                                    sctx.regs = vm.valstack;
+                                    sctx.base_reg = (ushort)((uint)(stage - vm.valstack) + 2);
+                                    sctx.argc = 1;
+                                    sctx.result = &setter_result;
+                                    sctx.heap = vm.heap;
+                                    TVal setter_this; setter_this.set_object(hobj);
+                                    sctx.this_val = setter_this;
+                                    sctx.is_constructor = false;
+                                    sctx.needs_re_dispatch = false;
+                                    sctx.re_nargs = 0;
+                                    sctx.global_env = vm.global_env;
+                                    sctx.should_throw = false;
+                                    sctx.callee_obj = setter_obj;
+                                    stage[0] = setter_fn;
+                                    stage[1] = setter_this;
+                                    // incref the assigned value's heap ptr so the builtin
+                                    // dispatch's cleanup decref balances the copy at stage[2].
+                                    if (put_val.is_heap_allocated()) {
+                                        ((types::HeapHeader*)put_val.get_heapptr()).incref();
+                                    }
+                                    stage[2] = put_val;
+                                    builtins::dispatch_builtin(setter_fn_idx, &sctx);
+                                    ds.regs_base = ds.act.bottom;
+                                    // Cleanup: decrement the borrowed reference at stage[2]
+                                    // (the builtin dispatch path doesn't always decref args).
+                                    vm.heap.decref_tval(&stage[2]);
+                                    if (sctx.should_throw) {
+                                        if (!vm_throw_value(vm, sctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                            return vm_uncaught_error(vm, &sctx.throw_value);
+                                        }
+                                        return (TVal){};
+                                    }
+                                    return (TVal){};
+                                }
                                 if (setter_obj.is_callable() && (*setter_obj.extra_ptr()).func.comp_func != null) {
                                     CompiledFunction* target = (*setter_obj.extra_ptr()).func.comp_func;
                                     // Stage the call frame above the caller's live registers:

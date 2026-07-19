@@ -36,33 +36,11 @@ fn void builtin_function(BuiltinContext* ctx) {
         body_str = "";
         body_len = 0;
     } else {
-        // Get the body from the last argument. Per ES5 §15.3.2.1 step 1,
-        // call ToString(body); if ToString returns a non-string, the spec
-        // throws TypeError, but the standard ToString table never produces
-        // a non-string for primitive inputs we see here, so we can rely on
-        // builtin_to_string and fall through with the literal "" if it
-        // somehow returns null.
-        TVal* body_arg = &ctx.regs[ctx.base_reg + (uint)(ctx.argc - 1)];
-        if (body_arg.is_string() && body_arg.get_heapptr() != null) {
-            HString* s = (HString*)body_arg.get_heapptr();
-            body_str = s.get_cstr();
-            body_len = s.blen;
-        } else {
-            // ToString(body) — use the VM path so a JS toString()/valueOf() that
-            // throws propagates the original exception (§20.2.1.1.1 step 8), not
-            // a generic SyntaxError.
-            HString* s = builtin_to_string_vm(ctx, body_arg);
-            if (ctx.should_throw) return;
-            if (s != null) {
-                body_str = s.get_cstr();
-                body_len = s.blen;
-            } else {
-                body_str = "";
-                body_len = 0;
-            }
-        }
-
-        // Process parameter names from preceding args
+        // Per ES5 §15.3.2.1 step 1: ToString(param[0]), ToString(param[1]), ...,
+        // ToString(body). Params must be ToString'd BEFORE body so a param
+        // whose toString() throws is the exception that propagates (otherwise
+        // body's toString could fire first and report a misleading error).
+        // Process parameter names from preceding args FIRST.
         for (ushort i = 0; i < ctx.argc - 1; i++) {
             TVal* arg = &ctx.regs[ctx.base_reg + (uint)i];
             char* pname = "";
@@ -92,6 +70,31 @@ fn void builtin_function(BuiltinContext* ctx) {
             // Copy param name (up to buffer limit)
             for (usz j = 0; j < plen && param_pos < 255; j++) {
                 param_buf[param_pos++] = pname[j];
+            }
+        }
+
+        // Now ToString the body (last argument). If ToString returns a
+        // non-string, the spec throws TypeError, but the standard ToString
+        // table never produces a non-string for primitive inputs we see here,
+        // so we can rely on builtin_to_string and fall through with the
+        // literal "" if it somehow returns null.
+        TVal* body_arg = &ctx.regs[ctx.base_reg + (uint)(ctx.argc - 1)];
+        if (body_arg.is_string() && body_arg.get_heapptr() != null) {
+            HString* s = (HString*)body_arg.get_heapptr();
+            body_str = s.get_cstr();
+            body_len = s.blen;
+        } else {
+            // ToString(body) — use the VM path so a JS toString()/valueOf() that
+            // throws propagates the original exception (§20.2.1.1.1 step 8), not
+            // a generic SyntaxError.
+            HString* s = builtin_to_string_vm(ctx, body_arg);
+            if (ctx.should_throw) return;
+            if (s != null) {
+                body_str = s.get_cstr();
+                body_len = s.blen;
+            } else {
+                body_str = "";
+                body_len = 0;
             }
         }
     }
@@ -1084,6 +1087,46 @@ fn void builtin_function_proto_hasInstance(BuiltinContext* ctx) {
     ctx.result.set_boolean(matched);
 }
 
+/// Restricted function property getter — throws TypeError on access. Used as
+/// the [[Get]] accessor for `Function.prototype.caller` and
+/// `Function.prototype.arguments` (ES2017 §9.2.7 AddRestrictedFunctionProperties).
+fn void builtin_function_proto_restricted_getter(BuiltinContext* ctx) {
+    ctx.should_throw = true;
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch err = err_raw) { ctx.result.set_undefined(); return; }
+    HObject* err = err_raw;
+    err.prototype = ctx.heap.type_err_proto;
+    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+    HString* msg_str = builtin_intern_string(ctx.heap,
+        "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+    if (msg_key != null && msg_str != null) {
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+    }
+    ctx.throw_value.set_object(err);
+    ctx.result.set_undefined();
+}
+
+/// Restricted function property setter — throws TypeError on assignment. Used as
+/// the [[Set]] accessor for `Function.prototype.caller` and
+/// `Function.prototype.arguments` (ES2017 §9.2.7 AddRestrictedFunctionProperties).
+fn void builtin_function_proto_restricted_setter(BuiltinContext* ctx) {
+    ctx.should_throw = true;
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch err = err_raw) { ctx.result.set_undefined(); return; }
+    HObject* err = err_raw;
+    err.prototype = ctx.heap.type_err_proto;
+    HString* msg_key = builtin_intern_string(ctx.heap, "message");
+    HString* msg_str = builtin_intern_string(ctx.heap,
+        "'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+    if (msg_key != null && msg_str != null) {
+        TVal msg_tv; msg_tv.set_string(msg_str);
+        err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
+    }
+    ctx.throw_value.set_object(err);
+    ctx.result.set_undefined();
+}
+
 /// Bound function [[Call]] handler.
 /// When a bound function is called, this handler unwraps the bound data,
 /// prepends bound args to the call args, and re-dispatches.
@@ -1361,6 +1404,65 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     TVal proto_name_tv;
     proto_name_tv.set_string((HString*)heap.strs[heap::BuiltinStr.EMPTY]);
     proto.put_prop(proto_name_key, proto_name_tv, hobject::PROP_FLAGS_NWC);
+
+    // ES2017 §9.2.7 AddRestrictedFunctionProperties(F): attach `caller` and
+    // `arguments` accessor properties on Function.prototype whose get/set
+    // both throw TypeError. Both slots share a single thrower function
+    // (matching the spec's %ThrowTypeError% intrinsic), so
+    // `callerDesc.get === argumentsDesc.get` per accessor-properties.js AND
+    // each property's own get === set.
+    // { [[Get]]: thrower, [[Set]]: thrower, [[Enumerable]]: false,
+    //   [[Configurable]]: true }
+    {
+        // Build ONE shared thrower function. ES2017 §9.2.7 attaches the
+        // same intrinsic thrower to both `caller` and `arguments`.
+        HObject*? get_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (try get_fn = get_raw) {
+            (*get_fn.extra_ptr()).func.builtin_fn_index =
+                (int)BUILTIN_FUNCTION_PROTO_RESTRICTED_GETTER;
+            get_fn.flags.callable = true;
+            get_fn.flags.constructable = false;
+            get_fn.prototype = heap.function_proto;
+            // Name per V8/SpiderMonkey convention. The exact name isn't
+            // asserted by the failing tests, but a real name makes
+            // toString output more readable.
+            HString* get_name = builtin_intern_string(heap, "get caller");
+            if (get_name != null) {
+                TVal ntv; ntv.set_string(get_name);
+                HString* nkey = builtin_intern_string(heap, "name");
+                if (nkey != null) get_fn.put_prop(nkey, ntv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* len_str = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            if (len_str != null) {
+                TVal ltv; ltv.set_fastint(0);
+                get_fn.put_prop(len_str, ltv, hobject::PROP_FLAGS_NWC);
+            }
+
+            TVal shared_thrower; shared_thrower.set_object(get_fn);
+            // Setter is the same function as the getter.
+            TVal shared_setter = shared_thrower;
+
+            PropFlags restricted_flags;
+            restricted_flags.writable = false;
+            restricted_flags.enumerable = false;
+            restricted_flags.configurable = true;
+            restricted_flags.is_accessor = true;
+
+            HString* caller_key = builtin_intern_string(heap, "caller");
+            if (caller_key != null) {
+                TVal gs_caller = hobject::hobject_create_accessors(heap,
+                    shared_thrower, shared_setter);
+                proto.put_prop(caller_key, gs_caller, restricted_flags);
+            }
+
+            HString* args_key = builtin_intern_string(heap, "arguments");
+            if (args_key != null) {
+                TVal gs_args = hobject::hobject_create_accessors(heap,
+                    shared_thrower, shared_setter);
+                proto.put_prop(args_key, gs_args, restricted_flags);
+            }
+        }
+    }
 
     // Set Function.prototype on the constructor (non-writable, non-enumerable, non-configurable)
     HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];

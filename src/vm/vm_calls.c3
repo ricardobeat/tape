@@ -2135,6 +2135,55 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                         func_val = ds.regs_base[callee_reg];
                         hobj = (HObject*)func_val.get_heapptr();
                         nargs = ctx.re_nargs;
+                        // BOUND_FN re-dispatch may surface a BUILTIN_FN downstream
+                        // (e.g. `new (Function.prototype.bind.apply(Date, [...]))()`).
+                        // Route those to the BUILTIN_FN constructor path instead of
+                        // the compiled-function path below, which would deref a
+                        // null comp_func and crash. Repeat the constructable check
+                        // first — `bind` does not change constructability.
+                        if (hobj != null && hobj.is_constructable()
+                            && hobj.callable_kind() == hobject::CallableKind.BUILTIN_FN
+                            && (*hobj.extra_ptr()).func.builtin_fn_index >= 0) {
+                            uint rfn_idx = (uint)(*hobj.extra_ptr()).func.builtin_fn_index;
+                            if (!builtin_fn_is_constructor(vm, rfn_idx)) {
+                                HString* rnc_type_str = typeof_string(vm, &func_val);
+                                if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto, "%s is not a constructor", rnc_type_str.get_cstr(), ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return VM_ERROR~;
+                                }
+                                return (TVal){};
+                            }
+                            TVal rd_result; rd_result.set_undefined();
+                            builtins::BuiltinContext rd_ctx;
+                            rd_ctx.vm = vm;
+                            rd_ctx.regs = vm.valstack;
+                            rd_ctx.base_reg = (ushort)((uint)(ds.act.bottom - vm.valstack) + callee_reg + 2);
+                            rd_ctx.argc = (ushort)nargs;
+                            rd_ctx.result = &rd_result;
+                            rd_ctx.heap = vm.heap;
+                            rd_ctx.this_val.set_undefined();
+                            rd_ctx.is_constructor = true;
+                            rd_ctx.needs_re_dispatch = false;
+                            rd_ctx.re_nargs = 0;
+                            rd_ctx.global_env = vm.global_env;
+                            rd_ctx.should_throw = false;
+                            rd_ctx.callee_obj = hobj;
+                            // Same as the un-bound BUILTIN_FN branch below: a plain
+                            // `new BoundBuiltin()` sees the unwrapped callee as its
+                            // new.target (mirroring `new Date()` where Date is the
+                            // new.target, not Object).
+                            rd_ctx.new_target = hobj;
+                            builtins::dispatch_builtin(rfn_idx, &rd_ctx);
+                            ds.regs_base = ds.act.bottom;
+                            if (rd_ctx.should_throw) {
+                                if (!vm_throw_value(vm, rd_ctx.throw_value, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                                    return vm_uncaught_error(vm, &rd_ctx.throw_value);
+                                }
+                                return (TVal){};
+                            }
+                            vm.heap.tval_copy_ref(ds.regs_base + result_reg, &rd_result);
+                            track_heap_store(ds.act, ds.regs_base + result_reg, result_reg);
+                            return (TVal){};
+                        }
                         // Fall through to compiled function handling below
                     } else {
                         return (TVal){};
