@@ -1,5 +1,14 @@
 # Plan 056: BigInt (proper implementation)
 
+> **Status (2026-07-19):** Phase 1 + Phase 2 **landed on `main`** (commits
+> `f93c597`, `ac6d2ba`, `6b13c34`, `60d5a5b`; test262 wiring `87933ee`).
+> `test/bigint.js` 69/69; `built-ins/BigInt` ~73/77 (remaining fails are the
+> out-of-scope arbitrary-precision + `Reflect.construct` cases below). Code
+> reviewed pre-merge; 3 bugs fixed (heap teardown leak, shift-by-BIGINT_MIN UB,
+> `BigInt(-(2^127))` wrongly rejected).
+> **Phase 3 (BigInt64Array/BigUint64Array) and Phase 4 (DataView BigInt64)
+> remain** — tracked as the next-round BigInt/TypedArray sweep.
+
 ## Goal
 
 Turn BigInt from a `typeof`-only stub into a working primitive: literals,
