@@ -256,15 +256,81 @@ fn void? CompilerContext.statement(&self) {
     self.reclaim_stmt_regs(stmt_base);
 }
 
-/// Check if a name is restricted in strict mode (ES5 §11.6.2.2, §12.10.1).
-/// `eval` and `arguments` cannot be used as identifiers.
+/// Check if a name is restricted in strict mode (ES5 §11.6.2.2, ES2024 §13.3.1).
+/// The engine is strict-only — there is no non-strict context in which these
+/// may appear in a binding position, so we always reject:
+///   - `eval`, `arguments` — ES5 strict-only identifiers (§11.6.2.2).
+///   - `null`, `true`, `false` — NullLiteral / BooleanLiteral sources; never
+///     valid as an IdentifierName in binding position. Lexed as IDENTIFIER
+///     with `str_value` matching the literal name (no dedicated token type
+///     in this engine), so a post-advance check is the only way to catch
+///     `var true = 1` while still allowing property access `obj.true` etc.
+///   - `yield`, `await`, `let`, `static`, `implements`, `interface`, `package`,
+///     `private`, `protected`, `public` — strict-mode reserved words. Most
+///     already come through this path via the lexer's KEYWORDS table
+///     (which would deliver a keyword token instead of IDENTIFIER), but
+///     `yield` and `await` slip through in non-generator / non-module
+///     contexts where the lexer still returns the keyword token, and
+///     var_declaration deliberately accepts them. The strict-only engine
+///     must always reject.
 fn bool is_restricted_name(char[] name) @inline {
-    if (name.len == 4 && name[0] == 'e' && name[1] == 'v' && name[2] == 'a' && name[3] == 'l') {
-        return true;
+    switch (name.len) {
+        case 3:
+            // "let"
+            if (name[0] == 'l' && name[1] == 'e' && name[2] == 't') return true;
+            break;
+        case 4:
+            // "eval", "null", "true"
+            if (name[0] == 'e' && name[1] == 'v' && name[2] == 'a' && name[3] == 'l') return true;
+            if (name[0] == 'n' && name[1] == 'u' && name[2] == 'l' && name[3] == 'l') return true;
+            if (name[0] == 't' && name[1] == 'r' && name[2] == 'u' && name[3] == 'e') return true;
+            break;
+        case 5:
+            // "await", "false", "yield"
+            if (name[0] == 'a' && name[1] == 'w' && name[2] == 'a' &&
+                name[3] == 'i' && name[4] == 't') return true;
+            if (name[0] == 'f' && name[1] == 'a' && name[2] == 'l' &&
+                name[3] == 's' && name[4] == 'e') return true;
+            if (name[0] == 'y' && name[1] == 'i' && name[2] == 'e' &&
+                name[3] == 'l' && name[4] == 'd') return true;
+            break;
+        case 6:
+            // "static"
+            if (name[0] == 's' && name[1] == 't' && name[2] == 'a' &&
+                name[3] == 't' && name[4] == 'i' && name[5] == 'c') return true;
+            break;
+        case 7:
+            // "package", "private", "public"
+            if (name[0] == 'p' && name[1] == 'a' && name[2] == 'c' &&
+                name[3] == 'k' && name[4] == 'a' && name[5] == 'g' &&
+                name[6] == 'e') return true;
+            if (name[0] == 'p' && name[1] == 'r' && name[2] == 'i' &&
+                name[3] == 'v' && name[4] == 'a' && name[5] == 't' &&
+                name[6] == 'e') return true;
+            if (name[0] == 'p' && name[1] == 'u' && name[2] == 'b' &&
+                name[3] == 'l' && name[4] == 'i' && name[5] == 'c') return true;
+            break;
+        case 9:
+            // "arguments"
+            if (name[0] == 'a' && name[1] == 'r' && name[2] == 'g' &&
+                name[3] == 'u' && name[4] == 'm' && name[5] == 'e' &&
+                name[6] == 'n' && name[7] == 't' && name[8] == 's') return true;
+            break;
+        case 10:
+            // "implements", "interface"
+            if (name[0] == 'i' && name[1] == 'm' && name[2] == 'p' &&
+                name[3] == 'l' && name[4] == 'e' && name[5] == 'm' &&
+                name[6] == 'e' && name[7] == 'n' && name[8] == 't' &&
+                name[9] == 's') return true;
+            if (name[0] == 'i' && name[1] == 'n' && name[2] == 't' &&
+                name[3] == 'e' && name[4] == 'r' && name[5] == 'f' &&
+                name[6] == 'a' && name[7] == 'c' && name[8] == 'e') return true;
+            break;
     }
-    if (name.len == 9 && name[0] == 'a' && name[1] == 'r' && name[2] == 'g' &&
-        name[3] == 'u' && name[4] == 'm' && name[5] == 'e' &&
-        name[6] == 'n' && name[7] == 't' && name[8] == 's') {
+    // "protected"
+    if (name.len == 9 && name[0] == 'p' && name[1] == 'r' && name[2] == 'o' &&
+        name[3] == 't' && name[4] == 'e' && name[5] == 'c' && name[6] == 't' &&
+        name[7] == 'e' && name[8] == 'd') {
         return true;
     }
     return false;
@@ -902,7 +968,7 @@ fn void? CompilerContext.var_declaration(&self) {
                 return COMPILE_ERROR~;
             }
             if (is_restricted_name(name_tok.str_value)) {
-                return COMPILE_ERROR~;
+                return self.fail("reserved word cannot be used as a binding identifier")~;
             }
             ushort reg;
             bool already_declared = false;
@@ -3339,7 +3405,7 @@ fn void? CompilerContext.try_statement(&self) {
             } else {
                 Token catch_param = self.expect(TokenType.IDENTIFIER)!;
                 if (is_restricted_name(catch_param.str_value)) {
-                    return COMPILE_ERROR~;
+                    return self.fail("reserved word cannot be used as a catch parameter")~;
                 }
                 self.expect(TokenType.RPAREN)!;
 
@@ -4411,7 +4477,7 @@ fn void? CompilerContext.export_declaration(&self) {
         for (;;) {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
             if (is_restricted_name(name_tok.str_value)) {
-                return COMPILE_ERROR~;
+                return self.fail("reserved word cannot be used as a binding identifier")~;
             }
 
             ushort reg;

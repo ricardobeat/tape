@@ -9,6 +9,7 @@ import duktape::heap;
 import libc;
 import std::io;
 
+
 // ============================================================================
 // Private class members (ES2022) — name resolution
 //
@@ -47,11 +48,45 @@ fn char[] format_private_slot_name(char[] buf, uint class_id, char[] name) {
 
 /// Intern a slot binding name and return its stable byte slice. Interned
 /// HString data outlives every CompilerContext, so the slice is safe to
-/// store in PrivateNameEntry and to pass to declare_var's scope stack.
+/// store in PrivateNameEntry and to pass to declare_priv_slot's tracker.
 fn char[] CompilerContext.intern_slot_name(&self, char[] slot_name) {
     Heap* hp = (Heap*)self.heap;
     HString* hstr = hp.str_intern(slot_name);
-    return hstr.get_data();
+    char[] data = hstr.get_data();
+    return data;
+}
+
+/// Register a private-name slot binding (`#priv:<id>:name` or `#priv:<id>:
+/// brand`/`sbrand`) in the CURRENT (class-enclosing) context WITHOUT
+/// allocating a register or pushing to scope_stack.
+///
+/// Why: these bindings are only ever accessed via GETVAR by name from the
+/// class's __field_init__ and method bodies — the class-enclosing scope
+/// never reads them by register. declare_var would consume a register per
+/// slot, exhausting the 512-register limit for classes with ~500+ private
+/// fields (the test262 start-unicode-* / part-unicode-* suites declare every
+/// ID_Start/ID_Continue character — some versions run to 4800+ lines).
+///
+/// What it DOES still do:
+///   - Mark has_lexical_bindings = true so the compiler does not elide the
+///     class's PUSH_LEX. The lex env is needed at runtime: PUTLEX stores
+///     each fresh NEW_PRIV_SYM there, and inner functions resolve the slot
+///     by walking the env chain.
+///   - Intern the name (via str_intern in the caller; intern_slot_name)
+///     so its byte slice is stable for PrivateNameEntry to keep.
+///
+/// What it does NOT do:
+///   - Allocate a register (the slot has no compile-time register identity
+///     in the class-enclosing scope).
+///   - Push to scope_stack (no scope_stack entry means reclaim_stmt_regs
+///     and pop_scope_to can't accidentally try to free a register we never
+///     owned; resolve_var / find_local_reg never see the slot because all
+///     accesses go through GETVAR with a const-pool name anyway).
+fn void CompilerContext.declare_priv_slot(&self, char[] name) {
+    // Mark the enclosing scope as having lexical bindings — required so the
+    // class's PUSH_LEX is emitted and the env elision gate (has_closures &&
+    // has_lexical_bindings) keeps the env alive.
+    self.has_lexical_bindings = true;
 }
 
 /// Push a fresh private-name scope for a class body about to be parsed.
@@ -80,10 +115,21 @@ fn void CompilerContext.pop_private_scope(&self) {
 /// an outer class's `#x` is legitimately shadowed by an inner class's own
 /// `#x`, mirroring the spec's per-class PrivateEnvironment.
 fn PrivateNameEntry*? CompilerContext.declare_private_name(&self, char[] name) {
+    // INTERN FIRST. `str_intern` rewrites any raw 4-byte UTF-8 astral
+    // sequences into CESU-8 surrogate pairs, so two byte forms that decode
+    // to the same codepoint sequence (literal vs. \u{...} escape) end up
+    // interned to the *same* HString. Equally important for our internal
+    // bookkeeping: every entry's `.name` slot stores the interned slice,
+    // so the duplicate-declaration loop below has to compare interned-vs-
+    // interned (otherwise raw input with astral codepoints compares
+    // against the longer CESU-8 form, fails str_eq's length check, and
+    // either accepts a duplicate or, after the first successful insert,
+    // makes a follow-up `resolve_private_name` miss the entry).
+    char[] stable_name = self.intern_slot_name(name);
     uint scope_begin = self.private_scope_depth > 0
         ? self.private_scope_start[self.private_scope_depth - 1] : 0;
     for (uint i = scope_begin; i < self.private_name_count; i++) {
-        if (str_eq(self.private_names[i].name, name)) {
+        if (str_eq(self.private_names[i].name, stable_name)) {
             return COMPILE_ERROR~;  // duplicate declaration
         }
     }
@@ -92,7 +138,14 @@ fn PrivateNameEntry*? CompilerContext.declare_private_name(&self, char[] name) {
         return COMPILE_ERROR~;
     }
     uint idx = self.private_name_count;
-    self.private_names[idx].name = name;
+    // NOTE: `stable_name` points at interned HString data — the source
+    // `name` may itself point into the lexer's per-call ident_buf scratch
+    // (for the slow HASH_IDENT path via scan_ident_body_decoded), which
+    // gets overwritten on the next scan. Interning before storing fixes
+    // the lifetime AND the form problem above. For raw UTF-8 names from
+    // the fast path (source.slice), the slice was already stable, so
+    // str_intern is essentially a no-op for them but harmless.
+    self.private_names[idx].name = stable_name;
     self.private_names[idx].is_method = false;
     self.private_names[idx].has_getter = false;
     self.private_names[idx].has_setter = false;
@@ -100,16 +153,28 @@ fn PrivateNameEntry*? CompilerContext.declare_private_name(&self, char[] name) {
     // Lexical binding name for the runtime symbol slot, e.g. "#priv:3:foo".
     // The '#' prefix is source-illegal as an identifier start (HASH_IDENT
     // tokens never include it), so user code can never collide with this
-    // binding by name. Interned first: declare_var's scope stack and the
-    // PrivateNameEntry both keep the slice, which must outlive this frame.
+    // binding by name. Interned first: declare_priv_slot's lex-binding
+    // tracker and the PrivateNameEntry both keep the slice, which must
+    // outlive this frame.
+    //
+    // Note: we deliberately do NOT call declare_var here. The slot_name is
+    // only ever accessed via GETVAR (env lookup by name) from __field_init__
+    // and method bodies, never via direct register access in the class-
+    // enclosing scope. Calling declare_var would allocate a register per
+    // private name in the enclosing function's register file, exhausting the
+    // 512-register limit for classes with ~500+ private fields (test262
+    // start-unicode-*.js / part-unicode-*.js cover every ID_Start/ID_Continue
+    // char from Unicode 5.2 through 17.0.0; some exceed 4500 entries).
+    // declare_priv_slot marks the binding as lexical (so the class's lex
+    // env isn't elided — PUTLEX still creates the binding at runtime) but
+    // consumes no register and no scope_stack slot.
     uint class_id = self.private_scope_depth > 0
         ? self.private_class_id[self.private_scope_depth - 1] : 0;
     char[96] slot_name_buf;
     char[] slot_name = self.intern_slot_name(
-        format_private_slot_name(slot_name_buf[..], class_id, name));
+        format_private_slot_name(slot_name_buf[..], class_id, stable_name));
 
-    ushort slot_reg = self.declare_var(slot_name, LET);
-    (void)slot_reg;
+    self.declare_priv_slot(slot_name);
     self.private_names[idx].slot_name = slot_name;
 
     self.private_name_count++;
@@ -121,29 +186,33 @@ fn PrivateNameEntry*? CompilerContext.declare_private_name(&self, char[] name) {
 /// private name so it can never be resolved via `resolve_private_name`.
 /// Returns the interned binding-name slice — callers add it to whichever
 /// constant pool needs it (constant indices are context-relative).
+///
+/// Like declare_private_name's slot, this is bound via declare_priv_slot —
+/// only GETVAR-accessed at runtime, never register-accessed by the class-
+/// enclosing scope — so it must not consume a register (test262
+/// start-unicode-*.js blow past the 512-register limit if it did).
 fn char[] CompilerContext.declare_class_brand(&self) {
     uint class_id = self.private_scope_depth > 0
         ? self.private_class_id[self.private_scope_depth - 1] : 0;
     char[96] brand_name_buf;
     char[] brand_name = self.intern_slot_name(
         format_private_slot_name(brand_name_buf[..], class_id, "brand"));
-    ushort slot_reg = self.declare_var(brand_name, LET);
-    (void)slot_reg;
+    self.declare_priv_slot(brand_name);
     return brand_name;
 }
 
 /// Declare the class's STATIC brand (P5) — a symbol distinct from the
 /// instance brand, stamped on the constructor object rather than instances.
 /// Uses a source-illegal name ("#priv:<id>:sbrand") so it can never be
-/// resolved via `resolve_private_name`.
+/// resolved via `resolve_private_name`. Same register-free treatment as
+/// declare_class_brand; see its comment for why.
 fn char[] CompilerContext.declare_class_static_brand(&self) {
     uint class_id = self.private_scope_depth > 0
         ? self.private_class_id[self.private_scope_depth - 1] : 0;
     char[96] sbrand_name_buf;
     char[] sbrand_name = self.intern_slot_name(
         format_private_slot_name(sbrand_name_buf[..], class_id, "sbrand"));
-    ushort slot_reg = self.declare_var(sbrand_name, LET);
-    (void)slot_reg;
+    self.declare_priv_slot(sbrand_name);
     return sbrand_name;
 }
 
@@ -162,11 +231,20 @@ fn void* CompilerContext.intern_private_binding_name(&self, char[] name) {
 /// Resolve a private name (without '#') to its declaring entry, searching
 /// from the innermost enclosing class scope outward.  Returns a fault
 /// (SyntaxError) if no enclosing class declares this name.
+///
+/// `name` is the raw token text as scanned from source (potentially with
+/// 4-byte UTF-8 astral codepoints when a literal character or `\u{...}`
+/// escape decoded to a supplementary-plane value). We re-intern it before
+/// comparing against stored entries — every entry's `.name` was itself
+/// interned by declare_private_name, and `str_intern` rewrites raw astral
+/// UTF-8 to CESU-8 surrogate pairs, so byte-level comparison only works
+/// if both sides go through the same canonicalisation.
 fn PrivateNameEntry*? CompilerContext.resolve_private_name(&self, char[] name) {
+    char[] canonical_name = self.intern_slot_name(name);
     uint i = self.private_name_count;
     while (i > 0) {
         i--;
-        if (str_eq(self.private_names[i].name, name)) {
+        if (str_eq(self.private_names[i].name, canonical_name)) {
             return &self.private_names[i];
         }
     }

@@ -1293,6 +1293,18 @@ fn Token? Lexer.scan_identifier(&self) {
     self.pos = start_pos;
     char[] name = self.scan_ident_body_decoded()!;
 
+    // Per ES2024 §12.6.1, an IdentifierName written via Unicode escapes that
+    // resolves to a reserved word still behaves like that reserved word — a
+    // parser trying to use it as a binding identifier (var \u{62}reak) must
+    // reject it just like the unescaped form. The fast path above already
+    // catches the unescaped form; mirror that here so the slow path produces
+    // the same token (the parser relies on keyword tokens to reject reserved
+    // words in declaration positions; IDENTIFIER would slip through).
+    if (try kw = lookup_keyword(name, self.strict_mode)) {
+        Token tok = make_token(kw, start_line, start_col);
+        tok.str_value = name;
+        return tok;
+    }
     Token tok = make_token(TokenType.IDENTIFIER, start_line, start_col);
     tok.str_value = name;
     return tok;
@@ -1357,6 +1369,13 @@ fn char[]? Lexer.scan_ident_body_decoded(&self) {
     }
 
     // Build name slice. C3's .. is inclusive, so [0..buf_len-1] gives buf_len bytes.
+    //
+    // NOTE: callers MUST treat this slice as a borrow only — ident_buf is a
+    // per-Lexer scratch reused by every subsequent scan, so the parser can
+    // only use the slice until the next token is scanned. Anything kept
+    // across scans (PrivateNameEntry.name, scope_stack[i].name, label names,
+    // module imports, etc.) MUST be interned at the storage site via
+    // str_intern / add_string_constant so it points at stable heap memory.
     if (buf_len > 0) {
         return self.ident_buf[0..buf_len-1];
     }
