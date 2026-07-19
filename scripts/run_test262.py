@@ -143,8 +143,10 @@ UNSUPPORTED_PATTERN = re.compile(
     # ES2024+ features (implement later)
     r"Array\.fromAsync|set-methods|promise-with-resolvers|"
     r"symbols-as-weakmap-keys|change-array-by-copy|Atomics\.waitAsync|"
-    # Complex features deferred
-    r"SharedArrayBuffer|Atomics|BigInt|WeakRef|FinalizationRegistry|"
+    # Complex features deferred.  (BigInt is implemented — plan 056 — so it is
+    # no longer filtered here; BigInt64Array/BigUint64Array + DataView BigInt64
+    # tests still fail until Phase 3/4 land, but they run rather than skip.)
+    r"SharedArrayBuffer|Atomics|WeakRef|FinalizationRegistry|"
     r"structured-clone|import\.meta|dynamic-import|"
     # Async generators / for-await-of / Symbol.asyncIterator deferred — B35.
     # Per AGENTS.md we implement ES2017 async/await but not the ES2018 async-
@@ -405,6 +407,7 @@ PHASES = [
         "dirs": [
             "built-ins/Boolean", "built-ins/String", "built-ins/Number",
             "built-ins/Object", "built-ins/Array", "built-ins/Function",
+            "built-ins/BigInt",
         ],
     },
     {
