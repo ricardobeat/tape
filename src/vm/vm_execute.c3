@@ -41,32 +41,49 @@ fn EnvRecord* resolve_call_lex_env(Vm* vm, HObject* func_obj,
     EnvRecord* base = var_env;
     EnvRecord* cap_lex = (*func_obj.extra_ptr()).func.lex_env;
     if (cap_lex != null && cap_lex != var_env && cap_lex.is_declarative) {
-        // The closure was created inside a PUSH_LEX block, so its lexical
-        // bindings live in `cap_lex`. When the callee owns a fresh function
-        // scope of its own (needs_env — it declares `arguments`, closures, or
-        // captured locals), that scope must stay in the GETVAR walk so those
-        // own bindings resolve before the enclosing block's: reparent it under
-        // `cap_lex` and enter with it as the search head. Skip this for
-        // functions with a default/rest-parameter lex bridge — that path
-        // installs its own lex_env below and reparenting would risk a cycle —
-        // and only splice when `var_env` isn't already on `cap_lex`'s chain.
-        // Only a scope freshly allocated for THIS call is safe to reparent;
-        // never mutate the shared captured `func.var_env` (reused directly by
-        // needs_env=false callees — doing so corrupts every future call).
+        // The closure was created inside a PUSH_LEX block (or a class body), so
+        // its lexical bindings live in `cap_lex`. When the callee owns a fresh
+        // function scope of its own (needs_env — it declares `arguments`,
+        // closures, or captured locals), those own bindings (parameters/locals)
+        // live in `var_env`, whose natural parent is the captured function
+        // var_env (`own_var_env`).
+        //
+        // If `cap_lex`'s parent chain itself descends to `own_var_env`, the
+        // fresh scope can be reparented under `cap_lex` so its own bindings
+        // resolve first, then the enclosing block's, and `own_var_env` stays
+        // reachable through `cap_lex` — a single lexical chain (search head =
+        // var_env). Skip this for functions with a default/rest-parameter lex
+        // bridge (that path installs its own lex_env below and reparenting
+        // would risk a cycle) and when `var_env` is already on `cap_lex`'s
+        // chain. Only a scope freshly allocated for THIS call is safe to
+        // reparent; never mutate the shared captured `func.var_env` (reused
+        // directly by needs_env=false callees — doing so corrupts every future
+        // call).
+        //
+        // When `cap_lex` does NOT reach `own_var_env` (they are lexical
+        // siblings sharing a common ancestor — e.g. the global DeclarativeRecord
+        // captured alongside a sibling function/constructor scope), reparenting
+        // would sever `var_env` from `own_var_env` and lose the captured
+        // parameters. Instead, enter with `cap_lex` as the lexical search head
+        // and leave `var_env`'s parent intact: GETVAR walks lex_env (`cap_lex`)
+        // first and falls back to var_env (`var_env` → `own_var_env`), so both
+        // the block/class lexicals and the captured parameters remain visible.
         EnvRecord* own_var_env = (*func_obj.extra_ptr()).func.var_env;
         bool splice = var_env.is_function_scope
             && var_env != own_var_env
             && !target.needs_lex_bridge();
+        bool cap_reaches_own = false;
         if (splice) {
             EnvRecord* w = cap_lex;
             uint depth = 0;
             while (w != null && depth < 256) {
                 if (w == var_env) { splice = false; break; }
+                if (w == own_var_env) { cap_reaches_own = true; }
                 w = w.parent;
                 depth++;
             }
         }
-        if (splice) {
+        if (splice && cap_reaches_own) {
             var_env.parent = cap_lex;
             base = var_env;
         } else {
