@@ -3,6 +3,7 @@ module duktape::builtins;
 import duktape::types;
 import duktape::env;
 import std::math;
+import std::io;
 import libc;
 
 import duktape::heap;
@@ -1310,7 +1311,7 @@ fn void builtin_reflect_construct(BuiltinContext* ctx) {
             }
         }
         char[20] buf;
-        int n = libc::snprintf(&buf, 20, "%d", i);
+        int n = (int)(io::bprintf(&buf, "%d", i) ?? buf[:0]).len;
         if (n <= 0 || n >= 20) break;
         HString* key = builtin_intern_string(ctx.heap, buf[:n]);
         if (key == null) break;
@@ -2984,7 +2985,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 err.prototype = ctx.heap.type_err_proto;
                 HString* msg_key = builtin_intern_string(ctx.heap, "message");
                 char[128] msg_buf;
-                int msg_len = libc::snprintf(&msg_buf, 128, "Property descriptor for '%s' must be an object", p_key.get_data());
+                int msg_len = (int)(io::bprintf(&msg_buf, "Property descriptor for '%s' must be an object", (String)p_key.get_data()) ?? msg_buf[:0]).len;
                 HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
                 if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                 TVal msg_tv;
@@ -3520,8 +3521,8 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                     err.prototype = ctx.heap.type_err_proto;
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
                     char[128] msg_buf;
-                    int msg_len = libc::snprintf(&msg_buf, 128, "Property descriptor for '%s' must be an object",
-                                                 pk_key.get_data());
+                    int msg_len = (int)(io::bprintf(&msg_buf, "Property descriptor for '%s' must be an object",
+                                                 (String)pk_key.get_data()) ?? msg_buf[:0]).len;
                     HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
                     if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                     TVal msg_tv;
@@ -3572,8 +3573,8 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                     err.prototype = ctx.heap.type_err_proto;
                     HString* msg_key = builtin_intern_string(ctx.heap, "message");
                     char[128] msg_buf;
-                    int msg_len = libc::snprintf(&msg_buf, 128, "Property descriptor for '%s' must be an object",
-                                                 pk_key.get_data());
+                    int msg_len = (int)(io::bprintf(&msg_buf, "Property descriptor for '%s' must be an object",
+                                                 (String)pk_key.get_data()) ?? msg_buf[:0]).len;
                     HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
                     if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                     TVal msg_tv;
@@ -3633,8 +3634,8 @@ fn void builtin_object_create(BuiltinContext* ctx) {
                             err.prototype = ctx.heap.type_err_proto;
                             HString* msg_key = builtin_intern_string(ctx.heap, "message");
                             char[128] msg_buf;
-                            int msg_len = libc::snprintf(&msg_buf, 128, "Property descriptor for '%s' must be an object",
-                                                         pk_key.get_data());
+                            int msg_len = (int)(io::bprintf(&msg_buf, "Property descriptor for '%s' must be an object",
+                                                         (String)pk_key.get_data()) ?? msg_buf[:0]).len;
                             HString* msg_str = builtin_intern_string(ctx.heap, msg_buf[:msg_len]);
                             if (msg_key == null || msg_str == null) { ctx.result.set_undefined(); return; }
                             TVal msg_tv;
@@ -4140,7 +4141,7 @@ fn void builtin_object_assign(BuiltinContext* ctx) {
             char[12] digit_buf;
             for (uint i = 0; i < src_obj.array_size; i++) {
                 if (!src_obj.array_part()[i].is_undefined()) {
-                    int dlen = libc::snprintf(&digit_buf[0], 12, "%u", i);
+                    int dlen = (int)(io::bprintf(&digit_buf, "%d", i) ?? digit_buf[:0]).len;
                     if (dlen > 0) {
                         HString* key = builtin_intern_string(ctx.heap, digit_buf[:(uint)dlen]);
                         if (key != null) {
@@ -4678,7 +4679,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
                 }
             }
         }
-        int len = libc::snprintf(&buf, 64, "[object %s]", builtin_tag);
+        int len = (int)(io::bprintf(&buf, "[object %s]", (ZString)builtin_tag) ?? buf[:0]).len;
         if (len > 0 && len < 64) {
             ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
         } else {
@@ -4766,7 +4767,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             }
         }
         // Fall back to builtinTag
-        int len = libc::snprintf(&buf, 64, "[object %s]", builtin_tag);
+        int len = (int)(io::bprintf(&buf, "[object %s]", (ZString)builtin_tag) ?? buf[:0]).len;
         if (len > 0 && len < 64) {
             ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
         } else {
@@ -4843,7 +4844,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
             }
         }
 
-        int len = libc::snprintf(&buf, 64, "[object %s]", class_name);
+        int len = (int)(io::bprintf(&buf, "[object %s]", (ZString)class_name) ?? buf[:0]).len;
         if (len > 0 && len < 64) {
             ctx.result.set_string(builtin_intern_string(ctx.heap, buf[:len]));
             return;
