@@ -279,13 +279,13 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
         case hobject::ObjClass.FLOAT32ARRAY: {
             uint bits = (uint)raw;
             float f;
-            libc::memcpy(&f, &bits, 4);
+            mem::copy(&f, &bits, (sz)(4));
             ctx.result.set_number((double)f);
             return;
         }
         case hobject::ObjClass.FLOAT64ARRAY: {
             double d;
-            libc::memcpy(&d, &raw, 8);
+            mem::copy(&d, &raw, (sz)(8));
             ctx.result.set_number(d);
             return;
         }
@@ -369,11 +369,11 @@ fn void dv_set(BuiltinContext* ctx, hobject::ObjClass elem_class) {
             case hobject::ObjClass.FLOAT32ARRAY: {
                 float f = (float)d;
                 uint bits;
-                libc::memcpy(&bits, &f, 4);
+                mem::copy(&bits, &f, (sz)(4));
                 raw = (ulong)bits;
             }
             case hobject::ObjClass.FLOAT64ARRAY: {
-                libc::memcpy(&raw, &d, 8);
+                mem::copy(&raw, &d, (sz)(8));
             }
             default:
                 break;

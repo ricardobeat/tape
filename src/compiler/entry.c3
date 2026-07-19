@@ -6,7 +6,6 @@ import duktape::bytecode;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
-import libc;
 import std::io;
 
 // ============================================================================
@@ -167,11 +166,11 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool allow_super = fa
         heap::Heap* h2 = (heap::Heap*)ctx.heap;
         PrivateNameEntry* new_table = (PrivateNameEntry*)h2.alloc_func(h2.heap_udata, new_bytes);
         if (new_table != null) {
-            libc::memcpy(new_table, parent_private_names, inherited_bytes);
+            mem::copy(new_table, parent_private_names, (sz)(inherited_bytes));
             // Zero the rest so uninitialised entries don't carry garbage.
             if ((usz)new_cap * PrivateNameEntry::size > inherited_bytes) {
-                libc::memset((char*)new_table + inherited_bytes, 0,
-                              (usz)new_cap * PrivateNameEntry::size - inherited_bytes);
+                mem::clear((char*)new_table + inherited_bytes,
+                              (sz)((usz)new_cap * PrivateNameEntry::size - inherited_bytes));
             }
             ctx.private_names = new_table;
             ctx.private_name_count = parent_private_name_count;
