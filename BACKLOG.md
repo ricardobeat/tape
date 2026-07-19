@@ -6,8 +6,6 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 
 - [ ] **C7a-residual** — `MAX_PRIVATE_NAMES = 64` cap (`src/compiler/context.c3:1527`); heap-allocate or grow-on-demand the private-name table (65+ private fields in one class overflow slot 0).
 - [ ] **C7b** — Private names visible to direct eval; eval bodies compile fresh contexts without the enclosing private_names scope.
-- [ ] **C7c** — Double-initialisation TypeError: stamping a brand on an object that already has it (return-override trick) must throw.
-- [ ] **C7d** — Private-name misc: proxy interaction, PUTPROP evaluation order, getter/setter own-property asserts, newtarget-in-eval errors.
 - [ ] **P6** — `#x in obj` private-field presence check (plan 054; suite skipped).
 - [ ] **P7** — Public fields (plan 054; suite skipped).
 - [ ] **C8** — Arrow-function lexical `this`: resolved from calling activation instead of defining activation (`ds.act.this_binding` at CALL site). ~57 call sites; architectural investigation before touching.
@@ -71,6 +69,8 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 - [x] **P1** — RegExp property-escapes root cause was a compiler register-aliasing bug (`e40cdd9`).
 - [x] **C7 / P2-P5** — Private class members: fields, methods, accessors, static private (plan 054).
 - [x] **C7a** — `\u` escapes in private names (`afaabb7`).
+- [x] **C7c** — Duplicate private-member initialization throws TypeError (`ee660f0`).
+- [x] **C7d** — Private-name proxy, evaluation-order, accessor, and eval edge cases.
 - [x] **A9** — Reflect API surface implemented.
 - [x] **J1** — JSON.parse reviver error propagation (`d6cbc2d`) + Date.toJSON companion (`7bcf02f`).
 - [x] **Promise combinators** — GC-rooting + no-handler microtask ordering (`34a5269`).
