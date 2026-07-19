@@ -113,7 +113,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
         // TypedArray: enumerate integer indices [0, length) as own enumerable
         // keys before the named property list (mirrors the STRING exotic case
         // above). Detached buffers contribute no indices.
-        if (cur.get_class() >= hobject::ObjClass.INT8ARRAY && cur.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+        if (builtins::is_typed_array_class(cur.get_class())) {
             HObject* ta_buf = (*cur.extra_ptr()).view.buffer;
             if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
                 uint ta_shift = builtins::ta_elem_shift(cur.get_class());

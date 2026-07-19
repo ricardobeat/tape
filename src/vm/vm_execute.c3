@@ -2411,7 +2411,7 @@ fn TVal? Vm.run(Vm* vm) {
             }
 
             // TypedArray: numeric index membership (0..length-1, not detached).
-            if (obj.get_class() >= hobject::ObjClass.INT8ARRAY && obj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+            if (builtins::is_typed_array_class(obj.get_class())) {
                 long idx_long = -1;
                 bool is_int_idx = false;
                 if (rb.is_fastint()) { idx_long = rb.get_fastint(); is_int_idx = true; }

@@ -123,7 +123,7 @@ fn bool is_arraybuffer_obj(HObject* obj) {
 /// True iff cls is one of the buffer-view classes (TypedArray or DataView).
 fn bool is_bufferview_class(hobject::ObjClass cls) {
     return cls == hobject::ObjClass.DATAVIEW
-        || (cls >= hobject::ObjClass.INT8ARRAY && cls <= hobject::ObjClass.FLOAT64ARRAY);
+        || is_typed_array_class(cls);
 }
 
 /// GetPrototypeFromConstructor (ES2022 §9.1.15) for ArrayBuffer's

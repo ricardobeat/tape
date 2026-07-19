@@ -13,37 +13,58 @@ import libc;
 import std::math;
 
 // ============================================================================
-// Element size / shift tables — indexed by (cls - INT8ARRAY)
+// TypedArray class descriptors — the single source of truth for "is this a
+// typed array, and what is its element layout / content type?".
+//
+// Every TypedArray kind is one contiguous ObjClass run (INT8ARRAY ..
+// BIGUINT64ARRAY); TA_INFO is indexed by (cls - INT8ARRAY). Adding a kind means
+// adding its ObjClass (keeping the run contiguous) and one row here — no caller
+// open-codes the ordinal range, so nothing else has to change.
 // ============================================================================
 
-const char[9] TA_ELEM_SIZES  = { 1, 1, 1, 2, 2, 4, 4, 4, 8 };
-const char[9] TA_ELEM_SHIFT  = { 0, 0, 0, 1, 1, 2, 2, 2, 3 };
+struct TAInfo {
+    char    elem_size;   // bytes per element
+    char    elem_shift;  // log2(elem_size)
+    bool    is_bigint;   // BigInt64/BigUint64 — content type "BigInt" (§ ContentType)
+    char[]  name;        // constructor name for @@toStringTag / errors
+}
+
+const TAInfo[11] TA_INFO = {
+    { 1, 0, false, "Int8Array"         },
+    { 1, 0, false, "Uint8Array"        },
+    { 1, 0, false, "Uint8ClampedArray" },
+    { 2, 1, false, "Int16Array"        },
+    { 2, 1, false, "Uint16Array"       },
+    { 4, 2, false, "Int32Array"        },
+    { 4, 2, false, "Uint32Array"       },
+    { 4, 2, false, "Float32Array"      },
+    { 8, 3, false, "Float64Array"      },
+    { 8, 3, true,  "BigInt64Array"     },
+    { 8, 3, true,  "BigUint64Array"    },
+};
+
+/// True iff `cls` is any of the TypedArray element kinds.
+fn bool is_typed_array_class(hobject::ObjClass cls) {
+    return cls >= hobject::ObjClass.INT8ARRAY && cls <= hobject::ObjClass.BIGUINT64ARRAY;
+}
+
+/// True iff `cls` is a BigInt-backed TypedArray (content type "BigInt").
+/// Mixing BigInt and non-BigInt arrays in set()/construction throws TypeError.
+fn bool is_bigint_typed_array_class(hobject::ObjClass cls) {
+    return cls == hobject::ObjClass.BIGINT64ARRAY || cls == hobject::ObjClass.BIGUINT64ARRAY;
+}
 
 fn uint ta_elem_size(hobject::ObjClass cls) {
-    return TA_ELEM_SIZES[(int)cls - (int)hobject::ObjClass.INT8ARRAY];
+    return TA_INFO[(int)cls - (int)hobject::ObjClass.INT8ARRAY].elem_size;
 }
 
 fn uint ta_elem_shift(hobject::ObjClass cls) {
-    return TA_ELEM_SHIFT[(int)cls - (int)hobject::ObjClass.INT8ARRAY];
+    return TA_INFO[(int)cls - (int)hobject::ObjClass.INT8ARRAY].elem_shift;
 }
 
 fn char[] ta_class_name(hobject::ObjClass cls) {
-    switch (cls) {
-        case hobject::ObjClass.INT8ARRAY: return "Int8Array";
-        case hobject::ObjClass.UINT8ARRAY: return "Uint8Array";
-        case hobject::ObjClass.UINT8CLAMPEDARRAY: return "Uint8ClampedArray";
-        case hobject::ObjClass.INT16ARRAY: return "Int16Array";
-        case hobject::ObjClass.UINT16ARRAY: return "Uint16Array";
-        case hobject::ObjClass.INT32ARRAY: return "Int32Array";
-        case hobject::ObjClass.UINT32ARRAY: return "Uint32Array";
-        case hobject::ObjClass.FLOAT32ARRAY: return "Float32Array";
-        case hobject::ObjClass.FLOAT64ARRAY: return "Float64Array";
-        default: return "";
-    }
-}
-
-fn bool is_typed_array_class(hobject::ObjClass cls) {
-    return cls >= hobject::ObjClass.INT8ARRAY && cls <= hobject::ObjClass.FLOAT64ARRAY;
+    if (!is_typed_array_class(cls)) return "";
+    return TA_INFO[(int)cls - (int)hobject::ObjClass.INT8ARRAY].name;
 }
 
 /// ES2022 §7.1.21 CanonicalNumericIndexString — true iff `s` is "-0" or the

@@ -138,6 +138,8 @@ enum ObjClass : char {
     UINT32ARRAY,
     FLOAT32ARRAY,
     FLOAT64ARRAY,
+    BIGINT64ARRAY,
+    BIGUINT64ARRAY,
     MAP,
     SET,
     WEAKMAP,

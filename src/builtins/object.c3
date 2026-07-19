@@ -1682,7 +1682,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         // TypedArray exotic [[GetOwnProperty]] — ES2015 §9.4.5.3: integer
         // indices in range are own data properties {value, writable:true,
         // enumerable:true, configurable:true}; out of range/detached -> undefined.
-        if (obj.get_class() >= hobject::ObjClass.INT8ARRAY && obj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+        if (is_typed_array_class(obj.get_class())) {
             HString* key_str = (HString*)key;
             if (key_str.is_arridx()) {
                 uint ta_idx = key_str.array_index();

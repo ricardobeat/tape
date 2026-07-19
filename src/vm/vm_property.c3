@@ -136,8 +136,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // TypedArray element access: ta[i] where i is a numeric index.
                 // OOB/detached is spec undefined (not a hole) — never falls
                 // through to the prototype chain.
-                if (hobj_cls >= hobject::ObjClass.INT8ARRAY
-                    && hobj_cls <= hobject::ObjClass.FLOAT64ARRAY
+                if (builtins::is_typed_array_class(hobj_cls)
                     && (rc.is_fastint() || rc.is_number())) {
                     long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
                     bool is_int_idx = rc.is_fastint() || rc.get_number() == (double)idx_long;
@@ -188,8 +187,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // - Arridx strings ("0", "1", "2"): read element if in-bounds, else undefined.
                 // Neither case walks the prototype chain, preventing spurious accessor hits.
                 if (key != null
-                    && hobj_cls >= hobject::ObjClass.INT8ARRAY
-                    && hobj_cls <= hobject::ObjClass.FLOAT64ARRAY) {
+                    && builtins::is_typed_array_class(hobj_cls)) {
                     HString* key_hstr = (HString*)key;
                     if (!key_hstr.is_symbol()) {
                         if (key_hstr.is_arridx()) {
@@ -685,8 +683,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         {
                             hobject::ObjClass cls_c = hobj.get_class();
                             if (key_hstr != null && !key_hstr.is_symbol()
-                                && cls_c >= hobject::ObjClass.INT8ARRAY
-                                && cls_c <= hobject::ObjClass.FLOAT64ARRAY) {
+                                && builtins::is_typed_array_class(cls_c)) {
                                 if (key_hstr.is_arridx()) {
                                     uint cidx = key_hstr.array_index();
                                     HObject* cbuf = (*hobj.extra_ptr()).view.buffer;
@@ -2070,8 +2067,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // (ToNumber on rc can run user code — e.g. valueOf — that
                 // detaches the buffer; spec requires the conversion to happen
                 // regardless, then silently drop the store if now OOB).
-                if (hobj.get_class() >= hobject::ObjClass.INT8ARRAY
-                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY
+                if (builtins::is_typed_array_class(hobj.get_class())
                     && (rb.is_fastint() || rb.is_number())) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
                     bool is_int_idx = rb.is_fastint() || rb.get_number() == (double)idx_long;
@@ -2139,8 +2135,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 //   write if in-bounds (or no-op if OOB/detached).
                 // - Non-arridx numeric-looking keys ("1.5", "-0", "NaN"): silently no-op.
                 if (rb.is_string()
-                    && hobj.get_class() >= hobject::ObjClass.INT8ARRAY
-                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+                    && builtins::is_typed_array_class(hobj.get_class())) {
                     HString* key_hstr = (HString*)rb.get_heapptr();
                     if (key_hstr != null && !key_hstr.is_symbol()) {
                         if (key_hstr.is_arridx()) {
@@ -2831,8 +2826,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 // TypedArray: in-range indices are non-configurable (delete
                 // returns false without deleting); out-of-range/detached
                 // indices return true per spec (nothing to delete).
-                if (hobj.get_class() >= hobject::ObjClass.INT8ARRAY
-                    && hobj.get_class() <= hobject::ObjClass.FLOAT64ARRAY
+                if (builtins::is_typed_array_class(hobj.get_class())
                     && (rc.is_fastint() || rc.is_number())) {
                     long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
                     bool is_int_idx = rc.is_fastint() || rc.get_number() == (double)idx_long;

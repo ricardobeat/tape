@@ -206,8 +206,7 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     long len = 0;
     if (target.get_class() == hobject::ObjClass.ARRAY) {
         len = (long)*target.array_len_ptr();
-    } else if (target.get_class() >= hobject::ObjClass.INT8ARRAY
-               && target.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+    } else if (is_typed_array_class(target.get_class())) {
         HObject* ta_buf = (*target.extra_ptr()).view.buffer;
         if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
             uint ta_shift = ta_elem_shift(target.get_class());
@@ -226,8 +225,7 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
 
     if ((long)idx >= len) {
         done = true;
-    } else if (target.get_class() >= hobject::ObjClass.INT8ARRAY
-               && target.get_class() <= hobject::ObjClass.FLOAT64ARRAY) {
+    } else if (is_typed_array_class(target.get_class())) {
         // TypedArray: read element from backing store directly.
         HObject* ta_buf = (*target.extra_ptr()).view.buffer;
         if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
