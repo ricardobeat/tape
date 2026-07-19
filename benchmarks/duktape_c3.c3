@@ -93,15 +93,6 @@ fn int main(String[] args) {
         return 1;
     }
 
-    // Reset optimizer toggle in case a prior run in the same process set it
-    // (defensive: this CLI is a one-shot process, but other runners in this
-    // binary share state via the module-level g_disable_optimize).
-    if (!compiler::get_disable_optimize()) {
-        // already false — nothing to do
-    } else if (!(false)) {
-        compiler::set_disable_optimize(false);
-    }
-
     // ── Load source ──────────────────────────────────────────────────────────
     time::Time t0 = debug ? time::now() : (time::Time)0;
     char[]? source_opt = file::load_temp(path);
