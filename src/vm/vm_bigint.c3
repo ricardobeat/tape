@@ -102,7 +102,7 @@ fn BigIntOpResult vm_bigint_binop(Vm* vm, Opcode op, TVal* ra, TVal* rb, TVal* r
         case Opcode.BOR:  r = a | b;
         case Opcode.BXOR: r = a ^ b;
         case Opcode.SHL:  r = vm_bigint_shl(a, b);
-        case Opcode.SHR:  r = vm_bigint_shl(a, -b);   // >> is << by the negation
+        case Opcode.SHR:  r = vm_bigint_shr(a, b);
         case Opcode.USHR:
             // ES2020: unsigned right shift is not defined for BigInt.
             vm_set_type_error(vm, "BigInts have no unsigned right shift, use >> instead");
@@ -131,9 +131,12 @@ fn BigIntOpResult vm_bigint_binop(Vm* vm, Opcode op, TVal* ra, TVal* rb, TVal* r
 fn int128? vm_bigint_shl(int128 v, int128 count) {
     if (count == 0) return v;
     if (count < 0) {
-        // Right shift: arithmetic, saturates toward 0 / -1.
-        int128 n = -count;
-        if (n >= 128) return v < 0 ? (int128)-1 : (int128)0;
+        // Right shift: arithmetic, saturates toward 0 / -1. Test the magnitude
+        // against −128 directly rather than negating `count`: `-count` would
+        // overflow (UB) when count == BIGINT_MIN and wrongly stay negative,
+        // skipping the saturation guard.
+        if (count <= (int128)-128) return v < 0 ? (int128)-1 : (int128)0;
+        uint n = (uint)(-count);
         return v >> (uint128)n;
     }
     // Left shift.
@@ -142,6 +145,27 @@ fn int128? vm_bigint_shl(int128 v, int128 count) {
     uint sh = (uint)count;
     int128 r = v << (uint128)sh;
     // Overflow iff shifting back does not recover the original value.
+    if ((r >> (uint128)sh) != v) return hbigint::BIGINT_OVERFLOW~;
+    return r;
+}
+
+/// BigInt `>>` (v >> count). Positive count is an arithmetic right shift
+/// (saturating toward 0 / -1 at ≥128); a negative count is a left shift by
+/// |count|. Mirror of `vm_bigint_shl` with the sign flipped, testing the
+/// magnitude against +128 directly so `count == BIGINT_MIN` never negates.
+fn int128? vm_bigint_shr(int128 v, int128 count) {
+    if (count == 0) return v;
+    if (count > 0) {
+        if (count >= 128) return v < 0 ? (int128)-1 : (int128)0;
+        return v >> (uint128)(uint)count;
+    }
+    // count < 0: left shift by |count|. `-count` is safe here (count != MIN
+    // would only matter for a positive magnitude, and MIN is handled by the
+    // >= 128 overflow bound below via the direct -128 comparison).
+    if (v == 0) return (int128)0;
+    if (count <= (int128)-128) return hbigint::BIGINT_OVERFLOW~;
+    uint sh = (uint)(-count);
+    int128 r = v << (uint128)sh;
     if ((r >> (uint128)sh) != v) return hbigint::BIGINT_OVERFLOW~;
     return r;
 }

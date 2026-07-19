@@ -96,4 +96,18 @@ ok(String(255n) === "255", "String(bigint)");
 ok("v=" + 10n === "v=10", "string concat");
 ok(Object.prototype.toString.call(5n) === "[object BigInt]", "toStringTag");
 
+// --- BIGINT_MIN (-2^127) boundary: shift-count == MIN and value == MIN ---
+var MIN = -1n << 127n;
+ok(5n << MIN === 0n, "5n << MIN saturates to 0n");
+throws(function () { return 5n >> MIN; }, "RangeError", "5n >> MIN overflows");
+ok(-3n << MIN === -1n, "-3n << MIN saturates to -1n");
+ok(5n >> 100n === 0n, "large right shift saturates to 0n");
+ok(-1n >> 200n === -1n, "large right shift of -1n saturates to -1n");
+ok(BigInt(-(2 ** 127)) === MIN, "BigInt(-(2^127)) == MIN (representable)");
+ok(~MIN === 170141183460469231731687303715884105727n, "~MIN == MAX (2^127-1)");
+throws(function () { return -MIN; }, "RangeError", "-MIN overflows");
+throws(function () { return MIN / -1n; }, "RangeError", "MIN / -1n overflows");
+ok(MIN % -1n === 0n, "MIN % -1n == 0n");
+ok(MIN >> 1n === -(2n ** 126n), "MIN >> 1n == -2^126");
+
 console.log("passed=" + passed + " failed=" + failed);

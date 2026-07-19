@@ -875,6 +875,10 @@ fn void Heap.destroy(&self) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
             hobject::hobject_free((HObject*)cur, (void*)self);
+        } else if (cur.is_bigint()) {
+            // HBigInt boxes are the only non-object node on heap_allocated; they
+            // hold no children, so a plain free suffices.
+            self.free_func(self.heap_udata, cur);
         }
         cur = next;
     }
@@ -1027,6 +1031,10 @@ fn void Heap.reset(&self) {
         HeapHeader* next = cur.next;
         if (cur.is_object()) {
             hobject::hobject_free((HObject*)cur, (void*)self);
+        } else if (cur.is_bigint()) {
+            // HBigInt boxes are the only non-object node on heap_allocated; they
+            // hold no children, so a plain free suffices.
+            self.free_func(self.heap_udata, cur);
         }
         cur = next;
     }

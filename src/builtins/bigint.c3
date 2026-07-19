@@ -106,8 +106,12 @@ fn int128 builtin_to_bigint(BuiltinContext* ctx, TVal* val, bool* ok) {
 fn int128? number_to_bigint(double d) {
     if (math::is_nan(d) || math::is_inf(d)) return hbigint::BIGINT_SYNTAX~;
     if (d != math::trunc(d)) return hbigint::BIGINT_SYNTAX~;
-    // Range check: |d| must be < 2^127.  2^127 = 1.7014118346046923e38.
-    if (d >= 1.7014118346046923e38 || d <= -1.7014118346046924e38) {
+    // Representable range is [-2^127, 2^127 − 1].  2^127 = 1.7014118346046923e38
+    // (not representable → reject `d >= 2^127`), but -2^127 IS representable as
+    // int128 BIGINT_MIN, so reject only `d < -2^127`.  The double -2^127 is
+    // exact and the next-lower double is a full ULP (~2^74) away, so a strict
+    // `<` cleanly admits exactly -2^127 while rejecting anything more negative.
+    if (d >= 1.7014118346046923e38 || d < -1.7014118346046923e38) {
         return hbigint::BIGINT_OVERFLOW~;
     }
     return (int128)d;
