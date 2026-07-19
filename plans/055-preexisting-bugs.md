@@ -148,6 +148,13 @@ strict-only `this` handling — but Function() bodies are a distinct path.)
 Reproduces on unmodified HEAD. A crash, not a wrong value. Needs investigation.
 Reporter: O4.
 
+### PB15 — AggregateError has the same abrupt-completion bug as Error (follow-up)
+`builtin_aggregate_error` (error.c3) uses raw `has_prop`/`get_prop`/`builtin_to_string`
+for its `cause`/`message` args — same root cause E1 fixed for Error. Pre-existing
+fails: `AggregateError/message-tostring-abrupt.js`, `*-abrupt-symbol.js` etc.
+Natural follow-up: apply the same js_has_property/builtins_generic_get/
+builtin_to_string_vm treatment. Reporter: E1.
+
 ## Needs more investigation
 
 ### PB3 — batch-runner SIGSEGV under sustained load (crash, infra)
