@@ -22,6 +22,7 @@ fn bool same_value_zero(TVal a, TVal b) {
             case FASTINT:   return a.get_fastint() == b.get_fastint();
             case STRING:    return a.get_heapptr() == b.get_heapptr();
             case OBJECT:    return a.get_heapptr() == b.get_heapptr();
+            case BIGINT:    return a.get_bigint() == b.get_bigint();
             default: return false;
         }
     }
@@ -54,6 +55,7 @@ fn bool same_value(TVal a, TVal b) {
             case FASTINT:   return a.get_fastint() == b.get_fastint();
             case STRING:    return a.get_heapptr() == b.get_heapptr();
             case OBJECT:    return a.get_heapptr() == b.get_heapptr();
+            case BIGINT:    return a.get_bigint() == b.get_bigint();
             default: return false;
         }
     }

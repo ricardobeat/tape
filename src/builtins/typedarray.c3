@@ -375,6 +375,70 @@ fn void ta_write_element(char* p, hobject::ObjClass cls, TVal* val, BuiltinConte
     }
 }
 
+// A TypedArray element value after the spec's Numeric coercion, before it is
+// stored: exactly one of `num`/`big64` is meaningful depending on `is_bigint`.
+// Splitting coercion (may run user code / throw) from the store (needs a live
+// buffer) lets callers coerce once, re-check detach, and only then write —
+// without every method knowing the numeric-vs-BigInt distinction.
+struct TAScalar {
+    bool   is_bigint;
+    double num;
+    long   big64;
+}
+
+/// Coerce `val` to the element type of `cls` — ToBigInt for BigInt kinds,
+/// ToNumber for the rest. May run user code and set ctx.should_throw.
+fn TAScalar ta_coerce_element(hobject::ObjClass cls, TVal* val, BuiltinContext* ctx) {
+    TAScalar s;
+    if (is_bigint_typed_array_class(cls)) {
+        s.is_bigint = true;
+        bool ok;
+        int128 bv = builtin_to_bigint(ctx, val, &ok);
+        if (!ok || ctx.should_throw) return s;
+        s.big64 = (long)bv;
+    } else {
+        s.is_bigint = false;
+        s.num = ta_val_to_number(val, ctx);
+    }
+    return s;
+}
+
+/// Store a already-coerced scalar at byte pointer `p`. Never runs user code or
+/// throws — safe to call after a post-coercion detach re-check.
+fn void ta_store_scalar(char* p, hobject::ObjClass cls, TAScalar* s) {
+    if (s.is_bigint) {
+        libc::memcpy(p, &s.big64, 8);
+        return;
+    }
+    switch (cls) {
+        case hobject::ObjClass.INT8ARRAY:
+        case hobject::ObjClass.UINT8ARRAY: {
+            char b = (char)(double_to_int32(s.num) & 0xFF);
+            *(char*)p = b;
+        }
+        case hobject::ObjClass.UINT8CLAMPEDARRAY:
+            *(char*)p = ta_to_uint8_clamped(s.num);
+        case hobject::ObjClass.INT16ARRAY:
+        case hobject::ObjClass.UINT16ARRAY: {
+            short sv = (short)(double_to_int32(s.num) & 0xFFFF);
+            libc::memcpy(p, &sv, 2);
+        }
+        case hobject::ObjClass.INT32ARRAY:
+        case hobject::ObjClass.UINT32ARRAY: {
+            int v32 = (int)double_to_int32(s.num);
+            libc::memcpy(p, &v32, 4);
+        }
+        case hobject::ObjClass.FLOAT32ARRAY: {
+            float f = (float)s.num;
+            libc::memcpy(p, &f, 4);
+        }
+        case hobject::ObjClass.FLOAT64ARRAY:
+            libc::memcpy(p, &s.num, 8);
+        default:
+            break;
+    }
+}
+
 /// ES2022 §7.1.6 ToInt32 core, applied to an already-computed double.
 /// NaN/Infinity -> 0; otherwise truncate toward zero mod 2^32, reinterpreted
 /// as signed 32-bit (sign bit set -> negative).
@@ -1114,16 +1178,14 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
                 if (try v = ev) elem = v;
             }
         }
-        // Convert first; then re-check detach per spec §23.2.3.24 step 23a.
-        // If buffer is detached we continue iterating (to call all getters) but skip writes.
-        double d = ta_val_to_number(&elem, ctx);
+        // Coerce first (ToNumber / ToBigInt — may run user code); then re-check
+        // detach per spec §23.2.3.24 step 23a. If the buffer is detached we keep
+        // iterating (to run all getters) but skip the store.
+        TAScalar sv = ta_coerce_element(dst_cls, &elem, ctx);
         if (ctx.should_throw) return;
         if (!ta_is_detached(dst)) {
             char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
-            // Write the pre-converted double as a TVal.
-            TVal num_tv; num_tv.set_number(d);
-            ta_write_element(dp, dst_cls, &num_tv, ctx);
-            if (ctx.should_throw) return;
+            ta_store_scalar(dp, dst_cls, &sv);
         }
     }
     ctx.result.set_undefined();
@@ -1266,20 +1328,10 @@ fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
     TVal val_arg; val_arg.set_undefined();
     if (ctx.argc >= 1) val_arg = ctx.regs[ctx.base_reg];
 
-    // Convert value first (may run user code). BigInt arrays use ToBigInt (§23.2.3.8
-    // step 4), non-BigInt arrays use ToNumber; do it exactly once up front.
-    bool is_big = is_bigint_typed_array_class(cls);
-    double fill_d = 0.0;
-    long fill_i64 = 0;
-    if (is_big) {
-        bool ok;
-        int128 bv = builtin_to_bigint(ctx, &val_arg, &ok);
-        if (!ok || ctx.should_throw) return;
-        fill_i64 = (long)bv;
-    } else {
-        fill_d = ta_val_to_number(&val_arg, ctx);
-        if (ctx.should_throw) return;
-    }
+    // Coerce the fill value exactly once up front (ToNumber, or ToBigInt for
+    // BigInt arrays — §23.2.3.8 step 3); may run user code.
+    TAScalar fill = ta_coerce_element(cls, &val_arg, ctx);
+    if (ctx.should_throw) return;
     if (ta_is_detached(obj)) {
         arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during fill");
         return;
@@ -1311,24 +1363,19 @@ fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
 
     if (k < final_k) {
         char* base = (*buf.extra_ptr()).ab.data + byte_off;
-        if (is_big) {
-            // BigInt64/BigUint64 fill: store the pre-converted low 64 bits.
-            for (uint i = k; i < final_k; i++) {
-                char* p = base + (i << shift);
-                libc::memcpy(p, &fill_i64, 8);
-            }
-        } else if (cls == hobject::ObjClass.UINT8ARRAY || cls == hobject::ObjClass.INT8ARRAY) {
+        if (!fill.is_bigint && (cls == hobject::ObjClass.UINT8ARRAY || cls == hobject::ObjClass.INT8ARRAY)) {
             // Single-byte fill: truncate to int8, then bulk memset.
-            char fill_byte = (char)(double_to_int32(fill_d) & 0xFF);
+            char fill_byte = (char)(double_to_int32(fill.num) & 0xFF);
             libc::memset(base + k, (int)fill_byte, (usz)(final_k - k));
-        } else if (cls == hobject::ObjClass.UINT8CLAMPEDARRAY) {
-            char clamped = ta_to_uint8_clamped(fill_d);
+        } else if (!fill.is_bigint && cls == hobject::ObjClass.UINT8CLAMPEDARRAY) {
+            char clamped = ta_to_uint8_clamped(fill.num);
             libc::memset(base + k, (int)clamped, (usz)(final_k - k));
         } else {
-            TVal fill_tv; fill_tv.set_number(fill_d);
+            // General path (all wide numeric kinds + BigInt): store the
+            // pre-coerced scalar; never throws or runs user code.
             for (uint i = k; i < final_k; i++) {
                 char* p = base + (i << shift);
-                ta_write_element(p, cls, &fill_tv, ctx);
+                ta_store_scalar(p, cls, &fill);
                 if (ctx.should_throw) return;
             }
         }
@@ -1646,14 +1693,8 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
     TVal search_arg; search_arg.set_undefined();
     if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
 
-    // Strict equality: non-numeric searchElement can never === a stored Number.
-    bool is_numeric_srch = search_arg.is_fastint() || search_arg.is_number();
-    if (!is_numeric_srch) { ctx.result.set_fastint(-1); return; }
-
-    double search_d = search_arg.is_fastint() ? (double)search_arg.get_fastint() : search_arg.get_number();
-    // NaN: strict equality never matches (NaN !== NaN).
-    if (search_d != search_d) { ctx.result.set_fastint(-1); return; }
-
+    // fromIndex (ToIntegerOrInfinity) is evaluated before any comparison and
+    // may throw — do it even when searchElement can't possibly match (§23.2.3.13).
     uint from = 0;
     if (ctx.argc >= 2) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
@@ -1668,10 +1709,13 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
         }
     }
 
+    // Element comparison is IsStrictlyEqual on TVals (ta_load_element already
+    // boxes BigInt kinds), so the same code path is correct for numeric and
+    // BigInt arrays. A search value that can't === any element simply never
+    // matches; NaN/-0/mismatched-type all fall out of strict_eq naturally.
     for (uint i = from; i < len; i++) {
         TVal elem = ta_load_element(ctx.heap, base, cls, i);
-        double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
-        if (elem_d == search_d) {
+        if (vm::strict_eq(&search_arg, &elem)) {
             ctx.result.set_fastint((long)i);
             return;
         }
@@ -1695,13 +1739,8 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
     TVal search_arg; search_arg.set_undefined();
     if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
 
-    // Strict equality: non-numeric searchElement can never === a stored Number.
-    bool is_numeric_li = search_arg.is_fastint() || search_arg.is_number();
-    if (!is_numeric_li) { ctx.result.set_fastint(-1); return; }
-
-    double search_d = search_arg.is_fastint() ? (double)search_arg.get_fastint() : search_arg.get_number();
-    if (search_d != search_d) { ctx.result.set_fastint(-1); return; }
-
+    // fromIndex (ToIntegerOrInfinity) is evaluated before comparison and may
+    // throw, even when searchElement can't match (§23.2.3.17).
     long from = (long)len - 1;
     if (ctx.argc >= 2) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
@@ -1715,10 +1754,10 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
         }
     }
 
+    // IsStrictlyEqual on TVals — correct for numeric and BigInt arrays alike.
     for (long i = from; i >= 0; i--) {
         TVal elem = ta_load_element(ctx.heap, base, cls, (uint)i);
-        double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
-        if (elem_d == search_d) {
+        if (vm::strict_eq(&search_arg, &elem)) {
             ctx.result.set_fastint(i);
             return;
         }
@@ -1744,15 +1783,8 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
     TVal search_arg; search_arg.set_undefined();
     if (ctx.argc >= 1) search_arg = ctx.regs[ctx.base_reg];
 
-    // SameValueZero on TypedArray elements: elements are always Numbers. A non-Number
-    // searchElement can never match a stored Number via SameValueZero (type check first),
-    // so return false immediately without calling ToNumber.
-    bool is_numeric = search_arg.is_fastint() || search_arg.is_number();
-    if (!is_numeric) { ctx.result.set_boolean(false); return; }
-
-    double search_d = search_arg.is_fastint() ? (double)search_arg.get_fastint() : search_arg.get_number();
-    bool search_nan = (search_d != search_d);
-
+    // fromIndex (ToIntegerOrInfinity) is evaluated before comparison and may
+    // throw, even when searchElement can't match (§23.2.3.14).
     uint from = 0;
     if (ctx.argc >= 2) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
@@ -1767,15 +1799,11 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
         }
     }
 
+    // SameValueZero on TVals — NaN matches NaN, +0 matches -0, and BigInt
+    // matches BigInt; the numeric/BigInt split is handled inside same_value_zero.
     for (uint i = from; i < len; i++) {
         TVal elem = ta_load_element(ctx.heap, base, cls, i);
-        double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
-        // SameValueZero: NaN == NaN, else == (handles +0/-0 naturally since both are 0.0)
-        if (search_nan) {
-            if (elem_d != elem_d) { ctx.result.set_boolean(true); return; }
-        } else {
-            if (elem_d == search_d) { ctx.result.set_boolean(true); return; }
-        }
+        if (same_value_zero(search_arg, elem)) { ctx.result.set_boolean(true); return; }
     }
     ctx.result.set_boolean(false);
 }
@@ -1833,7 +1861,9 @@ fn void builtin_ta_proto_join(BuiltinContext* ctx) {
     usz total_len = 0;
     for (uint i = 0; i < len; i++) {
         TVal elem = ta_load_element(ctx.heap, base, cls, i);
-        HString* es = builtin_number_to_hstring(heap, elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number());
+        // ToString on the element TVal — numeric kinds format as numbers,
+        // BigInt kinds as their decimal string (§builtin_to_string BIGINT case).
+        HString* es = builtin_to_string(heap, &elem);
         if (es == null) es = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
         ((types::HeapHeader*)es).incref();
         elem_strs[i] = es;
@@ -2408,18 +2438,34 @@ fn int ta_numeric_compare(double a, double b) {
     return 0;
 }
 
-/// Insertion sort on a double[] slice — O(n²) but correct and stable for small n.
-fn void ta_insertion_sort(double[] arr, BuiltinContext* ctx, TVal comparefn, bool has_comparefn) {
+/// Default TypedArray sort comparator (§23.2.3.29 CompareTypedArrayElements with
+/// comparefn = undefined). Operates on element TVals so it is exact for numeric
+/// and BigInt arrays alike (BigInt values never lose precision through a double).
+fn int ta_default_compare(TVal* a, TVal* b) {
+    if (a.is_bigint() && b.is_bigint()) {
+        int128 av = a.get_bigint();
+        int128 bv = b.get_bigint();
+        if (av < bv) return -1;
+        if (av > bv) return 1;
+        return 0;
+    }
+    double ad = a.is_fastint() ? (double)a.get_fastint() : a.get_number();
+    double bd = b.is_fastint() ? (double)b.get_fastint() : b.get_number();
+    return ta_numeric_compare(ad, bd);
+}
+
+/// Insertion sort on a TVal[] slice — O(n²) but correct and stable for small n.
+/// Elements are element TVals (BigInt kinds already boxed), so the algorithm is
+/// element-type agnostic; only the leaf comparators know numeric vs BigInt.
+fn void ta_insertion_sort(TVal[] arr, BuiltinContext* ctx, TVal comparefn, bool has_comparefn) {
     uint n = (uint)arr.len;
     for (uint i = 1; i < n; i++) {
-        double key = arr[i];
+        TVal key = arr[i];
         long j = (long)i - 1;
         while (j >= 0) {
             int cmp;
             if (has_comparefn && ctx.heap.call_fn != null && ctx.vm != null) {
-                TVal av; av.set_number(arr[(uint)j]);
-                TVal bv; bv.set_number(key);
-                TVal[2] args; args[0] = av; args[1] = bv;
+                TVal[2] args; args[0] = arr[(uint)j]; args[1] = key;
                 TVal this_val; this_val.set_undefined();
                 TVal res = ctx.heap.call_fn(ctx.vm, comparefn, &args[0], 2, this_val);
                 if (ctx.heap.has_error) {
@@ -2438,7 +2484,7 @@ fn void ta_insertion_sort(double[] arr, BuiltinContext* ctx, TVal comparefn, boo
                 }
                 cmp = rd < 0.0 ? -1 : (rd > 0.0 ? 1 : 0);
             } else {
-                cmp = ta_numeric_compare(arr[(uint)j], key);
+                cmp = ta_default_compare(&arr[(uint)j], &key);
             }
             if (cmp <= 0) break;
             arr[(uint)(j + 1)] = arr[(uint)j];
@@ -2477,14 +2523,15 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
 
     if (len <= 1) { (*ctx.result) = ctx.this_val; return; }
 
-    // Copy elements into a scratch double array, sort, write back.
-    double[512] stack_scratch;
-    double[] scratch;
-    double* heap_scratch = null;
+    // Copy elements into a scratch TVal array, sort, write back. Element TVals
+    // (BigInt kinds already boxed) make the sort element-type agnostic.
+    TVal[512] stack_scratch;
+    TVal[] scratch;
+    TVal* heap_scratch = null;
     if (len <= 512) {
         scratch = stack_scratch[:len];
     } else {
-        heap_scratch = (double*)heap.alloc_func(heap.heap_udata, (usz)(len * double::size));
+        heap_scratch = (TVal*)heap.alloc_func(heap.heap_udata, (usz)len * TVal::size);
         if (heap_scratch == null) {
             arraybuffer_throw_range_error(ctx, "TypedArray.sort: out of memory");
             return;
@@ -2493,8 +2540,7 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
     }
 
     for (uint i = 0; i < len; i++) {
-        TVal v = ta_load_element(ctx.heap, base, cls, i);
-        scratch[i] = v.is_fastint() ? (double)v.get_fastint() : v.get_number();
+        scratch[i] = ta_load_element(ctx.heap, base, cls, i);
     }
 
     ta_insertion_sort(scratch, ctx, comparefn, has_comparefn);
@@ -2504,9 +2550,8 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
         // if it's been detached we skip the writeback (data pointer is null/freed).
         base = (*buf.extra_ptr()).ab.data + byte_off;
         for (uint i = 0; i < len; i++) {
-            TVal tv; tv.set_number(scratch[i]);
             char* dp = base + (i << shift);
-            ta_write_element(dp, cls, &tv, ctx);
+            ta_write_element(dp, cls, &scratch[i], ctx);
             if (ctx.should_throw) break;
         }
     }
@@ -2555,13 +2600,13 @@ fn void builtin_ta_proto_toSorted(BuiltinContext* ctx) {
 
     if (len <= 1) { ctx.result.set_object(result); return; }
 
-    double[512] stack_scratch;
-    double[] scratch;
-    double* heap_scratch = null;
+    TVal[512] stack_scratch;
+    TVal[] scratch;
+    TVal* heap_scratch = null;
     if (len <= 512) {
         scratch = stack_scratch[:len];
     } else {
-        heap_scratch = (double*)heap.alloc_func(heap.heap_udata, (usz)(len * double::size));
+        heap_scratch = (TVal*)heap.alloc_func(heap.heap_udata, (usz)len * TVal::size);
         if (heap_scratch == null) {
             arraybuffer_throw_range_error(ctx, "TypedArray.toSorted: out of memory");
             return;
@@ -2570,17 +2615,15 @@ fn void builtin_ta_proto_toSorted(BuiltinContext* ctx) {
     }
 
     for (uint i = 0; i < len; i++) {
-        TVal v = ta_load_element(ctx.heap, dst, cls, i);
-        scratch[i] = v.is_fastint() ? (double)v.get_fastint() : v.get_number();
+        scratch[i] = ta_load_element(ctx.heap, dst, cls, i);
     }
 
     ta_insertion_sort(scratch, ctx, comparefn, has_comparefn);
 
     if (!ctx.should_throw) {
         for (uint i = 0; i < len; i++) {
-            TVal tv; tv.set_number(scratch[i]);
             char* dp = dst + (i << shift);
-            ta_write_element(dp, cls, &tv, ctx);
+            ta_write_element(dp, cls, &scratch[i], ctx);
             if (ctx.should_throw) break;
         }
     }
@@ -2641,10 +2684,12 @@ fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
         // look up toLocaleString on the Number prototype, and call it with num_val as this.
         TVal invoked; invoked.set_undefined();
         if (heap.call_fn != null && ctx.vm != null && toloc_key != null) {
-            // Look up toLocaleString on the Number prototype.
+            // Look up toLocaleString on the element's own prototype — BigInt
+            // elements use BigInt.prototype, all others use Number.prototype.
+            HObject* elem_proto = num_val.is_bigint() ? heap.bigint_proto : heap.number_proto;
             TVal? meth_opt;
-            if (heap.number_proto != null) {
-                meth_opt = builtins_generic_get(heap.number_proto, toloc_key, ctx);
+            if (elem_proto != null) {
+                meth_opt = builtins_generic_get(elem_proto, toloc_key, ctx);
             }
             if (ctx.should_throw) {
                 for (uint j = 0; j < done; j++) heap.decref((types::HeapHeader*)elem_strs[j]);
