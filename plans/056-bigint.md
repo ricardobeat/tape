@@ -12,11 +12,20 @@
 > - Phase 4 (DataView BigInt64): `1127a9a`; also fixed ToBoolean(BigInt) and
 >   corrupted DataView/species builtin metadata.
 >
-> **Phase 22 (Buffers): 1518 → 2194 pass (+676), 0 unexpected CE.** Residual
-> fails are out-of-scope arbitrary-precision and two pre-existing non-BigInt
-> cases. Design principle established: `ta_load_element`/`ta_write_element` are
-> the only element-type-aware boundaries; methods carry element TVals, never
-> re-derive the type.
+> - GC use-after-free fix: `48a35af` — drain_gray did not mark
+>   BigInt64Array/BigUint64Array backing buffers (missing from the mark case
+>   list, a sibling of the descriptor-refactor range checks). Live BigInt arrays
+>   had their ArrayBuffer swept under allocation pressure → reads returned
+>   undefined then SIGSEGV. Caught the 3 remaining phase-22 BigInt segfaults.
+>
+> **Phase 22 (Buffers): 1518 → 2197 pass (+679), 0 unexpected CE.** Remaining 3
+> fails: two pre-existing non-BigInt (`ctors/no-species`,
+> `ctors/object-arg/iterated-array-with-modified-array-iterator`, the latter
+> Float64Array) and one shared `set` ToObject-on-primitive edge case (not
+> BigInt-specific). Design principle established: `ta_load_element` /
+> `ta_write_element` are the only element-type-aware boundaries; methods carry
+> element TVals, never re-derive the type. When adding a TA ObjClass, extend
+> both the range checks AND the explicit case-lists (GC mark, dv_elem_size).
 
 ## Goal
 
