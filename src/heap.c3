@@ -1788,6 +1788,8 @@ fn void Heap.drain_gray(&self) {
             case ObjClass.UINT32ARRAY:
             case ObjClass.FLOAT32ARRAY:
             case ObjClass.FLOAT64ARRAY:
+            case ObjClass.BIGINT64ARRAY:
+            case ObjClass.BIGUINT64ARRAY:
                 if ((*obj.extra_ptr()).view.buffer != null) {
                     self.mark_hobject((*obj.extra_ptr()).view.buffer);
                 }
