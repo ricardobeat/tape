@@ -1203,11 +1203,12 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     int idx = self.find_prop_idx(key);
     if (idx >= 0) {
         PropValue* pv = &self.prop_values()[idx];
-        if (_active_heap != null && pv.is_string()) {
+        // Strings and BigInts are reference-counted leaves held by properties.
+        if (_active_heap != null && (pv.is_string() || pv.is_bigint())) {
             ((heap::Heap*)_active_heap).decref_tval(pv);
         }
         *pv = val;
-        if (_active_heap != null && val.is_string()) {
+        if (_active_heap != null && (val.is_string() || val.is_bigint())) {
             void* ptr = val.get_heapptr();
             if (ptr != null) {
                 ((types::HeapHeader*)ptr).incref();
@@ -1283,7 +1284,7 @@ fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
     uint new_idx = self.prop_count;
     libc::memset(&self.prop_values()[new_idx], 0, PropValue::size);
     self.prop_values()[new_idx] = val;
-    if (_active_heap != null && val.is_string()) {
+    if (_active_heap != null && (val.is_string() || val.is_bigint())) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
             ((types::HeapHeader*)ptr).incref();
@@ -1543,11 +1544,11 @@ fn bool HObject.set_array_idx(&self, uint idx, TVal val) {
         }
     }
 
-    if (_active_heap != null && self.array_part()[idx].is_string()) {
+    if (_active_heap != null && (self.array_part()[idx].is_string() || self.array_part()[idx].is_bigint())) {
         ((heap::Heap*)_active_heap).decref_tval(&self.array_part()[idx]);
     }
     self.array_part()[idx] = val;
-    if (_active_heap != null && val.is_string()) {
+    if (_active_heap != null && (val.is_string() || val.is_bigint())) {
         void* ptr = val.get_heapptr();
         if (ptr != null) {
             ((types::HeapHeader*)ptr).incref();
@@ -1822,22 +1823,24 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
         h.decref_tval(&(*obj.extra_ptr()).func.captured_this);
     }
 
-    // Decref string values held in property slots and array elements.
-    // Only strings are RC-freed here — objects still use M&S and can form cycles;
-    // decref-freeing objects from within another object's teardown would corrupt the
-    // heap_allocated list and cause use-after-free on generator/closure env chains.
+    // Decref string and BigInt values held in property slots and array
+    // elements.  Only these RC leaves are freed here — objects still use M&S
+    // and can form cycles; decref-freeing objects from within another object's
+    // teardown would corrupt the heap_allocated list and cause use-after-free
+    // on generator/closure env chains.  BigInt boxes are leaves, so freeing
+    // them here is safe.
     if (obj.prop_alloc != null && _active_heap != null) {
         heap::Heap* h = (heap::Heap*)_active_heap;
         PropValue* pvs = obj.prop_values();
         for (uint i = 0; i < obj.prop_count; i++) {
-            if (pvs[i].is_string()) {
+            if (pvs[i].is_string() || pvs[i].is_bigint()) {
                 h.decref_tval(&pvs[i]);
             }
         }
         TVal* arr = obj.array_part();
         if (arr != null) {
             for (uint i = 0; i < obj.array_size; i++) {
-                if (arr[i].is_string()) {
+                if (arr[i].is_string() || arr[i].is_bigint()) {
                     h.decref_tval(&arr[i]);
                 }
             }

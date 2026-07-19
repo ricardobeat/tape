@@ -485,6 +485,13 @@ enum Builtin : uint {
     REFLECT_OWNKEYS,
     ERROR_CAPTURE_STACK_TRACE,
     STRING_RAW,
+    // --- BigInt (plan 056) ---
+    BIGINT,                       // BigInt(x)
+    BIGINT_AS_INTN,               // BigInt.asIntN(bits, x)
+    BIGINT_AS_UINTN,              // BigInt.asUintN(bits, x)
+    BIGINT_PROTO_TOSTRING,        // BigInt.prototype.toString([radix])
+    BIGINT_PROTO_VALUEOF,         // BigInt.prototype.valueOf()
+    BIGINT_PROTO_TOLOCALESTRING,  // BigInt.prototype.toLocaleString()
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -3089,6 +3096,11 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.DATAVIEW_SET_BIGUINT64.ordinal]      = &builtin_dataview_set_biguint64,
     [Builtin.FUNCTION_PROTO_RESTRICTED_GETTER.ordinal] = &builtin_function_proto_restricted_getter,
     [Builtin.FUNCTION_PROTO_RESTRICTED_SETTER.ordinal] = &builtin_function_proto_restricted_setter,
+    [Builtin.BIGINT.ordinal]                      = &builtin_bigint,
+    [Builtin.BIGINT_AS_INTN.ordinal]              = &builtin_bigint_as_intn,
+    [Builtin.BIGINT_AS_UINTN.ordinal]             = &builtin_bigint_as_uintn,
+    [Builtin.BIGINT_PROTO_TOSTRING.ordinal]       = &builtin_bigint_proto_toString,
+    [Builtin.BIGINT_PROTO_VALUEOF.ordinal]        = &builtin_bigint_proto_valueOf,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3271,6 +3283,9 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register Number constructor (with prototype and static properties)
     if (!register_number_constructor(global_env, heap)) return false;
+
+    // Register BigInt constructor (plan 056) — after Object.prototype exists.
+    if (!register_bigint_constructor(global_env, heap)) return false;
 
     // Register Math object
     if (!register_math_object(global_env, heap)) return false;

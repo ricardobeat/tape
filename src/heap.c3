@@ -240,6 +240,7 @@ struct Heap {
     HObject* weakmap_proto;
     HObject* weakset_proto;
     HObject* symbol_proto;
+    HObject* bigint_proto;
     HObject* promise_proto;
     /// Promise constructor function (lazily cached, rooted via this field)
     HObject* promise_ctor;
@@ -994,13 +995,13 @@ fn void Heap.reset(&self) {
                 hobject::HObject* obj = (hobject::HObject*)cur;
                 hobject::PropValue* pvs = obj.prop_values();
                 for (uint i = 0; i < obj.prop_count; i++) {
-                    if (pvs[i].is_string()) { self.decref_tval(&pvs[i]); }
+                    if (pvs[i].is_string() || pvs[i].is_bigint()) { self.decref_tval(&pvs[i]); }
                 }
                 types::TVal* arr = obj.array_part();
                 if (arr != null) {
                     uint used = obj.array_used;
                     for (uint i = 0; i < used; i++) {
-                        if (arr[i].is_string()) { self.decref_tval(&arr[i]); }
+                        if (arr[i].is_string() || arr[i].is_bigint()) { self.decref_tval(&arr[i]); }
                     }
                 }
             }
@@ -1012,7 +1013,7 @@ fn void Heap.reset(&self) {
         types::TVal* top = *self.valstack_top_ptr;
         types::TVal* base = self.valstack_base;
         while (base < top) {
-            if (base.is_string()) { self.decref_tval(base); }
+            if (base.is_string() || base.is_bigint()) { self.decref_tval(base); }
             base++;
         }
     }
@@ -1158,6 +1159,7 @@ fn void Heap.reset(&self) {
     self.weakmap_proto    = null;
     self.weakset_proto    = null;
     self.symbol_proto     = null;
+    self.bigint_proto     = null;
     self.promise_proto    = null;
     self.promise_ctor     = null;
     self.generator_proto      = null;
@@ -1860,6 +1862,7 @@ fn void Heap.mark_roots(&self) {
     if (self.weakmap_proto != null) { self.mark_hobject(self.weakmap_proto); }
     if (self.weakset_proto != null) { self.mark_hobject(self.weakset_proto); }
     if (self.symbol_proto != null) { self.mark_hobject(self.symbol_proto); }
+    if (self.bigint_proto != null) { self.mark_hobject(self.bigint_proto); }
     if (self.promise_proto != null) { self.mark_hobject(self.promise_proto); }
     if (self.promise_ctor != null)  { self.mark_hobject(self.promise_ctor); }
     if (self.generator_proto != null) { self.mark_hobject(self.generator_proto); }
@@ -2107,23 +2110,23 @@ $if $feature(HEAP_VERIFY):
     }
 
     // Check built-in constructor prototypes
-    ZString[22] ctor_names = {
+    ZString[23] ctor_names = {
         "object_proto", "bool_proto", "string_proto", "number_proto",
         "array_proto", "function_proto", "date_proto", "regexp_proto",
         "map_proto", "set_proto", "weakmap_proto", "weakset_proto",
-        "symbol_proto", "promise_proto", "generator_proto", "generator_func_proto",
+        "symbol_proto", "bigint_proto", "promise_proto", "generator_proto", "generator_func_proto",
         "async_func_proto",
         "iterator_proto", "typedarray_proto", "typedarray_intrinsic", "arraybuffer_proto", "dataview_proto"
     };
-    HObject*[22] ctor_protos = {
+    HObject*[23] ctor_protos = {
         self.object_proto, self.bool_proto, self.string_proto, self.number_proto,
         self.array_proto, self.function_proto, self.date_proto, self.regexp_proto,
         self.map_proto, self.set_proto, self.weakmap_proto, self.weakset_proto,
-        self.symbol_proto, self.promise_proto, self.generator_proto, self.generator_func_proto,
+        self.symbol_proto, self.bigint_proto, self.promise_proto, self.generator_proto, self.generator_func_proto,
         self.async_func_proto,
         self.iterator_proto, self.typedarray_proto, self.typedarray_intrinsic, self.arraybuffer_proto, self.dataview_proto
     };
-    for (uint i = 0; i < 22; i++) {
+    for (uint i = 0; i < 23; i++) {
         if (ctor_protos[i] != null) {
             if (!self.validate_hobject((HeapHeader*)ctor_protos[i], ctor_names[i])) errors++;
             checked++;

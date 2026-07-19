@@ -4666,7 +4666,7 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
     // For primitive this values (boolean/number/string/symbol), find their wrapper prototype
     // so we can check @@toStringTag via the prototype chain (ES2022 §20.1.3.6 steps 3+15).
     if (this_val.is_boolean() || this_val.is_number() || this_val.is_fastint() ||
-        this_val.is_string() /* includes symbols */) {
+        this_val.is_bigint() || this_val.is_string() /* includes symbols */) {
         // Determine builtinTag and which prototype to search for @@toStringTag
         char* builtin_tag;
         HObject* prim_proto;
@@ -4676,6 +4676,11 @@ fn void builtin_object_proto_toString(BuiltinContext* ctx) {
         } else if (this_val.is_number() || this_val.is_fastint()) {
             builtin_tag = "Number";
             prim_proto = ctx.heap.number_proto;
+        } else if (this_val.is_bigint()) {
+            // BigInt has no special builtinTag (ES2020 §20.1.3.6); its tag comes
+            // from BigInt.prototype[@@toStringTag] = "BigInt".
+            builtin_tag = "Object";
+            prim_proto = ctx.heap.bigint_proto;
         } else if (is_symbol_val(this_val)) {
             // Symbol wrappers have no special builtinTag in the spec (ES2022 §20.1.3.6);
             // they get their tag from Symbol.prototype[@@toStringTag] = "Symbol".

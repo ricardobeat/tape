@@ -501,6 +501,20 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 } else {
                     ra.set_undefined();
                 }
+            } else if (rb.is_bigint()) {
+                // Auto-box BigInt primitive: walk BigInt.prototype chain.
+                HString* key = get_prop_key(vm, rc);
+                if (key != null && vm.heap.bigint_proto != null) {
+                    TVal? result = vm.heap.bigint_proto.get_prop_proto(key);
+                    if (try v = result) {
+                        vm.heap.tval_copy_ref(ra, &v);
+                        track_heap_store(ds.act, ra, (uint)insn.a);
+                    } else {
+                        ra.set_undefined();
+                    }
+                } else {
+                    ra.set_undefined();
+                }
             } else if (rb.is_lightfunc()) {
                 // LIGHTFUNC: resolve .name and .length from metadata, other props from Function.prototype
                 uint fn_idx = (uint)(usz)rb.get_heapptr();
@@ -853,6 +867,18 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 } else if (rb.is_boolean()) {
                     if (key_hstr != null && vm.heap.bool_proto != null) {
                         TVal? result = vm.heap.bool_proto.get_prop_proto((void*)key_hstr);
+                        if (try v = result) {
+                            vm.heap.tval_copy_ref(ra, &v);
+                            track_heap_store(ds.act, ra, (uint)insn.a);
+                        } else {
+                            ra.set_undefined();
+                        }
+                    } else {
+                        ra.set_undefined();
+                    }
+                } else if (rb.is_bigint()) {
+                    if (key_hstr != null && vm.heap.bigint_proto != null) {
+                        TVal? result = vm.heap.bigint_proto.get_prop_proto((void*)key_hstr);
                         if (try v = result) {
                             vm.heap.tval_copy_ref(ra, &v);
                             track_heap_store(ds.act, ra, (uint)insn.a);
