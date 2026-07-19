@@ -100,9 +100,9 @@ fn bool super_init_this_chain(Vm* vm, Activation* act, TVal* constructed, Activa
 /// `this_tv` is the bound instance.
 ///
 /// Returns `true` on success (including "nothing to do" — no brand, no
-/// fields). Returns `false` when field-init threw and the throw was
-/// propagated via vm_throw_value/VM_ERROR — the caller must abort the
-/// construct path (mirrors every other opcode-handler error convention:
+/// fields). Returns `false` when duplicate initialization or field-init threw
+/// and the throw was propagated via vm_throw_value/VM_ERROR — the caller must
+/// abort the construct path (mirrors every other opcode-handler error convention:
 /// `if (!vm_throw_error(...)) return VM_ERROR~;`).
 fn bool? vm_init_private_members(Vm* vm, EnvRecord* ctor_lex_env, EnvRecord* ctor_var_env,
                                   CompiledFunction* target, TVal this_tv,
@@ -119,6 +119,14 @@ fn bool? vm_init_private_members(Vm* vm, EnvRecord* ctor_lex_env, EnvRecord* cto
             if (brand_sym.is_string()) {
                 void* brand_key = brand_sym.get_heapptr();
                 if (brand_key != null) {
+                    if (this_hobj.find_prop_idx(brand_key) >= 0) {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto,
+                                "Cannot initialize private members twice", act,
+                                curr_pc, needs_restart)) {
+                            return VM_ERROR~;
+                        }
+                        return false;
+                    }
                     TVal true_tv;
                     true_tv.set_boolean(true);
                     this_hobj.put_prop(brand_key, true_tv, hobject::PROP_FLAGS_NNC);
