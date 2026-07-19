@@ -100,7 +100,7 @@ fn void ordinary_own_desc(Heap* heap, HObject* obj, HString* key, ProxyDesc* out
     if (is_typed_array_class(obj.get_class())) {
         double num;
         if (ta_key_numeric_index(heap, key, &num)) {
-            ta_own_index_desc(obj, num, out);
+            ta_own_index_desc(heap, obj, num, out);
             return;
         }
     }
@@ -228,7 +228,7 @@ fn bool js_get_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, T
         double num;
         if (ta_key_numeric_index(heap, key, &num)) {
             ProxyDesc d;
-            ta_own_index_desc(obj, num, &d);
+            ta_own_index_desc(heap, obj, num, &d);
             *out = d.found ? d.value : (TVal){};
             if (!d.found) out.set_undefined();
             return true;

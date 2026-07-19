@@ -205,6 +205,8 @@ enum Builtin : uint {
     UINT32ARRAY,
     FLOAT32ARRAY,
     FLOAT64ARRAY,
+    BIGINT64ARRAY,
+    BIGUINT64ARRAY,
     REGEXP_PROTO_SYMBOL_MATCH,
     REGEXP_PROTO_SYMBOL_SEARCH,
     REGEXP_PROTO_SYMBOL_REPLACE,
@@ -3011,6 +3013,8 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.UINT32ARRAY.ordinal] = &builtin_uint32array,
     [Builtin.FLOAT32ARRAY.ordinal] = &builtin_float32array,
     [Builtin.FLOAT64ARRAY.ordinal] = &builtin_float64array,
+    [Builtin.BIGINT64ARRAY.ordinal] = &builtin_bigint64array,
+    [Builtin.BIGUINT64ARRAY.ordinal] = &builtin_biguint64array,
     // ArrayBuffer core (plan 049 stage 1)
     [Builtin.ARRAYBUFFER.ordinal] = &builtin_arraybuffer,
     [Builtin.ARRAYBUFFER_ISVIEW.ordinal] = &builtin_arraybuffer_isview,

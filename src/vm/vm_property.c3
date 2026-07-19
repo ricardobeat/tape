@@ -147,7 +147,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                         && (*buf.extra_ptr()).ab.data != null
                         && (ulong)idx_long < (ulong)elem_count) {
                         char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
-                        TVal v = builtins::ta_load_element(base, hobj.get_class(), (uint)idx_long);
+                        TVal v = builtins::ta_load_element(vm.heap, base, hobj.get_class(), (uint)idx_long);
                         *ra = v;
                         return (TVal){};
                     }
@@ -199,7 +199,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             if (buf != null && (*buf.extra_ptr()).ab.data != null
                                 && (ulong)idx < (ulong)elem_count) {
                                 char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
-                                TVal v = builtins::ta_load_element(base, hobj_cls, idx);
+                                TVal v = builtins::ta_load_element(vm.heap, base, hobj_cls, idx);
                                 *ra = v;
                             } else {
                                 ra.set_undefined();
@@ -692,7 +692,7 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                     if (cbuf != null && (*cbuf.extra_ptr()).ab.data != null
                                         && (ulong)cidx < (ulong)ccount) {
                                         char* cbase = (*cbuf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
-                                        TVal cv = builtins::ta_load_element(cbase, cls_c, cidx);
+                                        TVal cv = builtins::ta_load_element(vm.heap, cbase, cls_c, cidx);
                                         *ra = cv;
                                     } else {
                                         ra.set_undefined();

@@ -3949,7 +3949,7 @@ fn bool arr_get_elem_vm(HObject* obj, ulong key, Heap* heap, BuiltinContext* ctx
         if (key >= ta_len) return false;
         HObject* ta_buf = (*obj.extra_ptr()).view.buffer;
         char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
-        *out = ta_load_element(ta_base, ta_cls, (uint)key);
+        *out = ta_load_element(heap, ta_base, ta_cls, (uint)key);
         return true;
     }
 

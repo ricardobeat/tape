@@ -8,6 +8,7 @@ import duktape::env;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
+import duktape::hbigint;
 import duktape::vm;
 import libc;
 import std::math;
@@ -202,7 +203,7 @@ fn void typedarray_store_converted(HObject* buf, uint byte_offset, hobject::ObjC
 /// Load one element at byte pointer `p` (already offset into the backing
 /// store) for typed array class `cls`, converting to a TVal per §22.2 read
 /// rules (small int kinds -> fastint, wide/float kinds -> number).
-fn TVal ta_load_element(char* p, hobject::ObjClass cls, uint idx) {
+fn TVal ta_load_element(Heap* heap, char* p, hobject::ObjClass cls, uint idx) {
     TVal out;
     uint shift = ta_elem_shift(cls);
     char* ep = p + (idx << shift);
@@ -256,6 +257,22 @@ fn TVal ta_load_element(char* p, hobject::ObjClass cls, uint idx) {
             double v;
             libc::memcpy(&v, ep, 8);
             out.set_number(v);
+            break;
+        }
+        case hobject::ObjClass.BIGINT64ARRAY: {
+            long v;
+            libc::memcpy(&v, ep, 8);
+            hbigint::HBigInt*? box = hbigint::hbigint_alloc(heap, (int128)v);
+            if (catch box) { out.set_undefined(); break; }
+            out.set_bigint(box);
+            break;
+        }
+        case hobject::ObjClass.BIGUINT64ARRAY: {
+            ulong v;
+            libc::memcpy(&v, ep, 8);
+            hbigint::HBigInt*? box = hbigint::hbigint_alloc(heap, (int128)(uint128)v);
+            if (catch box) { out.set_undefined(); break; }
+            out.set_bigint(box);
             break;
         }
         default:
@@ -339,6 +356,18 @@ fn void ta_write_element(char* p, hobject::ObjClass cls, TVal* val, BuiltinConte
             double d = ta_val_to_number(val, ctx);
             if (ctx.should_throw) return;
             libc::memcpy(p, &d, 8);
+            break;
+        }
+        case hobject::ObjClass.BIGINT64ARRAY:
+        case hobject::ObjClass.BIGUINT64ARRAY: {
+            // §22.2 SetValueInBuffer for BigInt kinds: ToBigInt (throws
+            // TypeError for Number/undefined/etc.), then store the low 64 bits
+            // (two's complement wrap-around; BigInt64/BigUint64 share the store).
+            bool ok;
+            int128 bv = builtin_to_bigint(ctx, val, &ok);
+            if (!ok || ctx.should_throw) return;
+            long lo = (long)bv;   // low 64 bits, wrapping mod 2^64
+            libc::memcpy(p, &lo, 8);
             break;
         }
         default:
@@ -484,7 +513,7 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                     if (total_bytes > 0) libc::memcpy((*buf.extra_ptr()).ab.data, src_base, (usz)total_bytes);
                 } else {
                     for (uint i = 0; i < count; i++) {
-                        TVal v = ta_load_element(src_base, src_cls, i);
+                        TVal v = ta_load_element(ctx.heap, src_base, src_cls, i);
                         typedarray_store_converted(buf, 0, obj_class, i, &v, ctx);
                         if (ctx.should_throw) return;
                     }
@@ -697,6 +726,14 @@ fn void builtin_float64array(BuiltinContext* ctx) {
     typed_array_construct(ctx, hobject::ObjClass.FLOAT64ARRAY);
 }
 
+fn void builtin_bigint64array(BuiltinContext* ctx) {
+    typed_array_construct(ctx, hobject::ObjClass.BIGINT64ARRAY);
+}
+
+fn void builtin_biguint64array(BuiltinContext* ctx) {
+    typed_array_construct(ctx, hobject::ObjClass.BIGUINT64ARRAY);
+}
+
 // ============================================================================
 // %TypedArray%.prototype accessors — length / byteLength / byteOffset / buffer
 // ============================================================================
@@ -848,7 +885,7 @@ fn bool ta_key_numeric_index(Heap* heap, HString* key, double* out_num) {
 /// `out` with a data-property descriptor (WEC) when the index is valid;
 /// leaves `out.found = false` otherwise (still consumed the key — caller
 /// must not fall back to ordinary lookup).
-fn void ta_own_index_desc(HObject* obj, double num, ProxyDesc* out) {
+fn void ta_own_index_desc(Heap* heap, HObject* obj, double num, ProxyDesc* out) {
     *out = (ProxyDesc){};
     if (!ta_is_valid_integer_index(obj, num)) return;
     uint idx = (uint)(long)num;
@@ -856,7 +893,7 @@ fn void ta_own_index_desc(HObject* obj, double num, ProxyDesc* out) {
     char* base = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
     out.found = true;
     out.has_value = true;
-    out.value = ta_load_element(base, obj.flags.obj_class, idx);
+    out.value = ta_load_element(heap, base, obj.flags.obj_class, idx);
     out.has_writable = true; out.writable = true;
     out.has_enumerable = true; out.enumerable = true;
     out.has_configurable = true; out.configurable = true;
@@ -987,7 +1024,7 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
                     return;
                 }
                 for (uint i = 0; i < src_len; i++) {
-                    scratch[i] = ta_load_element(src_data, src_cls, i);
+                    scratch[i] = ta_load_element(ctx.heap, src_data, src_cls, i);
                 }
                 for (uint i = 0; i < src_len; i++) {
                     char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
@@ -998,7 +1035,7 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
             } else {
                 // Cross-class, different buffers: element loop.
                 for (uint i = 0; i < src_len; i++) {
-                    TVal v = ta_load_element(src_data, src_cls, i);
+                    TVal v = ta_load_element(ctx.heap, src_data, src_cls, i);
                     char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
                     ta_write_element(dp, dst_cls, &v, ctx);
                     if (ctx.should_throw) return;
@@ -1229,9 +1266,20 @@ fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
     TVal val_arg; val_arg.set_undefined();
     if (ctx.argc >= 1) val_arg = ctx.regs[ctx.base_reg];
 
-    // Convert value first (may run user code).
-    double fill_d = ta_val_to_number(&val_arg, ctx);
-    if (ctx.should_throw) return;
+    // Convert value first (may run user code). BigInt arrays use ToBigInt (§23.2.3.8
+    // step 4), non-BigInt arrays use ToNumber; do it exactly once up front.
+    bool is_big = is_bigint_typed_array_class(cls);
+    double fill_d = 0.0;
+    long fill_i64 = 0;
+    if (is_big) {
+        bool ok;
+        int128 bv = builtin_to_bigint(ctx, &val_arg, &ok);
+        if (!ok || ctx.should_throw) return;
+        fill_i64 = (long)bv;
+    } else {
+        fill_d = ta_val_to_number(&val_arg, ctx);
+        if (ctx.should_throw) return;
+    }
     if (ta_is_detached(obj)) {
         arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during fill");
         return;
@@ -1263,7 +1311,13 @@ fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
 
     if (k < final_k) {
         char* base = (*buf.extra_ptr()).ab.data + byte_off;
-        if (cls == hobject::ObjClass.UINT8ARRAY || cls == hobject::ObjClass.INT8ARRAY) {
+        if (is_big) {
+            // BigInt64/BigUint64 fill: store the pre-converted low 64 bits.
+            for (uint i = k; i < final_k; i++) {
+                char* p = base + (i << shift);
+                libc::memcpy(p, &fill_i64, 8);
+            }
+        } else if (cls == hobject::ObjClass.UINT8ARRAY || cls == hobject::ObjClass.INT8ARRAY) {
             // Single-byte fill: truncate to int8, then bulk memset.
             char fill_byte = (char)(double_to_int32(fill_d) & 0xFF);
             libc::memset(base + k, (int)fill_byte, (usz)(final_k - k));
@@ -1399,7 +1453,7 @@ fn void builtin_ta_proto_slice(BuiltinContext* ctx) {
             // For same-buffer cases the spec requires reading each src element before
             // writing to dst (which may overlap), so element-by-element is required.
             for (uint i = 0; i < count; i++) {
-                TVal v = ta_load_element(src_data, cls, i);
+                TVal v = ta_load_element(ctx.heap, src_data, cls, i);
                 char* dp = dst_data + (i << result_shift);
                 ta_write_element(dp, result_cls, &v, ctx);
                 if (ctx.should_throw) return;
@@ -1615,7 +1669,7 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
     }
 
     for (uint i = from; i < len; i++) {
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, i);
         double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
         if (elem_d == search_d) {
             ctx.result.set_fastint((long)i);
@@ -1662,7 +1716,7 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
     }
 
     for (long i = from; i >= 0; i--) {
-        TVal elem = ta_load_element(base, cls, (uint)i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, (uint)i);
         double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
         if (elem_d == search_d) {
             ctx.result.set_fastint(i);
@@ -1714,7 +1768,7 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
     }
 
     for (uint i = from; i < len; i++) {
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, i);
         double elem_d = elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number();
         // SameValueZero: NaN == NaN, else == (handles +0/-0 naturally since both are 0.0)
         if (search_nan) {
@@ -1778,7 +1832,7 @@ fn void builtin_ta_proto_join(BuiltinContext* ctx) {
 
     usz total_len = 0;
     for (uint i = 0; i < len; i++) {
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, i);
         HString* es = builtin_number_to_hstring(heap, elem.is_fastint() ? (double)elem.get_fastint() : elem.get_number());
         if (es == null) es = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
         ((types::HeapHeader*)es).incref();
@@ -1843,7 +1897,7 @@ fn void builtin_ta_proto_forEach(BuiltinContext* ctx) {
         if (ta_is_detached(obj)) {
             elem.set_undefined();
         } else {
-            elem = ta_load_element(base, cls, i);
+            elem = ta_load_element(ctx.heap, base, cls, i);
         }
         ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
@@ -1871,7 +1925,7 @@ fn void builtin_ta_proto_every(BuiltinContext* ctx) {
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (!builtin_to_boolean(&test)) {
@@ -1902,7 +1956,7 @@ fn void builtin_ta_proto_some(BuiltinContext* ctx) {
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -1937,7 +1991,7 @@ fn void builtin_ta_proto_reduce(BuiltinContext* ctx) {
             arraybuffer_throw_type_error(ctx, "Reduce of empty TypedArray with no initial value");
             return;
         }
-        acc = ta_load_element(base, cls, 0);
+        acc = ta_load_element(ctx.heap, base, cls, 0);
         k = 1;
     }
 
@@ -1945,7 +1999,7 @@ fn void builtin_ta_proto_reduce(BuiltinContext* ctx) {
     for (; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, k); }
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, k); }
         TVal[4] args;
         args[0] = acc;
         args[1] = elem;
@@ -1990,7 +2044,7 @@ fn void builtin_ta_proto_reduceRight(BuiltinContext* ctx) {
             return;
         }
         k = (long)len - 1;
-        acc = ta_load_element(base, cls, (uint)k);
+        acc = ta_load_element(ctx.heap, base, cls, (uint)k);
         k--;
     }
 
@@ -1998,7 +2052,7 @@ fn void builtin_ta_proto_reduceRight(BuiltinContext* ctx) {
     for (; k >= 0; k--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, (uint)k); }
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, (uint)k); }
         TVal[4] args;
         args[0] = acc;
         args[1] = elem;
@@ -2048,7 +2102,7 @@ fn void builtin_ta_proto_map(BuiltinContext* ctx) {
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
         TVal mapped = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         char* dp = res_base + (i << result_shift);
@@ -2092,7 +2146,7 @@ fn void builtin_ta_proto_filter(BuiltinContext* ctx) {
             return;
         }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(base, cls, i); }
+        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) {
             if (scratch != null) heap.free_func(heap.heap_udata, scratch);
@@ -2149,7 +2203,7 @@ fn void builtin_ta_proto_find(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2179,7 +2233,7 @@ fn void builtin_ta_proto_findIndex(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2209,7 +2263,7 @@ fn void builtin_ta_proto_findLast(BuiltinContext* ctx) {
 
     for (long i = (long)len - 1; i >= 0; i--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, (uint)i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, (uint)i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, (uint)i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2239,7 +2293,7 @@ fn void builtin_ta_proto_findLastIndex(BuiltinContext* ctx) {
 
     for (long i = (long)len - 1; i >= 0; i--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(base, cls, (uint)i);
+        TVal elem = ta_load_element(ctx.heap, base, cls, (uint)i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, (uint)i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2330,7 +2384,7 @@ fn void builtin_ta_proto_at(BuiltinContext* ctx) {
 
     if (idx < 0) idx = (long)len + idx;
     if (idx < 0 || (uint)idx >= len) { ctx.result.set_undefined(); return; }
-    (*ctx.result) = ta_load_element(base, cls, (uint)idx);
+    (*ctx.result) = ta_load_element(ctx.heap, base, cls, (uint)idx);
 }
 
 /// Numeric comparator for TA sort (spec §23.2.3.29.1).
@@ -2439,7 +2493,7 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
     }
 
     for (uint i = 0; i < len; i++) {
-        TVal v = ta_load_element(base, cls, i);
+        TVal v = ta_load_element(ctx.heap, base, cls, i);
         scratch[i] = v.is_fastint() ? (double)v.get_fastint() : v.get_number();
     }
 
@@ -2516,7 +2570,7 @@ fn void builtin_ta_proto_toSorted(BuiltinContext* ctx) {
     }
 
     for (uint i = 0; i < len; i++) {
-        TVal v = ta_load_element(dst, cls, i);
+        TVal v = ta_load_element(ctx.heap, dst, cls, i);
         scratch[i] = v.is_fastint() ? (double)v.get_fastint() : v.get_number();
     }
 
@@ -2581,7 +2635,7 @@ fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
 
     uint done = 0;
     for (uint i = 0; i < len; i++) {
-        TVal num_val = ta_load_element(base, cls, i);
+        TVal num_val = ta_load_element(ctx.heap, base, cls, i);
 
         // Invoke toLocaleString on the numeric value — wrap it in a Number object,
         // look up toLocaleString on the Number prototype, and call it with num_val as this.
@@ -3447,6 +3501,8 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     if (!register_ta_ctor(global_env, heap, "Uint32Array",             Builtin.UINT32ARRAY.ordinal,            proto, 4)) return false;
     if (!register_ta_ctor(global_env, heap, "Float32Array",            Builtin.FLOAT32ARRAY.ordinal,           proto, 4)) return false;
     if (!register_ta_ctor(global_env, heap, "Float64Array",            Builtin.FLOAT64ARRAY.ordinal,           proto, 8)) return false;
+    if (!register_ta_ctor(global_env, heap, "BigInt64Array",           Builtin.BIGINT64ARRAY.ordinal,          proto, 8)) return false;
+    if (!register_ta_ctor(global_env, heap, "BigUint64Array",          Builtin.BIGUINT64ARRAY.ordinal,         proto, 8)) return false;
 
     // Install of/from on the %TypedArray% intrinsic so all 9 per-class ctors
     // inherit them via [[Prototype]] chain (§22.2.2.1, §22.2.2.2).

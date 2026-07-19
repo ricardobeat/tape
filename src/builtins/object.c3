@@ -1692,7 +1692,7 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
                     ? (*obj.extra_ptr()).view.byte_length >> ta_shift : 0;
                 if (ta_idx < ta_count) {
                     char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
-                    TVal ta_val = builtins::ta_load_element(ta_base, obj.get_class(), ta_idx);
+                    TVal ta_val = builtins::ta_load_element(ctx.heap, ta_base, obj.get_class(), ta_idx);
 
                     HObject*? desc_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
                     if (catch err = desc_raw) { ctx.result.set_undefined(); return; }

@@ -230,7 +230,7 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
         HObject* ta_buf = (*target.extra_ptr()).view.buffer;
         if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
             char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*target.extra_ptr()).view.byte_offset;
-            value = ta_load_element(ta_base, target.get_class(), idx);
+            value = ta_load_element(ctx.heap, ta_base, target.get_class(), idx);
         }
         // detached: value stays undefined (spec: detach mid-iteration -> undefined)
     } else {
