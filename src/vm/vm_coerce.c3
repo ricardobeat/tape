@@ -41,6 +41,10 @@ fn double vm_to_number(Vm* vm, TVal* val) {
             }
             return builtins::builtin_string_to_number(hstr);
         }
+        case BIGINT:
+            // ES2020 §7.1.4 ToNumber(BigInt) throws TypeError.
+            vm_set_type_error(vm, "Cannot convert a BigInt value to a number");
+            return double::nan;
         case OBJECT: {
             TVal prim = to_primitive_value(vm, val);
             if (prim.get_tag() == OBJECT) return double::nan;

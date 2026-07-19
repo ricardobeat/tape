@@ -61,16 +61,29 @@ fn bool vm_set_reg_bigint(Vm* vm, TVal* ra, int128 value) {
 ///     ("Cannot mix BigInt and other types").
 ///   - Neither operand BigInt → NOT_BIGINT (caller handles the numeric path).
 fn BigIntOpResult vm_bigint_binop(Vm* vm, Opcode op, TVal* ra, TVal* rb, TVal* rc) {
-    bool b_big = rb.is_bigint();
-    bool c_big = rc.is_bigint();
+    // ES2020 §13.15.3: ToPrimitive(hint number) both operands first, so a
+    // wrapper / @@toPrimitive that yields a BigInt participates as a BigInt.
+    TVal pb = *rb;
+    TVal pc = *rc;
+    if (pb.is_object()) {
+        pb = to_primitive_value(vm, rb, 0);
+        if (vm.throw_pending) return BigIntOpResult.THREW;
+    }
+    if (pc.is_object()) {
+        pc = to_primitive_value(vm, rc, 0);
+        if (vm.throw_pending) return BigIntOpResult.THREW;
+    }
+
+    bool b_big = pb.is_bigint();
+    bool c_big = pc.is_bigint();
     if (!b_big && !c_big) return BigIntOpResult.NOT_BIGINT;
     if (b_big != c_big) {
         vm_set_type_error(vm, "Cannot mix BigInt and other types, use explicit conversions");
         return BigIntOpResult.THREW;
     }
 
-    int128 a = rb.get_bigint();
-    int128 b = rc.get_bigint();
+    int128 a = pb.get_bigint();
+    int128 b = pc.get_bigint();
     int128? r;
 
     switch (op) {

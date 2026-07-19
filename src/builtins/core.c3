@@ -1620,6 +1620,12 @@ fn double builtin_to_integer_vm(BuiltinContext* ctx, TVal* val) {
                     return 0.0 / 0.0;
                 }
             }
+            // ToNumber(BigInt) throws TypeError (ES2020 §7.1.4) — e.g. a wrapper
+            // or @@toPrimitive that yields a BigInt reaches here.
+            if (prim.is_bigint()) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert a BigInt value to a number");
+                return 0.0 / 0.0;
+            }
             return builtin_to_integer(&prim);
         }
         // Both valueOf and toString returned non-primitives — ES2022 §7.1.5 step 4b
@@ -1683,6 +1689,11 @@ fn int is_regexp_check_vm(BuiltinContext* ctx, TVal* val) {
 fn double builtin_to_number_getdouble(BuiltinContext* ctx, TVal* val) {
     if (val.is_fastint()) return (double)val.get_fastint();
     if (val.is_number()) return val.get_number();
+    // ToNumber(BigInt) throws TypeError (ES2020 §7.1.4).
+    if (val.is_bigint()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert a BigInt value to a number");
+        return 0.0 / 0.0;
+    }
     TVal num;
     builtin_to_number(val, &num);
     if (num.is_fastint()) return (double)num.get_fastint();
@@ -1694,6 +1705,11 @@ fn double builtin_to_number_getdouble(BuiltinContext* ctx, TVal* val) {
 fn double builtin_to_number_vm(BuiltinContext* ctx, TVal* val) {
     if (val.is_fastint()) return (double)val.get_fastint();
     if (val.get_tag() == types::TValTag.NUMBER) return val.get_number();
+    // ToNumber on a BigInt value must throw TypeError (ES2020 §7.1.4).
+    if (val.is_bigint()) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot convert a BigInt value to a number");
+        return 0.0 / 0.0;
+    }
     // ToNumber on a Symbol value must throw TypeError (ES2022 §7.1.3).
     if (val.is_string()) {
         HString* hs = (HString*)val.get_heapptr();
@@ -2204,6 +2220,12 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.REFLECT_PREVENT_EXTENSIONS.ordinal: return { "preventExtensions", 1 };
         case Builtin.REFLECT_APPLY.ordinal: return { "apply", 3 };
         case Builtin.REFLECT_CONSTRUCT.ordinal: return { "construct", 2 };
+        // BigInt
+        case Builtin.BIGINT.ordinal: return { "BigInt", 1 };
+        case Builtin.BIGINT_AS_INTN.ordinal: return { "asIntN", 2 };
+        case Builtin.BIGINT_AS_UINTN.ordinal: return { "asUintN", 2 };
+        case Builtin.BIGINT_PROTO_TOSTRING.ordinal: return { "toString", 0 };
+        case Builtin.BIGINT_PROTO_VALUEOF.ordinal: return { "valueOf", 0 };
         default: return { "", -1 };
     }
 }

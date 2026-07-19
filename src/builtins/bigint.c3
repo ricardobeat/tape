@@ -67,22 +67,12 @@ fn int128 builtin_to_bigint(BuiltinContext* ctx, TVal* val, bool* ok) {
             return r;
         }
         case NUMBER:
-        case FASTINT: {
-            // ES2020 §7.1.13: ToBigInt(Number) → must be an integer, else
-            // RangeError; NumberToBigInt.
-            double d = val.get_number_or_fastint();
-            int128? r = number_to_bigint(d);
-            if (catch excuse = r) {
-                *ok = false;
-                if (excuse == hbigint::BIGINT_OVERFLOW) {
-                    arr_throw_range_error(ctx, "BigInt value exceeds supported precision");
-                } else {
-                    arr_throw_range_error(ctx, "The number is not a safe integer and cannot be converted to a BigInt");
-                }
-                return 0;
-            }
-            return r;
-        }
+        case FASTINT:
+            // ES2020 §7.1.13 ToBigInt(Number) → always TypeError.  (The BigInt
+            // constructor's Number path is handled separately, before this.)
+            *ok = false;
+            arr_throw_type_error(ctx, "Cannot convert a Number to a BigInt");
+            return 0;
         case OBJECT: {
             // ToPrimitive(number) then recurse.
             if (ctx.vm != null) {
@@ -139,8 +129,36 @@ fn void builtin_bigint(BuiltinContext* ctx) {
         return;
     }
     TVal* arg = &ctx.regs[ctx.base_reg];
+
+    // ES2020 §20.2.1.1: if the (ToPrimitive'd) argument is a Number, use
+    // NumberToBigInt (integral-only, else RangeError) rather than ToBigInt
+    // (which would TypeError).  Resolve ToPrimitive(number) for objects first.
+    TVal prim = *arg;
+    if (arg.is_object() && ctx.vm != null) {
+        prim = vm::to_primitive_value((vm::Vm*)ctx.vm, arg, 0);
+        if (((vm::Vm*)ctx.vm).throw_pending) {
+            ((vm::Vm*)ctx.vm).throw_pending = false;
+            ctx.should_throw = true;
+            ctx.throw_value = ((vm::Vm*)ctx.vm).throw_value;
+            return;
+        }
+    }
+    if (prim.is_number() || prim.is_fastint()) {
+        int128? r = number_to_bigint(prim.get_number_or_fastint());
+        if (catch excuse = r) {
+            if (excuse == hbigint::BIGINT_OVERFLOW) {
+                arr_throw_range_error(ctx, "BigInt value exceeds supported precision");
+            } else {
+                arr_throw_range_error(ctx, "The number is not a safe integer and cannot be converted to a BigInt");
+            }
+            return;
+        }
+        builtin_set_bigint_result(ctx, r);
+        return;
+    }
+
     bool ok;
-    int128 v = builtin_to_bigint(ctx, arg, &ok);
+    int128 v = builtin_to_bigint(ctx, &prim, &ok);
     if (!ok) return;
     builtin_set_bigint_result(ctx, v);
 }
@@ -228,14 +246,18 @@ fn bool bigint_this_value(BuiltinContext* ctx, int128* out_val) {
         *out_val = this_val.get_bigint();
         return true;
     }
-    // (No BigInt wrapper objects are created by this engine — a Object(1n)
-    // wrapper would store its primitive; support that if present.)
+    // A genuine BigInt wrapper (from Object(1n) / ToObject) has bigint_proto
+    // as its [[Prototype]] and stores a BigInt in its primitive slot.  Requiring
+    // the prototype match avoids treating a plain object like {x:1n} (whose
+    // primitive-value union is not a valid TVal) as a wrapper.
     if (this_val.is_object() && this_val.get_heapptr() != null) {
         HObject* obj = (HObject*)this_val.get_heapptr();
-        TVal prim = (*obj.extra_ptr()).prim.primitive_value;
-        if (prim.is_bigint()) {
-            *out_val = prim.get_bigint();
-            return true;
+        if (obj.prototype == ctx.heap.bigint_proto) {
+            TVal prim = (*obj.extra_ptr()).prim.primitive_value;
+            if (prim.is_bigint()) {
+                *out_val = prim.get_bigint();
+                return true;
+            }
         }
     }
     builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto,

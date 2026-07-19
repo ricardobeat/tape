@@ -73,7 +73,13 @@ fn int number_to_radix_str(ulong val, uint radix, char* buf, usz buf_size) {
 fn void builtin_number(BuiltinContext* ctx) {
     TVal num;
     if (ctx.argc > 0) {
-        if (ctx.vm != null) {
+        // ES2020 §21.1.1.1 step 2: Number(BigInt) → 𝔽(ℝ(value)); the Number
+        // constructor converts a BigInt to the closest double (it does NOT go
+        // through ToNumber, which would throw for a BigInt).
+        TVal* n_arg = &ctx.regs[ctx.base_reg];
+        if (n_arg.is_bigint()) {
+            num.set_number((double)n_arg.get_bigint());
+        } else if (ctx.vm != null) {
             double d = builtin_to_number_vm(ctx, &ctx.regs[ctx.base_reg]);
             if (ctx.should_throw) return;
             num.set_number(d);

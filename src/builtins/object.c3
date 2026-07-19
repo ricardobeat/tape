@@ -48,6 +48,16 @@ fn bool builtin_to_object(BuiltinContext* ctx, TVal val) {
         ctx.result.set_object(obj);
         return true;
     }
+    // BigInt → BigInt wrapper object (ES2020 §7.1.18)
+    if (val.is_bigint()) {
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = obj_raw) return false;
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.bigint_proto;
+        (*obj.extra_ptr()).prim.primitive_value = val;
+        ctx.result.set_object(obj);
+        return true;
+    }
     // String → String exotic object with .length own property
     if (val.is_string()) {
         HString* prim_str = (HString*)val.get_heapptr();
@@ -164,6 +174,20 @@ fn void builtin_object(BuiltinContext* ctx) {
         }
         HObject* obj = obj_raw;
         obj.prototype = ctx.heap.number_proto;
+        (*obj.extra_ptr()).prim.primitive_value = arg;
+        ctx.result.set_object(obj);
+        return;
+    }
+
+    if (arg.is_bigint()) {
+        // ToObject(BigInt) → a BigInt wrapper object (ES2020 §7.1.18).
+        HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = obj_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        HObject* obj = obj_raw;
+        obj.prototype = ctx.heap.bigint_proto;
         (*obj.extra_ptr()).prim.primitive_value = arg;
         ctx.result.set_object(obj);
         return;

@@ -113,7 +113,9 @@ SKIP_DIRS = {
     "built-ins/Atomics",               # 390   — platform-dependent
     "built-ins/WeakRef",               # 29    — GC-dependent
     "built-ins/FinalizationRegistry",  # 47    — GC-dependent
-    "built-ins/BigInt",                # 77    — defer
+    # built-ins/BigInt: now implemented (plan 056, fixed-width int128).  130/136
+    # pass; the rest are out of scope: arbitrary-precision literals (>2^127),
+    # Reflect.construct-based is-a-constructor, and $262 cross-realm.
     "language/statements/with",        # sloppy-mode only, not supported
     "language/statements/labeled",     # not supported
 }

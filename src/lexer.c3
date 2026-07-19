@@ -1071,6 +1071,14 @@ fn Token? Lexer.scan_number(&self) {
             if (sc == '.' || sc == 'e' || sc == 'E') { has_dot_or_exp = true; break; }
         }
         if (has_dot_or_exp) return LEX_ERROR~;
+        // ES2020 §11.8.3.1: a decimal BigInt literal must be `0n` or a
+        // NonZeroDigit-led sequence.  A leading `0` followed by more digits
+        // (legacy-octal-like `00n`/`07n` or non-octal `08n`/`012n`) is a
+        // SyntaxError.  (0x/0o/0b prefixes are handled in earlier paths.)
+        usz dec_len = (usz)self.pos - (usz)start_pos;
+        if (dec_len > 1 && self.source[start_pos] == '0') {
+            return LEX_ERROR~;
+        }
         self.pos++;
         self.col++;
         Token tok = make_token(TokenType.BIGINT, start_line, start_col);
