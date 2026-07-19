@@ -1015,6 +1015,8 @@ fn bool builtin_to_boolean(TVal* val) {
             return !math::is_nan(val.get_number()) && val.get_number() != 0.0;
         case FASTINT:
             return val.get_fastint() != 0;
+        case BIGINT:
+            return val.get_bigint() != (int128)0;   // ToBoolean(0n) = false
         case STRING: {
             HString* s = (HString*)val.get_heapptr();
             return s != null && s.blen > 0;
@@ -2162,10 +2164,12 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.DATAVIEW_SET_UINT32.ordinal: return { "setUint32", 2 };
         case Builtin.DATAVIEW_SET_FLOAT32.ordinal: return { "setFloat32", 2 };
         case Builtin.DATAVIEW_SET_FLOAT64.ordinal: return { "setFloat64", 2 };
-        case Builtin.MAP_SPECIES_GETTER.ordinal: return { "getBigInt64", 1 };
-        case Builtin.SET_SPECIES_GETTER.ordinal: return { "getBigUint64", 1 };
-        case Builtin.DATAVIEW_GET_BIGINT64.ordinal: return { "setBigInt64", 2 };
-        case Builtin.DATAVIEW_GET_BIGUINT64.ordinal: return { "setBigUint64", 2 };
+        case Builtin.MAP_SPECIES_GETTER.ordinal: return { "[Symbol.species]", 0 };
+        case Builtin.SET_SPECIES_GETTER.ordinal: return { "[Symbol.species]", 0 };
+        case Builtin.DATAVIEW_GET_BIGINT64.ordinal: return { "getBigInt64", 1 };
+        case Builtin.DATAVIEW_GET_BIGUINT64.ordinal: return { "getBigUint64", 1 };
+        case Builtin.DATAVIEW_SET_BIGINT64.ordinal: return { "setBigInt64", 2 };
+        case Builtin.DATAVIEW_SET_BIGUINT64.ordinal: return { "setBigUint64", 2 };
         // %TypedArray%.prototype wave A (plan 049 stage 4)
         case Builtin.TA_PROTO_VALUES.ordinal: return { "values", 0 };
         case Builtin.TA_PROTO_KEYS.ordinal: return { "keys", 0 };

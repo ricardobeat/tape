@@ -9,6 +9,7 @@ import libc;
 import duktape::hstring;
 import duktape::heap;
 import duktape::hobject;
+import duktape::hbigint;
 import duktape::env;
 
 // All supported hosts (aarch64/x86_64) are little-endian; kept as a named
@@ -35,6 +36,8 @@ fn uint dv_elem_size(hobject::ObjClass cls) {
         case hobject::ObjClass.FLOAT32ARRAY:
             return 4;
         case hobject::ObjClass.FLOAT64ARRAY:
+        case hobject::ObjClass.BIGINT64ARRAY:
+        case hobject::ObjClass.BIGUINT64ARRAY:
             return 8;
         default:
             return 1;
@@ -286,10 +289,27 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
             ctx.result.set_number(d);
             return;
         }
+        case hobject::ObjClass.BIGINT64ARRAY: {
+            int128 v = (int128)(long)raw;   // sign-extend the 64-bit value
+            dv_set_bigint_result(ctx, v);
+            return;
+        }
+        case hobject::ObjClass.BIGUINT64ARRAY: {
+            int128 v = (int128)(uint128)raw; // zero-extend
+            dv_set_bigint_result(ctx, v);
+            return;
+        }
         default:
             ctx.result.set_undefined();
             return;
     }
+}
+
+/// Box an int128 into an HBigInt and store it as the builtin result.
+fn void dv_set_bigint_result(BuiltinContext* ctx, int128 v) {
+    hbigint::HBigInt*? box = hbigint::hbigint_alloc(ctx.heap, v);
+    if (catch box) { ctx.result.set_undefined(); return; }
+    ctx.result.set_bigint(box);
 }
 
 fn void dv_set(BuiltinContext* ctx, hobject::ObjClass elem_class) {
@@ -314,46 +334,50 @@ fn void dv_set(BuiltinContext* ctx, hobject::ObjClass elem_class) {
         little_endian = builtin_to_boolean(&ctx.regs[ctx.base_reg + 2]);
     }
 
-    // Value conversion (ToNumber/ToInt32/ToUint32) happens BEFORE the bounds
-    // and detach checks per spec — user code (valueOf) may detach or resize
-    // the buffer as a side effect of the conversion.
-    double d = ta_val_to_number(&val_arg, ctx);
-    if (ctx.should_throw) return;
-
-    ulong raw = 0;
+    // Value conversion happens BEFORE the bounds and detach checks per spec —
+    // user code (valueOf / Symbol.toPrimitive) may detach or resize the buffer
+    // as a side effect. BigInt views use ToBigInt (§25.3.1.1 SetViewValue step 4
+    // NumberToRawBytes vs BigIntToRawBytes), the rest use ToNumber.
     uint elem_size = dv_elem_size(elem_class);
-    switch (elem_class) {
-        case hobject::ObjClass.INT8ARRAY:
-        case hobject::ObjClass.UINT8ARRAY: {
-            long iv = double_to_int32(d);
-            raw = (ulong)((char)(iv & 0xFF));
-            break;
+    ulong raw = 0;
+    bool is_big_dv = (elem_class == hobject::ObjClass.BIGINT64ARRAY
+                      || elem_class == hobject::ObjClass.BIGUINT64ARRAY);
+    if (is_big_dv) {
+        bool ok;
+        int128 bv = builtin_to_bigint(ctx, &val_arg, &ok);
+        if (!ok || ctx.should_throw) return;
+        raw = (ulong)(long)bv;   // low 64 bits (wrap mod 2^64)
+    } else {
+        double d = ta_val_to_number(&val_arg, ctx);
+        if (ctx.should_throw) return;
+        switch (elem_class) {
+            case hobject::ObjClass.INT8ARRAY:
+            case hobject::ObjClass.UINT8ARRAY: {
+                long iv = double_to_int32(d);
+                raw = (ulong)((char)(iv & 0xFF));
+            }
+            case hobject::ObjClass.INT16ARRAY:
+            case hobject::ObjClass.UINT16ARRAY: {
+                long iv = double_to_int32(d);
+                raw = (ulong)((ushort)(iv & 0xFFFF));
+            }
+            case hobject::ObjClass.INT32ARRAY:
+            case hobject::ObjClass.UINT32ARRAY: {
+                long iv = double_to_int32(d);
+                raw = (ulong)(uint)iv;
+            }
+            case hobject::ObjClass.FLOAT32ARRAY: {
+                float f = (float)d;
+                uint bits;
+                libc::memcpy(&bits, &f, 4);
+                raw = (ulong)bits;
+            }
+            case hobject::ObjClass.FLOAT64ARRAY: {
+                libc::memcpy(&raw, &d, 8);
+            }
+            default:
+                break;
         }
-        case hobject::ObjClass.INT16ARRAY:
-        case hobject::ObjClass.UINT16ARRAY: {
-            long iv = double_to_int32(d);
-            raw = (ulong)((ushort)(iv & 0xFFFF));
-            break;
-        }
-        case hobject::ObjClass.INT32ARRAY:
-        case hobject::ObjClass.UINT32ARRAY: {
-            long iv = double_to_int32(d);
-            raw = (ulong)(uint)iv;
-            break;
-        }
-        case hobject::ObjClass.FLOAT32ARRAY: {
-            float f = (float)d;
-            uint bits;
-            libc::memcpy(&bits, &f, 4);
-            raw = (ulong)bits;
-            break;
-        }
-        case hobject::ObjClass.FLOAT64ARRAY: {
-            libc::memcpy(&raw, &d, 8);
-            break;
-        }
-        default:
-            break;
     }
 
     // DataView setters throw on detach/OOB even though value conversion
@@ -394,25 +418,15 @@ fn void builtin_dataview_set_float32(BuiltinContext* ctx) { dv_set(ctx, hobject:
 fn void builtin_dataview_set_float64(BuiltinContext* ctx) { dv_set(ctx, hobject::ObjClass.FLOAT64ARRAY); }
 
 // ============================================================================
-// getBigInt64/getBigUint64/setBigInt64/setBigUint64 — BigInt arithmetic is
-// out of scope for this engine; these are registered as ordinary (non-
-// constructable) methods so `.length`/`.name`/IsConstructor all behave per
-// spec, but they throw rather than performing real 64-bit BigInt reads/writes.
+// getBigInt64/getBigUint64/setBigInt64/setBigUint64 (§25.3.4) — read/write an
+// 8-byte two's-complement i64 (little/big-endian) as a BigInt, sharing the
+// dv_get/dv_set machinery with the numeric views.
 // ============================================================================
 
-fn void dv_bigint_unsupported(BuiltinContext* ctx) {
-    TVal this_val = ctx.this_val;
-    if (!this_val.is_object() || !is_dataview_obj((HObject*)this_val.get_heapptr())) {
-        arraybuffer_throw_type_error(ctx, "DataView method called on incompatible receiver");
-        return;
-    }
-    arraybuffer_throw_type_error(ctx, "BigInt64/BigUint64 DataView access is not supported");
-}
-
-fn void builtin_dataview_get_bigint64(BuiltinContext* ctx)  { dv_bigint_unsupported(ctx); }
-fn void builtin_dataview_get_biguint64(BuiltinContext* ctx) { dv_bigint_unsupported(ctx); }
-fn void builtin_dataview_set_bigint64(BuiltinContext* ctx)  { dv_bigint_unsupported(ctx); }
-fn void builtin_dataview_set_biguint64(BuiltinContext* ctx) { dv_bigint_unsupported(ctx); }
+fn void builtin_dataview_get_bigint64(BuiltinContext* ctx)  { dv_get(ctx, hobject::ObjClass.BIGINT64ARRAY); }
+fn void builtin_dataview_get_biguint64(BuiltinContext* ctx) { dv_get(ctx, hobject::ObjClass.BIGUINT64ARRAY); }
+fn void builtin_dataview_set_bigint64(BuiltinContext* ctx)  { dv_set(ctx, hobject::ObjClass.BIGINT64ARRAY); }
+fn void builtin_dataview_set_biguint64(BuiltinContext* ctx) { dv_set(ctx, hobject::ObjClass.BIGUINT64ARRAY); }
 
 // ============================================================================
 // Registration
