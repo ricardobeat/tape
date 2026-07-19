@@ -1,13 +1,22 @@
 # Plan 056: BigInt (proper implementation)
 
-> **Status (2026-07-19):** Phase 1 + Phase 2 **landed on `main`** (commits
-> `f93c597`, `ac6d2ba`, `6b13c34`, `60d5a5b`; test262 wiring `87933ee`).
-> `test/bigint.js` 69/69; `built-ins/BigInt` ~73/77 (remaining fails are the
-> out-of-scope arbitrary-precision + `Reflect.construct` cases below). Code
-> reviewed pre-merge; 3 bugs fixed (heap teardown leak, shift-by-BIGINT_MIN UB,
-> `BigInt(-(2^127))` wrongly rejected).
-> **Phase 3 (BigInt64Array/BigUint64Array) and Phase 4 (DataView BigInt64)
-> remain** — tracked as the next-round BigInt/TypedArray sweep.
+> **Status (2026-07-19):** **All four phases landed on `main`.**
+> - Phase 1+2 (primitive, constructor, methods): `f93c597`, `ac6d2ba`,
+>   `6b13c34`, `60d5a5b`; test262 wiring `87933ee`. `test/bigint.js` 69/69;
+>   `built-ins/BigInt` ~73/77 (rest are out-of-scope arbitrary-precision +
+>   `Reflect.construct`). Code reviewed; 3 bugs fixed.
+> - TA class descriptor-table refactor: `2b12e4b` (design C — TA_INFO +
+>   predicates replace the open-coded ordinal range across 12 sites/7 files).
+> - Phase 3 (BigInt64Array/BigUint64Array): `0cd084a` element access +
+>   constructors; `d75f2b3` element-type-agnostic prototype methods.
+> - Phase 4 (DataView BigInt64): `1127a9a`; also fixed ToBoolean(BigInt) and
+>   corrupted DataView/species builtin metadata.
+>
+> **Phase 22 (Buffers): 1518 → 2194 pass (+676), 0 unexpected CE.** Residual
+> fails are out-of-scope arbitrary-precision and two pre-existing non-BigInt
+> cases. Design principle established: `ta_load_element`/`ta_write_element` are
+> the only element-type-aware boundaries; methods carry element TVals, never
+> re-derive the type.
 
 ## Goal
 
