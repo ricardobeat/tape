@@ -144,9 +144,12 @@ p14.then(
 );
 
 // --- Non-Promise thenable support ---
-var thenableResolve;
+// The thenable resolves from within its own .then (which runs as a microtask
+// via the PromiseResolveThenableJob) — the resolver is NOT available to call
+// synchronously from the top-level script (that matches V8/Node, where the
+// captured resolver is still undefined right after the async call returns).
 var thenable = {
-    then: function(resolve, reject) { thenableResolve = resolve; }
+    then: function(resolve, reject) { resolve(41); }
 };
 async function awaitThenable() {
     var val = await thenable;
@@ -154,13 +157,11 @@ async function awaitThenable() {
 }
 var p15 = awaitThenable();
 assert(p15 instanceof Promise, "await thenable yields Promise");
-thenableResolve(41);
 p15.then(function(v) { results.push(["p15_thenable", v === 42]); });
 
-// Thenable that rejects
-var thenableReject;
+// Thenable that rejects (from within its own .then, same microtask timing).
 var thenable2 = {
-    then: function(resolve, reject) { thenableReject = reject; }
+    then: function(resolve, reject) { reject("thenable-boom"); }
 };
 async function awaitThenableReject() {
     try {
@@ -171,7 +172,6 @@ async function awaitThenableReject() {
 }
 var p16 = awaitThenableReject();
 assert(p16 instanceof Promise, "await thenable reject yields Promise");
-thenableReject("thenable-boom");
 p16.then(function(v) { results.push(["p16_thenable_catch", v === "caught thenable: thenable-boom"]); });
 
 // Plain object without .then should pass through
