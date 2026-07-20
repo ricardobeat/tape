@@ -3404,6 +3404,38 @@ fn TVal? Vm.run(Vm* vm) {
                 TVal name_val = ds.constants[bc];
                 if (name_val.is_string()) {
                     void* key = name_val.get_heapptr();
+
+                    // --- VarIC fast path: skip the env-chain walk on repeat writes ---
+                    // Mirrors the GETVAR/INC_VAR ICs. Only hits for a binding that
+                    // already resolved (below) to a writable, non-accessor, non-TDZ
+                    // slot; const/TDZ/accessor cases never populate, so they always
+                    // take the slow path (which throws or invokes a setter). The
+                    // search_head guard ties the cache to the current lex_env chain,
+                    // so a shadowing let/const in an enclosing block invalidates it.
+                    if (ds.var_ic_base != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        if (vic.env != null && vic.key == key && vic.search_head == (void*)ds.act.lex_env) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                TVal* pv = &b.prop_values()[vic.prop_idx];
+                                hobject::PropFlags fl = b.get_prop_flags(vic.prop_idx);
+                                if (!env::is_tdz_sentinel(pv) && fl.writable && !fl.is_accessor) {
+                                    // Move ra's value into the slot: decref the old
+                                    // slot value, take ra's reference, clear ra. Net
+                                    // refcount effect matches the slow path
+                                    // (binding gains a ref, register loses one).
+                                    vm.heap.decref_tval(pv);
+                                    *pv = *ra;
+                                    ra.set_undefined();
+                                    break;
+                                }
+                            }
+                            vic.env = null;
+                        }
+                    }
+
                     int put_result = env::env_try_put_lex(ds.act.lex_env, key, *ra, true);
                     if (put_result == -1) {
                         HString* name_hstr = (HString*)key;
@@ -3432,6 +3464,44 @@ fn TVal? Vm.run(Vm* vm) {
                     }
                     vm.heap.decref_tval(ra);
                     ra.set_undefined();
+
+                    // Populate the VarIC for next time. The binding just resolved
+                    // either in the lex chain (put_result == 1) or in var_env
+                    // (put_result == 0); cache whichever env actually owns it so a
+                    // shadowing same-named binding elsewhere can never be picked up.
+                    // Only cache writable, non-accessor slots — the fast path's
+                    // guard trusts a plain write.
+                    if (ds.var_ic_base != null) {
+                        EnvRecord* owner = null;
+                        int owner_idx = -1;
+                        if (put_result == 1) {
+                            EnvRecord* cur = ds.act.lex_env;
+                            while (cur != null) {
+                                int idx = cur.bindings.find_prop_idx(key);
+                                if (idx >= 0) { owner = cur; owner_idx = idx; break; }
+                                cur = cur.parent;
+                            }
+                        } else {
+                            int idx = ds.act.var_env.bindings.find_prop_idx(key);
+                            if (idx >= 0) { owner = ds.act.var_env; owner_idx = idx; }
+                        }
+                        if (owner != null && owner_idx >= 0) {
+                            hobject::PropFlags fl = owner.bindings.get_prop_flags((uint)owner_idx);
+                            if (fl.writable && !fl.is_accessor) {
+                                uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                                hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                                vic.env = (void*)owner;
+                                vic.bindings = (void*)owner.bindings;
+                                vic.shape_id = owner.bindings.shape_id;
+                                vic.generation = vm.heap.shapes[owner.bindings.shape_id].generation;
+                                vic.prop_idx = (ushort)owner_idx;
+                                if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
+                                vic.key = key;
+                                if (key != null) { ((types::HeapHeader*)key).incref(); }
+                                vic.search_head = (void*)ds.act.lex_env;
+                            }
+                        }
+                    }
                 }
             }
             continue;
