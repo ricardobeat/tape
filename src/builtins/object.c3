@@ -2483,21 +2483,9 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     bool is_array_length = obj.get_class() == hobject::ObjClass.ARRAY
         && key_hstr.equals("length");
     if (is_array_length) {
-        // Determine the current length and its writable flag.
+        // Determine the current length.
         uint old_len = array_get_length(obj, ctx.heap);
-        // ARRAY exotic stores length in array_len_ptr; when the prop table
-        // has no "length" entry, the array_len_writable flag is authoritative.
-        bool len_is_writable = true;
-        if (obj.flags.exotic_array) {
-            len_is_writable = obj.flags.array_len_writable;
-        }
         HString* len_key_intern = builtin_intern_string(ctx.heap, "length");
-        if (len_key_intern != null) {
-            int len_prop_idx = obj.find_prop_idx(len_key_intern);
-            if (len_prop_idx >= 0) {
-                len_is_writable = obj.get_prop_flags((uint)len_prop_idx).writable;
-            }
-        }
 
         // ES2024 ArraySetLength steps 3-4: apply BOTH ToUint32 and ToNumber to
         // Desc.[[Value]] BEFORE descriptor-field validation. Each coercion runs
@@ -2532,6 +2520,19 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
             }
             arr_new_len = new_len_uint;
             arr_has_new_len = true;
+        }
+
+        // Refresh len_is_writable AFTER coercions, since a side effect during
+        // ToNumber/ToUint32 calls may have changed the writable flag.
+        bool len_is_writable = true;
+        if (obj.flags.exotic_array) {
+            len_is_writable = obj.flags.array_len_writable;
+        }
+        if (len_key_intern != null) {
+            int len_prop_idx = obj.find_prop_idx(len_key_intern);
+            if (len_prop_idx >= 0) {
+                len_is_writable = obj.get_prop_flags((uint)len_prop_idx).writable;
+            }
         }
 
         // Reject accessor descriptor on length (length is always a data property).
@@ -3061,14 +3062,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
             // Array-length special path: delegate to ArraySetLength logic (ES5 §15.4.5.1).
             if (obj.get_class() == hobject::ObjClass.ARRAY && p_key.equals("length")) {
                 uint old_len = array_get_length(obj, ctx.heap);
-                bool len_is_writable = true;
                 HString* len_key_intern = builtin_intern_string(ctx.heap, "length");
-                if (len_key_intern != null) {
-                    int len_prop_idx_inner = obj.find_prop_idx(len_key_intern);
-                    if (len_prop_idx_inner >= 0) {
-                        len_is_writable = obj.get_prop_flags((uint)len_prop_idx_inner).writable;
-                    }
-                }
                 bool has_get_f = has_get_in_desc_helper(ctx.heap, desc_obj);
                 bool has_set_f = has_set_in_desc_helper(ctx.heap, desc_obj);
                 if (has_get_f || has_set_f) {
@@ -3086,10 +3080,6 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     return;
                 }
                 bool has_wrt_f = has_writable_in_desc_helper(ctx.heap, desc_obj);
-                if (has_wrt_f && desc_flags.writable && !len_is_writable) {
-                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
-                    return;
-                }
                 bool has_val_f = has_value_in_desc_helper(ctx.heap, desc_obj);
                 uint arr_new_len2 = old_len;
                 bool arr_has_new_len2 = false;
@@ -3099,7 +3089,7 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     // BEFORE descriptor-field validation. Two observable
                     // valueOf/Symbol.toPrimitive calls so a side effect in the
                     // second call can flip length to non-writable and cause the
-                    // writable:true check above to reject the descriptor.
+                    // writable:true check below to reject the descriptor.
                     double num1_2 = builtin_to_number_vm(ctx, &new_len_val2);
                     if (ctx.should_throw) return;
                     uint new_len_uint2 = to_uint32(num1_2);
@@ -3111,6 +3101,19 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                     }
                     arr_new_len2 = new_len_uint2;
                     arr_has_new_len2 = true;
+                }
+                // Refresh len_is_writable AFTER coercions, since a side effect during
+                // ToNumber/ToUint32 calls may have changed the writable flag.
+                bool len_is_writable = true;
+                if (len_key_intern != null) {
+                    int len_prop_idx_refresh = obj.find_prop_idx(len_key_intern);
+                    if (len_prop_idx_refresh >= 0) {
+                        len_is_writable = obj.get_prop_flags((uint)len_prop_idx_refresh).writable;
+                    }
+                }
+                if (has_wrt_f && desc_flags.writable && !len_is_writable) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property: length");
+                    return;
                 }
                 if (arr_has_new_len2 && !len_is_writable && arr_new_len2 != old_len) {
                     builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property 'length'");
