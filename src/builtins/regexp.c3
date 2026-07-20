@@ -337,6 +337,9 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     HObject* obj = obj_raw;
     obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.regexp_proto);
     (*obj.extra_ptr()).regexp.regexp_data = compiled;
+    // Exclusive owner of re_compile's initial ref (pooled memory is not zeroed,
+    // so this MUST be set explicitly — see HObjectRegExp.owns_data).
+    (*obj.extra_ptr()).regexp.owns_data = true;
     (*obj.extra_ptr()).regexp.flags = js_flags;
 
     // Store pattern string as primitive_value

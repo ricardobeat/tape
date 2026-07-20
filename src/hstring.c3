@@ -653,6 +653,12 @@ fn uint utf16_unit_byte_len(char[] data, uint offset) @inline {
 /// the pair advances together (matches astral characters); otherwise (or
 /// without `unicode`) a single code unit advances.
 fn uint advance_string_index_byte_len(char[] data, uint offset, bool unicode) {
+    // Guard the string end: a zero-width match can sit at offset == data.len
+    // (e.g. an empty global match past the last char), and the regexp string
+    // iterator still calls AdvanceStringIndex there. Per ES §22.2.7.2.2 that
+    // advances by one, so return 1 without indexing data[offset] (which would
+    // read one past the buffer).
+    if ((usz)offset >= data.len) return 1;
     uint seq_len = utf16_unit_byte_len(data, offset);
     if (!unicode || (usz)(offset + seq_len) >= data.len) return seq_len;
     uint cp = decode_codepoint(data, offset);
