@@ -3173,6 +3173,16 @@ fn HObject* arr_to_object(TVal val, Heap* heap) {
         }
         return null;
     }
+    // BigInt → BigInt wrapper object (ES2020 §7.1.18)
+    if (val.is_bigint()) {
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try obj = obj_raw) {
+            obj.prototype = heap.bigint_proto;
+            (*obj.extra_ptr()).prim.primitive_value = val;
+            return obj;
+        }
+        return null;
+    }
     // String or Symbol → respective wrapper object.
     // Symbol primitives share the is_string() TVal tag; distinguish via is_symbol().
     if (val.is_string()) {
