@@ -6,6 +6,7 @@ import duktape::bytecode;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
+import duktape::hbigint;
 import std::io;
 
 // ============================================================================
@@ -38,6 +39,21 @@ fn char[]? CompilerContext.destructuring_property_key(&self) {
     if (tt == TokenType.NUMBER) {
         Token t = self.advance()!;
         return t.str_value;
+    }
+    // BigInt literal key (e.g. {1n: c}) — ES2020 PropertyName: NumericLiteral,
+    // the key is ToString(NumericValue(NumericLiteral)). Parse+format at
+    // compile time (destructuring keys are static constants, not runtime
+    // TOPROPKEY targets) and intern so the returned slice outlives this call.
+    if (tt == TokenType.BIGINT) {
+        Token t = self.advance()!;
+        int128? parsed = hbigint::parse_bigint_literal(t.str_value);
+        if (catch parsed) return COMPILE_ERROR~;
+        char[48] buf;
+        char[] digits = hbigint::int128_to_radix(parsed, 10, buf[..]);
+        Heap* hp = (Heap*)self.heap;
+        HString* hs = hp.str_intern(digits);
+        if (hs == null) return COMPILE_ERROR~;
+        return hs.get_data();
     }
     // Reserved word (keyword) key — only when a keyword has a string spelling.
     // The lexer's keyword tokens carry str_value only for the contextual

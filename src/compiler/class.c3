@@ -508,6 +508,10 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // raw token text (e.g. "0x10" instead of "16").
         bool method_name_is_number = false;
         double method_name_num_value = 0.0;
+        // Same idea for a BIGINT token (e.g. `1n() {}`) — key is
+        // ToString(NumericValue(NumericLiteral)) per ES2020 PropertyName.
+        bool method_name_is_bigint = false;
+        char[] method_name_bigint_src = {};
 
         // Check for computed key [expr]
         bool has_computed_key = false;
@@ -606,6 +610,10 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                         method_name = self.advance()!;
                         method_name_is_number = true;
                         method_name_num_value = method_name.num_value;
+                    } else if (self.check(TokenType.BIGINT)) {
+                        method_name = self.advance()!;
+                        method_name_is_bigint = true;
+                        method_name_bigint_src = method_name.str_value;
                     } else {
                         return COMPILE_ERROR~;
                     }
@@ -670,6 +678,10 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             method_name = self.advance()!;
             method_name_is_number = true;
             method_name_num_value = method_name.num_value;
+        } else if (self.check(TokenType.BIGINT)) {
+            method_name = self.advance()!;
+            method_name_is_bigint = true;
+            method_name_bigint_src = method_name.str_value;
         } else {
             return COMPILE_ERROR~;
         }
@@ -775,6 +787,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             methods[method_count].is_setter = is_setter;
             methods[method_count].name_is_number = method_name_is_number;
             methods[method_count].name_num_value = method_name_num_value;
+            methods[method_count].name_is_bigint = method_name_is_bigint;
+            methods[method_count].name_bigint_src = method_name_bigint_src;
             methods[method_count].computed_key_inner_idx = computed_key_inner_idx;
             methods[method_count].computed_key_reg = (uint)computed_key_reg;
             methods[method_count].is_private = is_private_member;
@@ -1028,10 +1042,13 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         } else {
             // Non-computed key: use the stored name.  For NUMBER tokens, emit a
             // number constant so the runtime get_prop_key() converts it to the
-            // proper string representation (e.g. 0x10 → "16").
+            // proper string representation (e.g. 0x10 → "16"). BIGINT tokens
+            // follow the same pattern (e.g. `1n() {}` → key "1").
             uint key_idx;
             if (methods[mi].name_is_number) {
                 key_idx = self.add_number_constant(methods[mi].name_num_value);
+            } else if (methods[mi].name_is_bigint) {
+                key_idx = self.add_bigint_constant(methods[mi].name_bigint_src)!;
             } else {
                 key_idx = self.add_string_constant(methods[mi].name);
             }

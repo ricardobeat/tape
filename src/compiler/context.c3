@@ -1304,6 +1304,8 @@ struct ClassMethod {
     bool   is_setter;
     bool   name_is_number;          // true when name came from a NUMBER token
     double name_num_value;          // numeric value when name_is_number is true
+    bool   name_is_bigint;          // true when name came from a BIGINT token
+    char[] name_bigint_src;         // raw literal text (digits) when name_is_bigint is true
     uint   computed_key_inner_idx;  // MAX_INNER_FUNCS = not computed
     // When the enclosing context is a generator/async, computed keys that
     // contain yield/await must be compiled inline (not as a separate inner

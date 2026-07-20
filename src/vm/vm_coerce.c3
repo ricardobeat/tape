@@ -243,6 +243,9 @@ fn void* get_prop_key(Vm* vm, TVal* val) {
         case NUMBER:
             if (try s = vm_number_to_string(vm, val.get_number())) return s;
             return null;
+        case BIGINT:
+            if (try s = vm_bigint_to_string(vm, val.get_bigint())) return s;
+            return null;
         case BOOLEAN:
             if (val.get_boolean()) return h.strs[heap::BuiltinStr.TRUE];
             return h.strs[heap::BuiltinStr.FALSE];

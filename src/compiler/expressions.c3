@@ -3737,6 +3737,16 @@ fn ushort? CompilerContext.object_literal(&self) {
                 uint key_idx = self.add_number_constant(key_tok.num_value);
                 key_reg = self.alloc_reg();
                 self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+            } else if (key_tt == TokenType.BIGINT) {
+                // ES2020 PropertyName: NumericLiteral (DecimalBigIntegerLiteral) —
+                // the property name is ToString(NumericValue(NumericLiteral)).
+                // Load the BigInt then coerce via TOPROPKEY (same runtime path
+                // as computed keys) rather than duplicating BigInt->string here.
+                Token key_tok = self.advance()!;
+                uint key_idx = self.add_bigint_constant(key_tok.str_value)!;
+                key_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+                self.emit_abc(Opcode.TOPROPKEY, (uint)key_reg, 0, 0);
             } else if (key_tt == TokenType.LBRACKET) {
                 // Computed property key — clear inferred name since the actual
                 // key is computed at runtime (per ES2015 §14.3 the inferred
