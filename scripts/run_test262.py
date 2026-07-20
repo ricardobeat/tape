@@ -198,21 +198,26 @@ import fnmatch
 # Glob patterns (relative to test262/test) skipped wholesale. Unlike SKIP_FILES
 # (exact paths) these match families of tests.
 SKIP_GLOBS = {
-    # Async generators (`async function*`) are deferred (plan 057 implements the
-    # for-await-of *consumer* — a for-await loop inside an async function — plus
-    # Symbol.asyncIterator and the AsyncFromSync adapter, but not async generator
-    # functions). test262 splits the for-await-of family by CONTEXT via the file-
-    # name prefix: `async-func-*` runs the loop inside an async function (the
-    # supported consumer), `async-gen-*` inside an async generator (unsupported).
-    # Skip the async-generator-context files structurally.
-    "language/statements/for-await-of/async-gen-*.js",
-    "language/expressions/async-generator/*.js",
-    "language/statements/async-generator/*.js",
-    # Async-generator built-ins (the AsyncGenerator function/prototype and the
-    # %AsyncIteratorPrototype%) all require `async function*`, which is deferred.
-    # (The AsyncFromSyncIterator adapter IS implemented — plan 057 — but its
-    # test262 dir exercises it via async-generator sources, so it stays skipped
-    # until async generators land.)
+    # Async generators (`async function*` / `async *m()`) are deferred (plan 057
+    # implements the for-await-of *consumer* — a for-await loop inside an async
+    # function — plus Symbol.asyncIterator and the AsyncFromSync adapter, but not
+    # async generator functions/methods). test262 marks async-generator tests
+    # structurally: the path always contains the token `async-gen` (or
+    # `async-private-gen` for private methods) — as a directory (async-gen-method/,
+    # async-gen-method-static/), a filename prefix (async-gen-decl-*, async-gen-
+    # meth-*), etc. The for-await-of *consumer* tests use `async-func-*` instead,
+    # so these path-substring globs skip every async-generator test (across
+    # class/dstr, object/dstr, for-await-of, method-definition, …) without
+    # touching the consumer tests we now support. Removing `async-iteration` from
+    # UNSUPPORTED_PATTERN un-skipped ~1,993 of these; this re-skips them by their
+    # own path structure (no test-body scanning).
+    "*async-gen*",
+    "*async-private-gen*",
+    # Async-generator built-ins (the AsyncGenerator function/prototype). The
+    # %AsyncIteratorPrototype% is reached via async generators too. (The
+    # AsyncFromSyncIterator adapter IS implemented — plan 057 — but its test262
+    # dir exercises it via async-generator sources, so it stays skipped until
+    # async generators land.)
     "built-ins/AsyncGeneratorFunction/*",
     "built-ins/AsyncGeneratorPrototype/*",
     "built-ins/AsyncFromSyncIteratorPrototype/*",
