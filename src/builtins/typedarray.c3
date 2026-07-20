@@ -261,7 +261,7 @@ fn TVal ta_load_element(Heap* heap, char* p, hobject::ObjClass cls, uint idx) {
         }
         case hobject::ObjClass.BIGINT64ARRAY: {
             long v;
-            libc::memcpy(&v, ep, 8);
+            mem::copy(&v, ep, (sz)(8));
             hbigint::HBigInt*? box = hbigint::hbigint_alloc(heap, (int128)v);
             if (catch box) { out.set_undefined(); break; }
             out.set_bigint(box);
@@ -269,7 +269,7 @@ fn TVal ta_load_element(Heap* heap, char* p, hobject::ObjClass cls, uint idx) {
         }
         case hobject::ObjClass.BIGUINT64ARRAY: {
             ulong v;
-            libc::memcpy(&v, ep, 8);
+            mem::copy(&v, ep, (sz)(8));
             hbigint::HBigInt*? box = hbigint::hbigint_alloc(heap, (int128)(uint128)v);
             if (catch box) { out.set_undefined(); break; }
             out.set_bigint(box);
@@ -367,7 +367,7 @@ fn void ta_write_element(char* p, hobject::ObjClass cls, TVal* val, BuiltinConte
             int128 bv = builtin_to_bigint(ctx, val, &ok);
             if (!ok || ctx.should_throw) return;
             long lo = (long)bv;   // low 64 bits, wrapping mod 2^64
-            libc::memcpy(p, &lo, 8);
+            mem::copy(p, &lo, (sz)(8));
             break;
         }
         default:
@@ -407,7 +407,7 @@ fn TAScalar ta_coerce_element(hobject::ObjClass cls, TVal* val, BuiltinContext* 
 /// throws — safe to call after a post-coercion detach re-check.
 fn void ta_store_scalar(char* p, hobject::ObjClass cls, TAScalar* s) {
     if (s.is_bigint) {
-        libc::memcpy(p, &s.big64, 8);
+        mem::copy(p, &s.big64, (sz)(8));
         return;
     }
     switch (cls) {
@@ -421,19 +421,19 @@ fn void ta_store_scalar(char* p, hobject::ObjClass cls, TAScalar* s) {
         case hobject::ObjClass.INT16ARRAY:
         case hobject::ObjClass.UINT16ARRAY: {
             short sv = (short)(double_to_int32(s.num) & 0xFFFF);
-            libc::memcpy(p, &sv, 2);
+            mem::copy(p, &sv, (sz)(2));
         }
         case hobject::ObjClass.INT32ARRAY:
         case hobject::ObjClass.UINT32ARRAY: {
             int v32 = (int)double_to_int32(s.num);
-            libc::memcpy(p, &v32, 4);
+            mem::copy(p, &v32, (sz)(4));
         }
         case hobject::ObjClass.FLOAT32ARRAY: {
             float f = (float)s.num;
-            libc::memcpy(p, &f, 4);
+            mem::copy(p, &f, (sz)(4));
         }
         case hobject::ObjClass.FLOAT64ARRAY:
-            libc::memcpy(p, &s.num, 8);
+            mem::copy(p, &s.num, (sz)(8));
         default:
             break;
     }
