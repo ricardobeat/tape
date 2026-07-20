@@ -116,26 +116,30 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super, char[] 
 }
 
 /// Parse a class declaration: `class Name [extends Base] { body }`
-fn void? CompilerContext.class_declaration(&self, char[]* out_name = null) {
+fn void? CompilerContext.class_declaration(&self, char[]* out_name = null, bool allow_anonymous = false) {
     // Capture class source start before consuming `class` keyword.
     self.lexer.refresh_token_start();
     uint class_decl_src_start = self.lexer.token_start;
     self.expect(TokenType.CLASS)!;
     // Per ES2024 §15.7.1, BindingIdentifier may be `await` (in non-module)
     // or `yield` (in non-generator). Accept these contextual keywords.
-    Token name_tok;
+    // When allow_anonymous is set (`export default class ... {}`), a missing
+    // name is legal — the class binds to `*default*` (§16.2.3.7).
+    char[] class_name;
     TokenType name_tt = self.peek_type();
     if (name_tt == TokenType.IDENTIFIER) {
-        name_tok = self.advance()!;
+        class_name = self.advance()!.str_value;
     } else if ((name_tt == TokenType.AWAIT && !self.is_module) ||
                (name_tt == TokenType.YIELD && !self.is_generator)) {
-        name_tok = self.advance()!;
+        class_name = self.advance()!.str_value;
+    } else if (allow_anonymous && (name_tt == TokenType.EXTENDS || name_tt == TokenType.LBRACE)) {
+        class_name = "*default*";
     } else {
         return COMPILE_ERROR~;
     }
     // Surface the bound class name to callers (e.g. `export class Foo {}`,
     // which must register `Foo` as an export without re-parsing the header).
-    if (out_name != null) *out_name = name_tok.str_value;
+    if (out_name != null) *out_name = class_name;
 
     // ES6 §14.5.14 Runtime Semantics: ClassDefinitionEvaluation creates a
     // fresh lexical environment (classScope) as a child of the current
@@ -152,8 +156,8 @@ fn void? CompilerContext.class_declaration(&self, char[]* out_name = null) {
 
     // Outer let-style binding: holds the constructor after the class evaluates.
     // Same as the existing let/const treatment for class declarations.
-    ushort class_reg = self.declare_var(name_tok.str_value, LET);
-    uint class_name_idx = self.add_string_constant(name_tok.str_value);
+    ushort class_reg = self.declare_var(class_name, LET);
+    uint class_name_idx = self.add_string_constant(class_name);
 
     // Push the classScope (child of current lex_env).
     self.emit_simple(Opcode.PUSH_LEX);
@@ -169,7 +173,7 @@ fn void? CompilerContext.class_declaration(&self, char[]* out_name = null) {
     // Parse extends clause and class body.  Methods CLOSURE here, capturing
     // classScope as their lex_env so the class name resolves to the
     // constructor from inside method bodies.
-    ushort ctor_reg = self.parse_class_tail_with_name(name_tok.str_value, class_decl_src_start, false)!;
+    ushort ctor_reg = self.parse_class_tail_with_name(class_name, class_decl_src_start, false)!;
 
     // Initialize the classScope's immutable binding with the constructor value
     // (overwriting the TDZ placeholder).

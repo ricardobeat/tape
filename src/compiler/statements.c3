@@ -4352,8 +4352,11 @@ fn void? CompilerContext.export_declaration(&self) {
 
         // export default class {} or export default class Foo {}
         if (next == TokenType.CLASS) {
-            // Parse class and assign to *default*
-            self.class_declaration()!;
+            // allow_anonymous: `export default class {}` has no BindingIdentifier
+            // and binds to *default* (§16.2.3.7). A named default class still
+            // binds its own name too, but the export always tracks *default*.
+            char[] dflt_class_name;
+            self.class_declaration(&dflt_class_name, true)!;
             mod_register_export(mod, "*default*", "default", false, 0);
             self.match(TokenType.SEMICOLON);
             return;
