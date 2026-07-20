@@ -3951,8 +3951,21 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     // Declare loop variable register. (Per-iteration lexical env, §14.7.5.6, is
     // handled uniformly inside emit_forof.)
     ushort loop_var;
+    bool reg_resident = false;
     if (is_bare) {
-        loop_var = self.alloc_reg();
+        // Bare `for (b of ...)` assigns to an existing binding. If that binding
+        // is a register-cached local, bind straight into its home register so
+        // the body's register read sees the value (PUTVAR alone desyncs it).
+        if (!self.is_global) {
+            if (try home = self.resolve_var(var_name)) {
+                loop_var = home;
+                reg_resident = true;
+            } else {
+                loop_var = self.alloc_reg();
+            }
+        } else {
+            loop_var = self.alloc_reg();
+        }
     } else {
         ScopeKind kind = is_const ? CONST : (is_lexical ? LET : VAR);
         loop_var = self.declare_var(var_name, kind);
@@ -3965,6 +3978,7 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     head.id_reg = loop_var;
     head.id_name_idx = name_idx;
     head.id_is_bare = is_bare;
+    head.id_reg_resident = reg_resident;
     head.is_lexical = is_lexical;
     head.is_const = is_const;
     self.emit_forof(head, iter_reg, saved_scope, saved_reg, is_await)!;

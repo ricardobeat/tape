@@ -74,7 +74,13 @@ struct ForOfHead {
     // IDENT: bind the value to a single variable.
     ushort id_reg;         // loop-variable register (declared/allocated by caller)
     uint   id_name_idx;    // constant index of the variable name
-    bool   id_is_bare;     // true = assign to existing lvalue (PUTVAR), no declaration
+    bool   id_is_bare;     // true = assign to existing lvalue, no declaration
+    // Bare target that resolves to a register-cached local: id_reg is that
+    // local's HOME register, so the bind writes the value straight into it (and
+    // skips PUTVAR). Without this the body — which reads the local from its home
+    // register — would see a stale value, since PUTVAR only updates the env slot
+    // and then clears its source register (see the bare-forof var-desync fix).
+    bool   id_reg_resident;
 
     // Shared by IDENT and DESTRUCTURE.
     bool   is_lexical;     // let/const (needs per-iteration env)
@@ -2913,10 +2919,19 @@ fn void CompilerContext.emit_head_inittz(&self, ForOfHead head) {
 fn void? CompilerContext.emit_head_bind(&self, ForOfHead head, ushort val_slot) {
     switch (head.kind) {
         case IDENT:
-            self.emit_abc(Opcode.LDREG, (uint)head.id_reg, (uint)val_slot, 0);
-            if (head.id_is_bare) {
+            if (head.id_is_bare && head.id_reg_resident) {
+                // Register-cached local target: write straight into its home
+                // register (id_reg). No PUTVAR — that would update only the env
+                // slot and then clear the source reg, leaving the body's register
+                // read of the local stale (bare-forof var-desync fix). Matches how
+                // a plain `b = val` assignment to a register-resident local emits.
+                self.emit_abc(Opcode.LDREG, (uint)head.id_reg, (uint)val_slot, 0);
+            } else if (head.id_is_bare) {
+                // Env-resident bare target: stage in id_reg, then PUTVAR the env.
+                self.emit_abc(Opcode.LDREG, (uint)head.id_reg, (uint)val_slot, 0);
                 self.emit_a_bc(Opcode.PUTVAR, (uint)head.id_reg, head.id_name_idx);
             } else {
+                self.emit_abc(Opcode.LDREG, (uint)head.id_reg, (uint)val_slot, 0);
                 self.emit_var_store(head.id_reg, head.id_name_idx, head.is_lexical, head.is_const);
             }
         case DESTRUCTURE:
