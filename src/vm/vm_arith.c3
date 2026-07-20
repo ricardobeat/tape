@@ -68,6 +68,23 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 } else {
                     ra.set_fastint(-unm_val);
                 }
+            } else if (rb.get_tag() == OBJECT) {
+                // ES2020 §12.5.7 UnaryMinus: ToNumeric(operand) — ToPrimitive
+                // (hint number) FIRST, then pass a BigInt result through to
+                // BigInt::unaryMinus instead of ToNumber (which would throw
+                // on BigInt). Handles `-Object(1n)` / `-{[Symbol.toPrimitive]:
+                // () => 1n}`.
+                TVal prim_b = to_primitive_value(vm, rb, 2);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                if (prim_b.is_bigint()) {
+                    if (vm_bigint_unary(vm, Opcode.UNM, ra, &prim_b) == BigIntOpResult.THREW) {
+                        if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                } else {
+                    double unm_b = vm_to_number(vm, &prim_b);
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    ra.set_number(-unm_b);
+                }
             } else {
                 double unm_b = vm_to_number(vm,rb);
                 if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);

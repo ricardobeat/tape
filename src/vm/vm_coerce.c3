@@ -120,6 +120,13 @@ fn int vm_relational_compare(Vm* vm, TVal* x, TVal* y, bool* is_undef) {
 
 /// ECMAScript truthiness.
 macro bool is_truthy(TVal* val) {
+    // BigInt: false iff the mathematical value is 0n (ES2020 §7.1.2).
+    // get_bigint() reads via get_heapptr(), which works the same whether or
+    // not nanboxing is enabled — checked once here instead of duplicating a
+    // bit-level tag test in the nanbox branch below.
+    if (val.is_bigint()) {
+        return val.get_bigint() != 0;
+    }
 $if types::USE_NANBOX:
     ulong tag = val.bits >> 48;
     // Falsy primitives: undefined, null, false
@@ -892,5 +899,35 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, int hint = 0) {
         }
     }
     return *val;
+}
+
+/// ToPrimitive(hint number) both operands of a bitwise/shift op — ES2020
+/// §12.12.3/§12.9.4 etc. all begin "Let lnum be ? ToNumeric(lval)" / "Let
+/// rnum be ? ToNumeric(rval)" BEFORE dispatching on whether the result is
+/// BigInt or Number. The opcode handlers in vm_execute.c3 previously
+/// checked `rb.is_bigint() || rc.is_bigint()` on the RAW operands, which
+/// misses an object whose valueOf/toString/Symbol.toPrimitive produces a
+/// BigInt (e.g. `Object(1n) << 1n`) — that object is neither BigInt nor
+/// fastint/number, so it fell through to the plain-numeric path and threw
+/// or coerced wrongly instead of being recognized as BigInt-typed.
+///
+/// Writes the ToPrimitive'd results into *out_b/*out_c and returns true on
+/// success. Returns false if either ToPrimitive call threw (vm.throw_pending
+/// is set; caller must check/propagate exactly like any other coercion).
+/// Non-object operands pass through unchanged (ToPrimitive is a no-op for
+/// primitives), so this is safe to call unconditionally before the
+/// is_bigint() dispatch.
+fn bool vm_bitwise_to_primitive(Vm* vm, TVal* rb, TVal* rc, TVal* out_b, TVal* out_c) {
+    *out_b = *rb;
+    if (rb.get_tag() == OBJECT) {
+        *out_b = to_primitive_value(vm, rb, 2);
+        if (vm.throw_pending) return false;
+    }
+    *out_c = *rc;
+    if (rc.get_tag() == OBJECT) {
+        *out_c = to_primitive_value(vm, rc, 2);
+        if (vm.throw_pending) return false;
+    }
+    return true;
 }
 

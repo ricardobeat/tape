@@ -238,32 +238,44 @@ fn int vm_bigint_relational(Vm* vm, TVal* x, TVal* y, bool* is_undef) {
     }
 
     if (x_big) {
-        // BigInt <=> (Number | String)
+        // BigInt <=> (Number | String | Boolean | Symbol)
         if (y.is_string()) {
-            int128? yb = string_to_bigint(((HString*)y.get_heapptr()).get_data());
+            HString* ys = (HString*)y.get_heapptr();
+            // Symbols share the STRING tag but can never be implicitly
+            // converted to a number (ES2020 §7.1.3) — throw, don't compare.
+            if (ys != null && ys.is_symbol()) {
+                vm_set_type_error(vm, "Cannot convert a Symbol value to a number");
+                return 0;
+            }
+            int128? yb = string_to_bigint(ys.get_data());
             if (catch yb) { *is_undef = true; return 0; }
             int128 a = x.get_bigint();
             if (a < yb) return -1;
             if (a > yb) return 1;
             return 0;
         }
-        // Number / FASTINT
-        double num = y.get_number_or_fastint();
+        // ES2020 §7.1.3 ToNumeric(Boolean): true -> 1, false -> 0.
+        double num = y.is_boolean() ? (y.get_boolean() ? 1.0 : 0.0) : y.get_number_or_fastint();
         int c = vm_bigint_cmp_number(x.get_bigint(), num);
         if (c == 2) { *is_undef = true; return 0; }
         return c;
     }
 
-    // y is BigInt, x is Number | String
+    // y is BigInt, x is Number | String | Boolean | Symbol
     if (x.is_string()) {
-        int128? xb = string_to_bigint(((HString*)x.get_heapptr()).get_data());
+        HString* xs = (HString*)x.get_heapptr();
+        if (xs != null && xs.is_symbol()) {
+            vm_set_type_error(vm, "Cannot convert a Symbol value to a number");
+            return 0;
+        }
+        int128? xb = string_to_bigint(xs.get_data());
         if (catch xb) { *is_undef = true; return 0; }
         int128 b = y.get_bigint();
         if (xb < b) return -1;
         if (xb > b) return 1;
         return 0;
     }
-    double num = x.get_number_or_fastint();
+    double num = x.is_boolean() ? (x.get_boolean() ? 1.0 : 0.0) : x.get_number_or_fastint();
     int c = vm_bigint_cmp_number(y.get_bigint(), num);
     if (c == 2) { *is_undef = true; return 0; }
     // c is (big <=> num) = (y <=> x); invert to get (x <=> y).

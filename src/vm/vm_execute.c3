@@ -2063,21 +2063,36 @@ fn TVal? Vm.run(Vm* vm) {
             // Fast path: FASTINTs are already integer-valued; cast directly to int
             // instead of round-tripping through double + toint32.
         {
-            if (rb.is_bigint() || rc.is_bigint()) {
-                if (vm_bigint_binop(vm, Opcode.BAND, ra, rb, rc) == BigIntOpResult.THREW) {
+            // ES2020 §12.12.3: ToNumeric both operands BEFORE dispatching on
+            // BigInt — an object whose valueOf/toString/Symbol.toPrimitive
+            // yields a BigInt (e.g. `Object(1n) & 1n`) must be recognized as
+            // BigInt-typed, not fall through to the plain-numeric path.
+            // Non-object operands pass through unchanged, so this is only
+            // live when at least one side is actually an object.
+            TVal* eb = rb; TVal* ec = rc;
+            TVal band_prim_b; TVal band_prim_c;
+            if (rb.get_tag() == OBJECT || rc.get_tag() == OBJECT) {
+                if (!vm_bitwise_to_primitive(vm, rb, rc, &band_prim_b, &band_prim_c)) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    if (ds.needs_restart) break;
+                }
+                eb = &band_prim_b; ec = &band_prim_c;
+            }
+            if (eb.is_bigint() || ec.is_bigint()) {
+                if (vm_bigint_binop(vm, Opcode.BAND, ra, eb, ec) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     if (ds.needs_restart) break;
                 }
                 continue;
             }
-            if (types::both_fastint(rb, rc)) {
-                ra.set_fastint((long)((int)rb.get_fastint() & (int)rc.get_fastint()));
+            if (types::both_fastint(eb, ec)) {
+                ra.set_fastint((long)((int)eb.get_fastint() & (int)ec.get_fastint()));
                 continue;
             }
-            int band_b = toint32(vm_to_number(vm,rb));
+            int band_b = toint32(vm_to_number(vm,eb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
-            int band_c = toint32(vm_to_number(vm,rc));
+            int band_c = toint32(vm_to_number(vm,ec));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(band_b & band_c));
             continue;
@@ -2085,21 +2100,33 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.BOR:
         {
-            if (rb.is_bigint() || rc.is_bigint()) {
-                if (vm_bigint_binop(vm, Opcode.BOR, ra, rb, rc) == BigIntOpResult.THREW) {
+            // See BAND above: ToNumeric both operands before the is_bigint()
+            // dispatch, so an object producing a BigInt via ToPrimitive is
+            // recognized correctly.
+            TVal* eb = rb; TVal* ec = rc;
+            TVal bor_prim_b; TVal bor_prim_c;
+            if (rb.get_tag() == OBJECT || rc.get_tag() == OBJECT) {
+                if (!vm_bitwise_to_primitive(vm, rb, rc, &bor_prim_b, &bor_prim_c)) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    if (ds.needs_restart) break;
+                }
+                eb = &bor_prim_b; ec = &bor_prim_c;
+            }
+            if (eb.is_bigint() || ec.is_bigint()) {
+                if (vm_bigint_binop(vm, Opcode.BOR, ra, eb, ec) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     if (ds.needs_restart) break;
                 }
                 continue;
             }
-            if (types::both_fastint(rb, rc)) {
-                ra.set_fastint((long)((int)rb.get_fastint() | (int)rc.get_fastint()));
+            if (types::both_fastint(eb, ec)) {
+                ra.set_fastint((long)((int)eb.get_fastint() | (int)ec.get_fastint()));
                 continue;
             }
-            int bor_b = toint32(vm_to_number(vm,rb));
+            int bor_b = toint32(vm_to_number(vm,eb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
-            int bor_c = toint32(vm_to_number(vm,rc));
+            int bor_c = toint32(vm_to_number(vm,ec));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(bor_b | bor_c));
             continue;
@@ -2107,21 +2134,31 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.BXOR:
         {
-            if (rb.is_bigint() || rc.is_bigint()) {
-                if (vm_bigint_binop(vm, Opcode.BXOR, ra, rb, rc) == BigIntOpResult.THREW) {
+            // See BAND above.
+            TVal* eb = rb; TVal* ec = rc;
+            TVal bxor_prim_b; TVal bxor_prim_c;
+            if (rb.get_tag() == OBJECT || rc.get_tag() == OBJECT) {
+                if (!vm_bitwise_to_primitive(vm, rb, rc, &bxor_prim_b, &bxor_prim_c)) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    if (ds.needs_restart) break;
+                }
+                eb = &bxor_prim_b; ec = &bxor_prim_c;
+            }
+            if (eb.is_bigint() || ec.is_bigint()) {
+                if (vm_bigint_binop(vm, Opcode.BXOR, ra, eb, ec) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     if (ds.needs_restart) break;
                 }
                 continue;
             }
-            if (types::both_fastint(rb, rc)) {
-                ra.set_fastint((long)((int)rb.get_fastint() ^ (int)rc.get_fastint()));
+            if (types::both_fastint(eb, ec)) {
+                ra.set_fastint((long)((int)eb.get_fastint() ^ (int)ec.get_fastint()));
                 continue;
             }
-            int bxor_b = toint32(vm_to_number(vm,rb));
+            int bxor_b = toint32(vm_to_number(vm,eb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
-            int bxor_c = toint32(vm_to_number(vm,rc));
+            int bxor_c = toint32(vm_to_number(vm,ec));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(bxor_b ^ bxor_c));
             continue;
@@ -2129,21 +2166,31 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.SHL:
         {
-            if (rb.is_bigint() || rc.is_bigint()) {
-                if (vm_bigint_binop(vm, Opcode.SHL, ra, rb, rc) == BigIntOpResult.THREW) {
+            // See BAND above.
+            TVal* eb = rb; TVal* ec = rc;
+            TVal shl_prim_b; TVal shl_prim_c;
+            if (rb.get_tag() == OBJECT || rc.get_tag() == OBJECT) {
+                if (!vm_bitwise_to_primitive(vm, rb, rc, &shl_prim_b, &shl_prim_c)) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    if (ds.needs_restart) break;
+                }
+                eb = &shl_prim_b; ec = &shl_prim_c;
+            }
+            if (eb.is_bigint() || ec.is_bigint()) {
+                if (vm_bigint_binop(vm, Opcode.SHL, ra, eb, ec) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     if (ds.needs_restart) break;
                 }
                 continue;
             }
-            if (types::both_fastint(rb, rc)) {
-                ra.set_fastint((long)((int)rb.get_fastint() << ((int)rc.get_fastint() & 0x1F)));
+            if (types::both_fastint(eb, ec)) {
+                ra.set_fastint((long)((int)eb.get_fastint() << ((int)ec.get_fastint() & 0x1F)));
                 continue;
             }
-            int shl_b = toint32(vm_to_number(vm,rb));
+            int shl_b = toint32(vm_to_number(vm,eb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
-            int shl_c = toint32(vm_to_number(vm,rc));
+            int shl_c = toint32(vm_to_number(vm,ec));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(shl_b << (shl_c & 0x1F)));
             continue;
@@ -2151,21 +2198,31 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.SHR:
         {
-            if (rb.is_bigint() || rc.is_bigint()) {
-                if (vm_bigint_binop(vm, Opcode.SHR, ra, rb, rc) == BigIntOpResult.THREW) {
+            // See BAND above.
+            TVal* eb = rb; TVal* ec = rc;
+            TVal shr_prim_b; TVal shr_prim_c;
+            if (rb.get_tag() == OBJECT || rc.get_tag() == OBJECT) {
+                if (!vm_bitwise_to_primitive(vm, rb, rc, &shr_prim_b, &shr_prim_c)) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    if (ds.needs_restart) break;
+                }
+                eb = &shr_prim_b; ec = &shr_prim_c;
+            }
+            if (eb.is_bigint() || ec.is_bigint()) {
+                if (vm_bigint_binop(vm, Opcode.SHR, ra, eb, ec) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     if (ds.needs_restart) break;
                 }
                 continue;
             }
-            if (types::both_fastint(rb, rc)) {
-                ra.set_fastint((long)((int)rb.get_fastint() >> ((int)rc.get_fastint() & 0x1F)));
+            if (types::both_fastint(eb, ec)) {
+                ra.set_fastint((long)((int)eb.get_fastint() >> ((int)ec.get_fastint() & 0x1F)));
                 continue;
             }
-            int shr_b = toint32(vm_to_number(vm,rb));
+            int shr_b = toint32(vm_to_number(vm,eb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
-            int shr_c = toint32(vm_to_number(vm,rc));
+            int shr_c = toint32(vm_to_number(vm,ec));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(shr_b >> (shr_c & 0x1F)));
             continue;
@@ -2173,17 +2230,31 @@ fn TVal? Vm.run(Vm* vm) {
 
         case Opcode.USHR:
         {
-            if (rb.is_bigint() || rc.is_bigint()) {
-                if (vm_bigint_binop(vm, Opcode.USHR, ra, rb, rc) == BigIntOpResult.THREW) {
+            // See BAND above. Note ES2020 §12.9.4 step 6 makes >>> throw
+            // TypeError when EITHER ToNumeric result is BigInt (no BigInt
+            // unsigned-shift exists) — vm_bigint_binop(USHR, ...) already
+            // encodes that, so routing an object-that-yields-BigInt through
+            // the same is_bigint() dispatch below is correct here too.
+            TVal* eb = rb; TVal* ec = rc;
+            TVal ushr_prim_b; TVal ushr_prim_c;
+            if (rb.get_tag() == OBJECT || rc.get_tag() == OBJECT) {
+                if (!vm_bitwise_to_primitive(vm, rb, rc, &ushr_prim_b, &ushr_prim_c)) {
+                    if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    if (ds.needs_restart) break;
+                }
+                eb = &ushr_prim_b; ec = &ushr_prim_c;
+            }
+            if (eb.is_bigint() || ec.is_bigint()) {
+                if (vm_bigint_binop(vm, Opcode.USHR, ra, eb, ec) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     if (ds.needs_restart) break;
                 }
                 continue;
             }
-            uint ushr_b = (uint)toint32(vm_to_number(vm,rb));
+            uint ushr_b = (uint)toint32(vm_to_number(vm,eb));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
-            int  ushr_c = toint32(vm_to_number(vm,rc));
+            int  ushr_c = toint32(vm_to_number(vm,ec));
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             ra.set_fastint((long)(ushr_b >> (ushr_c & 0x1F)));
             continue;
