@@ -4,6 +4,7 @@ import duktape::types;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::bytecode;
+import duktape::re_bindings;
 import std::io;
 import std::core::mem::mempool;
 import std::core::mem::allocators;
@@ -890,6 +891,12 @@ fn void Heap.destroy(&self) {
                 if (cf.line_table != null) { self.free_func(self.heap_udata, cf.line_table); }
                 if (cf.ic_entries != null) { self.free_func(self.heap_udata, cf.ic_entries); }
                 if (cf.var_ic_entries != null) { self.free_func(self.heap_udata, cf.var_ic_entries); }
+                if (cf.regexp_cache != null) {
+                    for (uint ri = 0; ri < cf.regexp_cache_count; ri++) {
+                        if (cf.regexp_cache[ri] != null) { re_bindings::re_free(cf.regexp_cache[ri]); }
+                    }
+                    self.free_func(self.heap_udata, cf.regexp_cache);
+                }
                 // Direct-eval private-name snapshot (compiler/context.c3
                 // finish() — heap-tracked when a function had direct eval AND
                 // inherited names from a parent class body).
@@ -1035,6 +1042,12 @@ fn void Heap.reset(&self) {
             if (cf.line_table != null) { self.free_func(self.heap_udata, cf.line_table); }
             if (cf.ic_entries != null) { self.free_func(self.heap_udata, cf.ic_entries); }
             if (cf.var_ic_entries != null) { self.free_func(self.heap_udata, cf.var_ic_entries); }
+            if (cf.regexp_cache != null) {
+                for (uint ri = 0; ri < cf.regexp_cache_count; ri++) {
+                    if (cf.regexp_cache[ri] != null) { re_bindings::re_free(cf.regexp_cache[ri]); }
+                }
+                self.free_func(self.heap_udata, cf.regexp_cache);
+            }
             // Direct-eval private-name snapshot (see destroy() above).
             if (cf.eval_private_names != null) { self.free_func(self.heap_udata, cf.eval_private_names); }
             self.free_func(self.heap_udata, cf);

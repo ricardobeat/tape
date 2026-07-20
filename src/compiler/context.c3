@@ -1525,6 +1525,19 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
             func.var_ic_entries = vic_raw;
             func.var_ic_count = func.code_count;
         }
+
+        // Allocate NEWREGEXP literal compile cache — one ReCompiled* slot per
+        // constant-pool entry, keyed by the regexp literal's constant index,
+        // zeroed (null = not yet compiled).
+        if (func.const_count > 0) {
+            usz rec_bytes = (usz)func.const_count * (usz)void*::size;
+            void* rec_raw = h.alloc_func(h.heap_udata, rec_bytes);
+            if (rec_raw != null) {
+                mem::clear(rec_raw, (sz)(rec_bytes));
+                func.regexp_cache = (void**)rec_raw;
+                func.regexp_cache_count = func.const_count;
+            }
+        }
     }
 
     // Track the CompiledFunction for cleanup when the heap is destroyed

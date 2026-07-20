@@ -496,6 +496,14 @@ struct HObjectRegExp {
     TVal              pattern_str;
     void*             regexp_data;
     int               flags;       // JS flag bits: 1=g, 2=i, 4=m
+    /// When false, `regexp_data` is a *borrowed* reference into a shared,
+    /// refcounted compiled bytecode (e.g. a NEWREGEXP literal cache); this
+    /// object still holds one ref (taken via re_ref) and drops it via re_free
+    /// on finalize, exactly like an owner. The flag exists so future logic can
+    /// distinguish shared from exclusively-owned bytecode; both call re_free,
+    /// which only frees at refcount zero. Zero-initialized memory yields
+    /// false, so every creation site must set this explicitly.
+    bool              owns_data;
 }
 
 /// Generator: suspended execution state + captured env.

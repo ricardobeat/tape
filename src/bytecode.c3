@@ -1101,6 +1101,17 @@ struct CompiledFunction {
     void*           var_ic_entries;  // VarICEntry* (opaque)
     uint            var_ic_count;
 
+    // ---- NEWREGEXP literal compile cache ---------------------------------
+    /// Per-NEWREGEXP site cache of the compiled regexp bytecode
+    /// (`ReCompiled*`), parallel to the instruction stream:
+    /// `regexp_cache[pc_offset]` holds the shared, refcounted compiled
+    /// bytecode for the regexp literal at `code[pc_offset]`, so the literal
+    /// is compiled once instead of on every execution. Lazily allocated on
+    /// first NEWREGEXP execution; entries are `re_free`d (refcount drop) when
+    /// the function is freed. Borrowing RegExp objects take their own ref.
+    void**          regexp_cache;    // ReCompiled*[] (opaque), or null
+    uint            regexp_cache_count;
+
     // ---- Source-text retention (Function.prototype.toString) ------------
     /// Heap-owned copy of the original source text spanned by this function
     /// (between the function's opening `function` keyword / arrow head and

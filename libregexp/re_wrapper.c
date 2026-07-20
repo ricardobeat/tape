@@ -30,6 +30,7 @@ struct ReCompiled {
     uint8_t* bc;
     int      bc_len;
     int      capture_count;
+    int      refcount;   /* shared compiled bytecode: freed when this hits 0 */
 };
 
 static uint8_t* cesu8_pattern_to_utf8(const char* input, size_t input_len, size_t* out_len);
@@ -97,6 +98,7 @@ ReCompiled* re_compile(const char* pattern, size_t pattern_len,
     re->bc = bc;
     re->bc_len = bc_len;
     re->capture_count = lre_get_capture_count(bc);
+    re->refcount = 1;
 
     if (error_msg && error_msg_size > 0) error_msg[0] = '\0';
     return re;
@@ -306,9 +308,16 @@ int re_exec(ReCompiled* re, const char* input, int input_len,
 void re_free(ReCompiled* re)
 {
     if (re) {
+        if (--re->refcount > 0) return;  /* still borrowed elsewhere */
         if (re->bc) lre_realloc(NULL, re->bc, 0);
         free(re);
     }
+}
+
+/* Take an additional reference to a shared compiled regexp. */
+void re_ref(ReCompiled* re)
+{
+    if (re) re->refcount++;
 }
 
 const char* re_get_groupnames(ReCompiled* re)

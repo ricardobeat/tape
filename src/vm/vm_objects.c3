@@ -140,21 +140,51 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                             }
                         }
 
-                        // Compile the regexp.
-                        // Allocate a heap buffer so patterns of any length are
-                        // supported (the old 256-byte stack buffer truncated
-                        // patterns longer than 255 chars).
-                        usz plen = pattern_data.len;
-                        char* pattern_buf_heap = (char*)alloc::malloc_try(mem, (sz)(plen + 1)) ?? null;
-                        if (pattern_buf_heap != null) {
-                            mem::copy(pattern_buf_heap, pattern_data.ptr, (sz)(plen));
-                            pattern_buf_heap[plen] = 0;
+                        // Compile the regexp — but a literal's pattern+flags are
+                        // fixed, so cache the compiled (refcounted) bytecode on
+                        // the CompiledFunction keyed by this literal's constant
+                        // index. On a cache hit we take a fresh reference and skip
+                        // re_compile entirely; QuickJS likewise compiles a literal
+                        // once. Each per-evaluation RegExp object is still a fresh
+                        // object (ES §22.2.3.2) that drops its ref on finalize.
+                        void* compiled = null;
+                        bool from_cache = false;
+                        CompiledFunction* cur_func = vm.current_func;
+                        if (cur_func.regexp_cache != null && bc < cur_func.regexp_cache_count) {
+                            void* cached = cur_func.regexp_cache[bc];
+                            if (cached != null) {
+                                re_bindings::re_ref(cached);
+                                compiled = cached;
+                                from_cache = true;
+                            }
                         }
-                        char[128] error_buf;
-                        void* compiled = (pattern_buf_heap != null)
-                            ? re_bindings::re_compile(pattern_buf_heap, plen, flags, &error_buf, 128)
-                            : null;
-                        if (pattern_buf_heap != null) mem::free(pattern_buf_heap);
+
+                        if (!from_cache) {
+                            // Allocate a heap buffer so patterns of any length are
+                            // supported (the old 256-byte stack buffer truncated
+                            // patterns longer than 255 chars).
+                            usz plen = pattern_data.len;
+                            char* pattern_buf_heap = (char*)alloc::malloc_try(mem, (sz)(plen + 1)) ?? null;
+                            if (pattern_buf_heap != null) {
+                                mem::copy(pattern_buf_heap, pattern_data.ptr, (sz)(plen));
+                                pattern_buf_heap[plen] = 0;
+                            }
+                            char[128] error_buf;
+                            compiled = (pattern_buf_heap != null)
+                                ? re_bindings::re_compile(pattern_buf_heap, plen, flags, &error_buf, 128)
+                                : null;
+                            if (pattern_buf_heap != null) mem::free(pattern_buf_heap);
+
+                            // Store in the per-literal cache and take an extra ref
+                            // for the cache to hold (the object below owns the
+                            // ref returned by re_compile). Freed when the function
+                            // is freed.
+                            if (compiled != null && cur_func.regexp_cache != null
+                                && bc < cur_func.regexp_cache_count) {
+                                re_bindings::re_ref(compiled);
+                                cur_func.regexp_cache[bc] = compiled;
+                            }
+                        }
 
                         if (compiled != null) {
                             HObject*? obj_raw = vm.heap.alloc_object(hobject::ObjClass.REGEXP);
@@ -162,6 +192,10 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                                 obj.prototype = vm.heap.regexp_proto;
                                 (*obj.extra_ptr()).regexp.regexp_data = compiled;
                                 (*obj.extra_ptr()).regexp.flags = js_flags;
+                                // Shared bytecode: this object holds one ref
+                                // (re_compile's initial ref or a fresh re_ref)
+                                // and drops it via re_free on finalize.
+                                (*obj.extra_ptr()).regexp.owns_data = !from_cache;
                                 // Store pattern string as primitive_value
                                 HString* pattern_hs = intern_string(vm, pattern_data);
                                 (*obj.extra_ptr()).prim.primitive_value.set_string(pattern_hs);

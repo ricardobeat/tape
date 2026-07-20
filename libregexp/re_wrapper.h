@@ -58,9 +58,14 @@ int re_exec(ReCompiled* re, const char* input, int input_len,
             int* caps_start, int* caps_end, int max_captures);
 
 /*
- * Free a compiled regexp.
+ * Free a compiled regexp (decrements its refcount; frees at zero).
  */
 void re_free(ReCompiled* re);
+
+/*
+ * Take an additional reference to a shared compiled regexp.
+ */
+void re_ref(ReCompiled* re);
 
 /*
  * Get pointer to group names buffer from compiled regexp.
