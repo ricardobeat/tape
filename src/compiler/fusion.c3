@@ -579,13 +579,27 @@ fn void run_cmp_branch_fusion(Instruction* code, uint code_count, bool* jump_tar
 
         // (b) taken-branch path: rA must be dead from the branch target, UNLESS
         // rA aliases a compare operand (then the fused op preserves the operand's
-        // pre-compare value, which is exactly what the target expects).
+        // pre-compare value, which is exactly what the target expects) — EXCEPT
+        // when the target itself is an IF_TRUE/IF_FALSE reading rA as a boolean
+        // condition. That always wants the *comparison result*, never the
+        // pre-compare operand value, so the alias exception does not apply
+        // there regardless of what rA aliases: a fused compare op (JMP_LT/
+        // JMP_SEQ/etc.) writes no register at all, so a downstream branch on
+        // rA would silently test the stale operand instead of the (now
+        // nonexistent) boolean result. This specifically covers `(a === b ||
+        // c) ? ... : ...` and `a === b || c === d` chains landing on an
+        // unrelated IF_FALSE/IF_TRUE that merely happens to read the same
+        // register — not a genuine `&&`/`||` chain continuation.
         uint rB = (uint)code[i].b;
         uint rC = (uint)code[i].c;
         bool ra_aliases_src = (rA == rB || rA == rC);
-        if (!ra_aliases_src) {
-            int tgt_raw = (int)i + 2 + sbx;
-            if (tgt_raw >= 0 && (uint)tgt_raw < code_count) {
+        int tgt_raw = (int)i + 2 + sbx;
+        if (tgt_raw >= 0 && (uint)tgt_raw < code_count) {
+            Instruction tgt_insn = code[(uint)tgt_raw];
+            bool tgt_is_bool_branch = (tgt_insn.op == Opcode.IF_TRUE || tgt_insn.op == Opcode.IF_FALSE)
+                && (uint)tgt_insn.a == rA;
+            if (tgt_is_bool_branch) { continue; }
+            if (!ra_aliases_src) {
                 if (cmp_result_live_from(code, code_count, jump_targets, (uint)tgt_raw, rA, true)) { continue; }
             }
         }
