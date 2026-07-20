@@ -3652,6 +3652,10 @@ fn void? CompilerContext.switch_statement(&self) {
             self.patch_jump(skip_jump);
 
         } else if (self.match(TokenType.DEFAULT)) {
+            // §13.12.1: a CaseBlock may contain at most one DefaultClause.
+            if (has_default) {
+                return self.fail("More than one default clause in switch statement")~;
+            }
             self.expect(TokenType.COLON)!;
 
             has_default = true;
