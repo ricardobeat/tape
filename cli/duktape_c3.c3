@@ -3,8 +3,8 @@
 /// This is the normal way to run a `.js` file. For bytecode disassembly,
 /// instruction tracing, and other inspection flags, use the `duktape_c3_debug`
 /// binary (`cli/duktape_c3_debug.c3`). For test262, use `test262_runner
-/// --worker` or `test262_runner/run_single_test.sh` — this binary is NOT a
-/// test262 harness (no assert/Test262Error/includes handling).
+/// --worker` or `python3 scripts/run_test262.py --single <path>` — this binary
+/// is NOT a test262 harness (no assert/Test262Error/includes handling).
 module duktape_c3;
 
 import duktape::compiler;

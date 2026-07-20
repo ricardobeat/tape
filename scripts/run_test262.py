@@ -166,6 +166,11 @@ UNSUPPORTED_PATTERN = re.compile(
     r")\b"
 )
 
+# Same alternation as UNSUPPORTED_PATTERN but capturing, used only to name the
+# specific feature keyword in a --single skip message. Rebuilt from the source
+# pattern so the two never drift.
+_UNSUPPORTED_FEATURE_RE = re.compile(UNSUPPORTED_PATTERN.pattern.split(r"\b(?:", 1)[1].rsplit(r")\b", 1)[0])
+
 # Skipped, but no longer in UNSUPPORTED_PATTERN because the relevant
 # tests are now attempting (B31 swapped to quickjs-ng libregexp):
 #   regexp-unicode-property-escapes  - \p{...} works at compile; engine
@@ -572,17 +577,23 @@ def resolve_phase_num(n):
 # Match ANY test that declares feature flags — used by --es5 mode to skip
 # all post-ES5 tests.  Tests without `features:` are baseline ES5 behavior.
 ANY_FEATURES_PATTERN = re.compile(r"^features:\s*\[", re.MULTILINE)
-def should_skip(path, es5_only=False):
-    """Check if a test should be skipped based on directory or header metadata."""
+def skip_reason(path, es5_only=False):
+    """Return why a test would be skipped by the suite, or None if it runs.
+
+    The single source of truth for skip decisions — both the phase runner
+    (via should_skip) and the --single mode consult this, so a raw
+    single-test verdict can flag "the suite skips this" instead of looking
+    like a real failure.
+    """
     # Skip tests in excluded directories
     rel = os.path.relpath(path, TEST262_DIR)
     for skip_dir in SKIP_DIRS:
         if rel.startswith(skip_dir + os.sep) or rel.startswith(skip_dir + "/"):
-            return True
+            return f"excluded directory ({skip_dir})"
     # Skip explicitly listed test files (strict-only engine can't satisfy
     # tests that expect non-strict behavior)
     if rel in SKIP_FILES:
-        return True
+        return "explicit skip-list entry (SKIP_FILES)"
 
     try:
         # Read enough to cover long copyright/info headers (some tests have
@@ -591,20 +602,29 @@ def should_skip(path, es5_only=False):
         with open(path) as f:
             header = f.read(8192)
     except OSError:
-        return True
+        return "unreadable file"
 
     if "$DONOTEVALUATE" in header:
-        return True
-    if UNSUPPORTED_PATTERN.search(header):
-        return True
+        return "$DONOTEVALUATE (parse-only / negative test)"
+    m = UNSUPPORTED_PATTERN.search(header)
+    if m:
+        # The pattern's alternation is non-capturing; recover the specific
+        # feature keyword it matched for a useful message.
+        feat = _UNSUPPORTED_FEATURE_RE.search(m.group(0))
+        return f"unsupported feature ({feat.group(0) if feat else 'deferred'})"
     if es5_only and ANY_FEATURES_PATTERN.search(header):
-        return True
+        return "ES5-only mode: post-ES5 feature flag"
     # Strict-only engine: noStrict tests are intentionally unsupported —
     # they exercise non-strict language features (octals, with, duplicate
     # params, etc.) which the engine now rejects at parse time.
     if re.search(r"flags:\s*\[.*\bnoStrict\b", header):
-        return True
-    return False
+        return "noStrict (strict-only engine)"
+    return None
+
+
+def should_skip(path, es5_only=False):
+    """Check if a test should be skipped based on directory or header metadata."""
+    return skip_reason(path, es5_only) is not None
 # ---------------------------------------------------------------------------
 # CE categorization (B36)
 # ---------------------------------------------------------------------------
@@ -1023,6 +1043,112 @@ def _summarize_results(results, skipped, total, test_timeout):
     compile_err_count = sum(1 for _, r in results if r == "COMPILE_ERROR")
     fail_count = len(results) - pass_count - compile_err_count
     return (pass_count, fail_count, skipped, total, compile_err_count, ce_breakdown)
+
+
+def _resolve_single_path(test):
+    """Resolve a --single argument to an existing file, accepting an absolute
+    path or a path relative to test262/test/ or test262/. Returns the resolved
+    absolute path, or None if not found."""
+    candidates = [
+        test,
+        os.path.join(TEST262_DIR, test),
+        os.path.join(PROJECT_DIR, "test262", test),
+    ]
+    for c in candidates:
+        if os.path.isfile(c):
+            return os.path.abspath(c)
+    return None
+
+
+def _build_concat_file(path):
+    """Concatenate assert.js + sta.js + the test's `includes:` + the test body
+    into one file under TMPDIR and return its path (for lldb / --trace-vm)."""
+    harness = os.path.join(PROJECT_DIR, "test262", "harness")
+    tmpdir = os.environ.get("TMPDIR", "/tmp")
+    combined = os.path.join(tmpdir, f"t262_{os.getpid()}_{random.randint(0, 1 << 30)}.js")
+    parts = [os.path.join(harness, "assert.js"), os.path.join(harness, "sta.js")]
+    # Pull harness files named in `includes: [a.js, b.js]`
+    with open(path) as f:
+        head = f.read(8192)
+    m = re.search(r"includes:\s*\[([^\]]*)\]", head)
+    if m:
+        for inc in (s.strip() for s in m.group(1).split(",")):
+            if inc:
+                parts.append(os.path.join(harness, inc))
+    parts.append(path)
+    with open(combined, "w") as out:
+        for p in parts:
+            with open(p) as src:
+                out.write(src.read())
+                out.write("\n")
+    return combined
+
+
+def run_single(test, debug=False, keep=False):
+    """Run ONE test through the canonical --worker path and print its raw
+    verdict. Warns first if the suite would skip the test, so a raw verdict on
+    a deferred-feature or noStrict test is not mistaken for a real failure.
+    With debug/keep, builds a concat-harness file for the plain `duktape_c3`
+    binary (lldb / --trace-vm) instead. Returns a process exit code."""
+    path = _resolve_single_path(test)
+    if path is None:
+        print(f"ERROR: test file not found: {test}", file=sys.stderr)
+        return 2
+
+    reason = skip_reason(path)
+    if reason is not None:
+        print(f"⚠ SUITE SKIPS THIS TEST ({reason})")
+        print("   — verdict below is raw engine behavior, not a suite failure")
+
+    # --keep / --debug: concat harness + run under duktape_c3 (for lldb).
+    if keep or debug:
+        combined = _build_concat_file(path)
+        if keep:
+            print(combined)
+            return 0
+        debug_bin = os.path.join(PROJECT_DIR, "out", "duktape_c3")
+        if not os.path.isfile(debug_bin):
+            print(f"ERROR: {debug_bin} not found. Build it with: c3c build duktape_c3",
+                  file=sys.stderr)
+            return 2
+        try:
+            proc = subprocess.run([debug_bin, combined], capture_output=True,
+                                  text=True, timeout=10)
+            if proc.returncode == 0:
+                print(f"PASS  {path}")
+            else:
+                print(f"FAIL  {path} (exit {proc.returncode})")
+                for line in (proc.stdout + proc.stderr).splitlines()[:5]:
+                    print(f"    {line}")
+        finally:
+            try:
+                os.unlink(combined)
+            except OSError:
+                pass
+        return 0
+
+    if not os.path.isfile(VM_BINARY):
+        print(f"ERROR: {VM_BINARY} not found. Build it first with: "
+              f"c3c build test262_runner", file=sys.stderr)
+        return 2
+
+    # One test through a fresh worker: feed the absolute path on stdin, exactly
+    # as the parallel workers do. A fresh process avoids any cross-test heap
+    # reset concerns for the single-test case.
+    proc = subprocess.run(
+        [VM_BINARY, "--worker"],
+        input=path + "\n",
+        capture_output=True,
+        text=True,
+    )
+    out = proc.stdout.strip()
+    if not out:
+        print(f"FAIL  {path} (no output from worker)")
+        return 1
+    print(out)
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run test262 tests in parallel worker mode."
@@ -1075,7 +1201,31 @@ def main():
         action="store_true",
         help="Spawn a fresh test262_runner per test (slow, immune to reset bugs)",
     )
+    parser.add_argument(
+        "--single",
+        metavar="TEST",
+        help="Run ONE test through the canonical --worker path and print its raw "
+             "verdict. Accepts an absolute path or a path relative to test262/test/ "
+             "(or test262/). If the suite would skip the test, a warning naming the "
+             "skip reason is printed first — the verdict below it is raw engine "
+             "behavior, not a suite failure.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="With --single: instead of the worker, concat assert.js/sta.js + the "
+             "test's `includes:` and run under `duktape_c3` (for lldb / --trace-vm).",
+    )
+    parser.add_argument(
+        "--keep",
+        action="store_true",
+        help="With --single: build the concat file (as --debug) but print its path "
+             "and keep it, for `just lldb` / manual --trace-vm.",
+    )
     args = parser.parse_args()
+
+    if args.single is not None:
+        sys.exit(run_single(args.single, debug=args.debug, keep=args.keep))
 
     if args.log:
         LOG_FH[0] = open(args.log, "w")
