@@ -148,11 +148,12 @@ UNSUPPORTED_PATTERN = re.compile(
     # tests still fail until Phase 3/4 land, but they run rather than skip.)
     r"SharedArrayBuffer|Atomics|WeakRef|FinalizationRegistry|"
     r"structured-clone|import\.meta|dynamic-import|"
-    # Async generators / for-await-of / Symbol.asyncIterator deferred — B35.
-    # Per AGENTS.md we implement ES2017 async/await but not the ES2018 async-
-    # iteration family (async function*, for-await-of). Tests that exercise
-    # only async-iteration were producing ~1,249 unintended CEs.
-    r"async-iteration|Symbol\.asyncIterator|"
+    # Async generators deferred (plan 057 implements the for-await-of *consumer*
+    # + Symbol.asyncIterator, but NOT `async function*`). for-await-of tests whose
+    # SOURCE is a hand-written async iterable or a sync iterable now run; tests
+    # using an async-generator source are skipped by the async-generator glob list
+    # below (they use `async function*` in the body without always tagging it).
+    r"async-generator|"
     # Class features not yet implemented (private fields/methods/accessors/
     # static private landed in plan 054 P2-P5; still missing: the `#x in obj`
     # operator (P6), public fields (P7), and static blocks — note
@@ -193,6 +194,29 @@ _UNSUPPORTED_FEATURE_RE = re.compile(UNSUPPORTED_PATTERN.pattern.split(r"\b(?:",
 # expect non-strict behavior (no `flags: [noStrict]` but with no-strict-only
 # assertion in body) get listed here.
 import fnmatch
+
+# Glob patterns (relative to test262/test) skipped wholesale. Unlike SKIP_FILES
+# (exact paths) these match families of tests.
+SKIP_GLOBS = {
+    # Async generators (`async function*`) are deferred (plan 057 implements the
+    # for-await-of *consumer* — a for-await loop inside an async function — plus
+    # Symbol.asyncIterator and the AsyncFromSync adapter, but not async generator
+    # functions). test262 splits the for-await-of family by CONTEXT via the file-
+    # name prefix: `async-func-*` runs the loop inside an async function (the
+    # supported consumer), `async-gen-*` inside an async generator (unsupported).
+    # Skip the async-generator-context files structurally.
+    "language/statements/for-await-of/async-gen-*.js",
+    "language/expressions/async-generator/*.js",
+    "language/statements/async-generator/*.js",
+    # Async-generator built-ins (the AsyncGenerator function/prototype and the
+    # %AsyncIteratorPrototype%) all require `async function*`, which is deferred.
+    # (The AsyncFromSyncIterator adapter IS implemented — plan 057 — but its
+    # test262 dir exercises it via async-generator sources, so it stays skipped
+    # until async generators land.)
+    "built-ins/AsyncGeneratorFunction/*",
+    "built-ins/AsyncGeneratorPrototype/*",
+    "built-ins/AsyncFromSyncIteratorPrototype/*",
+}
 SKIP_FILES = {
     # B04 — Function constructor duplicate params / restricted names in non-strict
     "built-ins/Function/15.3.2.1-11-1.js",     # duplicate separate param allowed
@@ -508,6 +532,12 @@ PHASES = [
         ],
     },
     {
+        "label": "Phase 24: for-await-of",
+        "dirs": [
+            "language/statements/for-await-of",
+        ],
+    },
+    {
         "label": "Phase 15: Classes",
         "dirs": [
             "language/expressions/class",
@@ -594,6 +624,11 @@ def skip_reason(path, es5_only=False):
     # tests that expect non-strict behavior)
     if rel in SKIP_FILES:
         return "explicit skip-list entry (SKIP_FILES)"
+
+    # Skip glob-matched test files.
+    for pat in SKIP_GLOBS:
+        if fnmatch.fnmatch(rel, pat):
+            return f"glob skip-list entry ({pat})"
 
     try:
         # Read enough to cover long copyright/info headers (some tests have
