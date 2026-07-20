@@ -53,7 +53,7 @@ ReCompiled* re_compile(const char* pattern, size_t pattern_len,
  *   caps_end[i]   = end of capture i (or -1 if unmatched)
  */
 int re_exec(ReCompiled* re, const char* input, int input_len,
-            int start_offset,
+            int start_offset, int input_is_ascii,
             int* out_start, int* out_end, int* out_num_captures,
             int* caps_start, int* caps_end, int max_captures);
 

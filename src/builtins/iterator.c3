@@ -503,6 +503,7 @@ fn void builtin_regexp_string_iterator_next(BuiltinContext* ctx) {
 
     int exec_result = re_bindings::re_exec(
         (*rx.extra_ptr()).regexp.regexp_data, input, input_len, search_pos,
+        (int)s_hstr.is_ascii(),
         &out_start, &out_end, &out_num_captures,
         &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
     );

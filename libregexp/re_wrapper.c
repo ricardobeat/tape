@@ -209,7 +209,7 @@ static int unit_offset_to_byte_offset(const int* byte_offsets, int unit_count, i
 }
 
 int re_exec(ReCompiled* re, const char* input, int input_len,
-            int start_offset,
+            int start_offset, int input_is_ascii,
             int* out_start, int* out_end, int* out_num_captures,
             int* caps_start, int* caps_end, int max_captures)
 {
@@ -219,6 +219,34 @@ int re_exec(ReCompiled* re, const char* input, int input_len,
     if (total_captures > RE_MAX_CAPTURES) total_captures = RE_MAX_CAPTURES;
 
     uint8_t* capture[RE_MAX_CAPTURES * 2];
+
+    /* Fast path: pure-ASCII input. Each byte is exactly one UTF-16 code unit
+     * (value < 0x80), so the raw bytes can be matched directly in 8-bit mode
+     * (cbuf_type == 0) with no transcode and no allocation. Capture pointers
+     * come back as byte pointers into `input`, and for ASCII the byte offset
+     * equals both the code-unit offset and the CESU-8 offset, so no offset
+     * remapping is needed. This is what QuickJS does for its 8-bit strings.
+     * Note: unicode-mode (u/v) regexps are still correct here — surrogate
+     * combining never applies to input that is entirely < 0x80. */
+    if (input_is_ascii) {
+        int ret = lre_exec(capture, re->bc,
+                           (const uint8_t*)input, start_offset, input_len,
+                           0 /* cbuf_type: 8-bit */, NULL);
+        if (ret == RE_MATCH) {
+            const uint8_t* base = (const uint8_t*)input;
+            if (out_start) *out_start = capture[0] ? (int)(capture[0] - base) : -1;
+            if (out_end)   *out_end   = capture[1] ? (int)(capture[1] - base) : -1;
+            if (out_num_captures) *out_num_captures = total_captures - 1;
+            for (int i = 1; i < total_captures && (i - 1) < max_captures; i++) {
+                int idx = i * 2;
+                caps_start[i - 1] = capture[idx]     ? (int)(capture[idx]     - base) : -1;
+                caps_end[i - 1]   = capture[idx + 1] ? (int)(capture[idx + 1] - base) : -1;
+            }
+            return RE_MATCH;
+        }
+        if (ret == 0) return RE_NO_MATCH;
+        return RE_ERROR;
+    }
 
     /* lre_exec derives is_unicode from the compiled bytecode itself and
      * internally promotes cbuf_type 1->2 (surrogate-pair combining) when the

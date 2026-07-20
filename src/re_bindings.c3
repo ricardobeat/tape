@@ -7,7 +7,7 @@ extern fn void* re_compile(char* pattern, usz pattern_len,
                            int flags, char* error_msg, int error_msg_size);
 
 extern fn int re_exec(void* re, char* input, int input_len,
-                      int start_offset,
+                      int start_offset, int input_is_ascii,
                       int* out_start, int* out_end, int* out_num_captures,
                       int* caps_start, int* caps_end, int max_captures);
 

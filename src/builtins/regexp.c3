@@ -366,6 +366,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     // If no argument, ToString(undefined) = "undefined".
     char* input = "undefined";
     int input_len = 9;  // "undefined".length
+    bool input_ascii = true;  // the literal "undefined" is ASCII
     if (ctx.argc > 0) {
         TVal* arg = &ctx.regs[ctx.base_reg];
         if (!arg.is_undefined()) {
@@ -378,6 +379,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
             if (hs != null) {
                 input = hs.get_cstr();
                 input_len = (int)hs.blen;
+                input_ascii = hs.is_ascii();
             }
         }
     }
@@ -420,6 +422,7 @@ fn void builtin_regexp_proto_test(BuiltinContext* ctx) {
     int out_num_captures = 0;
     int result = re_bindings::re_exec(
         (*obj.extra_ptr()).regexp.regexp_data, input, input_len, start_pos,
+        (int)input_ascii,
         &out_start, &out_end, &out_num_captures,
         null, null, 0
     );
@@ -702,6 +705,7 @@ fn void builtin_regexp_proto_exec(BuiltinContext* ctx) {
 
     int result = re_bindings::re_exec(
         (*obj.extra_ptr()).regexp.regexp_data, input, input_len, start_pos,
+        (int)(input_hstr == null || input_hstr.is_ascii()),
         &out_start, &out_end, &out_num_captures,
         &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
     );
@@ -2256,6 +2260,7 @@ fn bool regexp_exec_call(BuiltinContext* ctx, HObject* rx, TVal* input_str_tv) {
 
     int result = re_bindings::re_exec(
         re_data, input, input_len, start_pos,
+        (int)s_hstr.is_ascii(),
         &out_start, &out_end, &out_num_captures,
         &caps_start, &caps_end, re_bindings::RE_MAX_CAPTURES
     );
