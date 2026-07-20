@@ -4514,6 +4514,26 @@ fn void? CompilerContext.export_declaration(&self) {
             self.has_local_bindings = true;
         }
 
+        // export var/let/const with a destructuring pattern: `export var {a,b}=o`,
+        // `export const [x,y]=arr`. Route through the shared destructure
+        // machinery, collecting the declared leaf names to register as exports.
+        TokenType pat = self.peek_type();
+        if (pat == TokenType.LBRACE || pat == TokenType.LBRACKET) {
+            char[][MAX_DESTRUCT_BINDS] export_names;
+            uint export_names_count = 0;
+            self.advance()!;  // consume '{' or '['
+            if (pat == TokenType.LBRACE) {
+                self.object_destructure(kind, is_lexical, is_const, &export_names[0], &export_names_count)!;
+            } else {
+                self.array_destructure(kind, is_lexical, is_const, &export_names[0], &export_names_count)!;
+            }
+            for (uint i = 0; i < export_names_count; i++) {
+                mod_register_export(mod, export_names[i], export_names[i], false, 0, is_lexical);
+            }
+            self.match(TokenType.SEMICOLON);
+            return;
+        }
+
         for (;;) {
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
             if (is_restricted_name(name_tok.str_value)) {

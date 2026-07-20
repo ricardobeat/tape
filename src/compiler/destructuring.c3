@@ -77,7 +77,8 @@ fn Token? CompilerContext.destructuring_binding_target(&self) {
 /// path uses. This makes statement-level destructuring work for any iterable
 /// (generators, custom iterables), at arbitrary nesting depth, not just Arrays.
 /// See plan 044; mirrors QuickJS's OP_for_of_start/OP_for_of_next lowering.
-fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const) {
+fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const,
+                                            char[]* out_names = null, uint* out_count = null) {
     DestructBind[MAX_DESTRUCT_BINDS] binds;
     uint count = 0;
 
@@ -102,6 +103,12 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
         HString* hs = (HString*)self.constants[binds[i].name_idx].get_heapptr();
         ushort dreg = self.declare_var(hs.get_data(), kind);
         binding_regs[i] = dreg;
+        // Surface each leaf binding name (interned, stable) so `export var
+        // [ a, b ] = ...` can register them as exports.
+        if (out_names != null && out_count != null) {
+            out_names[*out_count] = hs.get_data();
+            (*out_count)++;
+        }
     }
 
     // No initializer (`var [a, b];`): bind everything to undefined.
@@ -151,7 +158,8 @@ fn void? CompilerContext.array_destructure(&self, ScopeKind kind, bool is_lexica
 
 /// Parse object destructuring pattern: {a, b: c, x = default} = rhs
 /// The '{' has already been consumed.
-fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const) {
+fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexical, bool is_const,
+                                             char[]* out_names = null, uint* out_count = null) {
     // Collect the pattern into the shared DestructBind model, then declare each
     // leaf and emit via the single emit_destruct_bindings — the same machinery
     // used by array_destructure, function parameters, and for-of. The '{' has
@@ -173,6 +181,12 @@ fn void? CompilerContext.object_destructure(&self, ScopeKind kind, bool is_lexic
         HString* hs = (HString*)self.constants[binds[i].name_idx].get_heapptr();
         ushort dreg = self.declare_var(hs.get_data(), kind);
         binding_regs[i] = dreg;
+        // Surface each leaf binding name (interned, stable) so `export var
+        // { a, b } = ...` can register them as exports.
+        if (out_names != null && out_count != null) {
+            out_names[*out_count] = hs.get_data();
+            (*out_count)++;
+        }
     }
 
     // No initializer (`var {a};` — only valid via for-in/of heads, but keep the

@@ -2451,6 +2451,17 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     // whose body may contain yield that suspends the *enclosing* generator.
     def_ctx.is_generator = self.is_generator;
 
+    // Propagate MODULE context so top-level `await` is recognized as an
+    // operator inside default expressions at module scope (e.g.
+    // `export var { x = await foo } = {}`). We deliberately do NOT blanket-copy
+    // self.is_async: for an async function/method's *parameter* defaults the
+    // enclosing is_async is already handled by the existing param path, and
+    // copying it here regresses async-method default params. Module top-level
+    // is the only context where the default thunk itself must see await, and
+    // there is_module gates it precisely.
+    def_ctx.is_module = self.is_module;
+    if (self.is_module) def_ctx.is_async = self.is_async;
+
     // Propagate class context (for super expressions)
     def_ctx.in_class_body = self.in_class_body;
     def_ctx.has_super_binding = self.has_super_binding;
