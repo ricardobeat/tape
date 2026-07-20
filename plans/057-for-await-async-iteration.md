@@ -1,6 +1,6 @@
 # Plan 057: `for await` / async iteration (ES2018)
 
-> **Status (2026-07-20):** Not started. Scoping doc. Reviewed + refined
+> **Status (2026-07-20):** Phase 0 DONE; Phases 1–5 TODO. Reviewed + refined
 > 2026-07-20: anchors verified against tree; Phase 0 refactor promoted to
 > mandatory-first; break/return async-close split into its own Phase 5.
 > **Phase 0 investigated 2026-07-20** — the "four emitters" picture is refined
@@ -8,8 +8,16 @@
 > functions, with **three distinct register layouts**. The helper shape is
 > narrower than "one loop emitter." Verification is test-based (for-of +
 > generator fixtures, test262 dirs, rosetta); `duktape_c3_debug -c` disasm is a
-> convenience sanity check, not a byte-identity gate. Awaiting go-ahead on the
-> sub-helper extraction.
+> convenience sanity check, not a byte-identity gate.
+>
+> **Phase 0 DONE 2026-07-20** (branch `forof-unify-plan057`, commit `948853e`):
+> all four for-of paths unified into one `emit_forof(ForOfHead, is_await)`
+> skeleton + `ForOfHead` tagged union + `emit_iter_open`/`emit_iter_step`/
+> `emit_iter_close`. Value uniformly parked below the callee window (layout
+> distinction erased). `is_await` threaded as always-false param; `is_await_loop`
+> bit added to `LoopInfo`. Net −101 lines. Gate green: phase 14 for-of 582 pass
+> (1 pre-existing array-getter fail, orthogonal), phase 12-13 destructuring 17/0,
+> phase 21 generators 481/0, rosetta 100/0. **Phases 1–5 still TODO.**
 >
 > Motivation: `for await (... of ...)` is entirely unimplemented — even
 > `for await (const v of [1,2,3])` fails to parse ("expected '(', got 'await'").
