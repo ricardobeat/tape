@@ -1,6 +1,22 @@
 # Plan 057: `for await` / async iteration (ES2018)
 
-> **Status (2026-07-20):** Phase 0 DONE; Phases 1–5 TODO. Reviewed + refined
+> **Status (2026-07-20):** ✅ COMPLETE (branch `for-await-async`). All phases
+> landed: Phase 0 (for-of unification), Phase 1 (parser + reject cases), Phases
+> 2-3+5 (async iterator protocol via GET_ITER_ASYNC + AsyncFromSync adapter,
+> await wiring, ITER_CLOSE_ASYNC), Phase 4 (LHS parity), Phase 6 (test262
+> un-skip). Note the final design used *conditional codegen + 2 opcodes*
+> (GET_ITER_ASYNC, ITER_CLOSE_ASYNC), NOT the 3 INITFOR_ASYNC/NEXTFOR_ASYNC
+> opcodes originally scoped below — because Phase 0 had already inlined the
+> iterator protocol as codegen, making per-opcode async variants unnecessary.
+> Results: test_for_await.js 7/7; test262 Phase 24 for-await-of 347 pass / 0 CE
+> (remaining fails are async-generator SOURCES, a deferred feature); no
+> regressions (for-of 582, generators 481, Promise/Map/Set 1206, rosetta 100/0).
+> Two pre-existing bugs fixed along the way: labeled-break not closing for-of
+> iterators, and bare-ident for-of desync into a register-cached local.
+>
+> _(historical scoping below; superseded where it conflicts with the above)_
+>
+> Reviewed + refined
 > 2026-07-20: anchors verified against tree; Phase 0 refactor promoted to
 > mandatory-first; break/return async-close split into its own Phase 5.
 > **Phase 0 investigated 2026-07-20** — the "four emitters" picture is refined
