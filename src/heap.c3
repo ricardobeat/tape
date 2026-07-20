@@ -250,6 +250,7 @@ struct Heap {
     HObject* async_func_proto;     // AsyncFunction.prototype (ES2017 §25.7.3)
     HObject* iterator_proto;   // %IteratorPrototype% (ES6 §25.1.2)
     HObject* async_from_sync_iter_proto; // %AsyncFromSyncIteratorPrototype% (ES2018 §27.1.4)
+    HObject* array_iterator_proto; // %ArrayIteratorPrototype% (ES6 §22.1.5)
     HObject* typedarray_proto; // Shared %TypedArray%.prototype
     HObject* typedarray_intrinsic; // %TypedArray% abstract constructor
     HObject* arraybuffer_proto; // ArrayBuffer.prototype
@@ -1118,7 +1119,12 @@ fn void Heap.reset(&self) {
     self.checkpoint_count = 0;
     self.checkpoint_cap   = 0;
 
-    // Reset microtask queue (keep allocation, zero count)
+    // Reset microtask queue. Heap objects from the previous run were freed
+    // wholesale above, so clear stale TVal bits without decrefing them.
+    if (self.microtask_queue != null) {
+        mem::clear(self.microtask_queue,
+            (sz)((usz)self.microtask_capacity * TVal::size * 3));
+    }
     self.microtask_count    = 0;
     self.microtask_draining = false;
 
@@ -1176,6 +1182,7 @@ fn void Heap.reset(&self) {
     self.async_func_proto     = null;
     self.iterator_proto       = null;
     self.async_from_sync_iter_proto = null;
+    self.array_iterator_proto = null;
     self.typedarray_proto = null;
     self.typedarray_intrinsic = null;
     self.arraybuffer_proto = null;
@@ -1883,6 +1890,7 @@ fn void Heap.mark_roots(&self) {
     if (self.async_func_proto != null) { self.mark_hobject(self.async_func_proto); }
     if (self.iterator_proto != null) { self.mark_hobject(self.iterator_proto); }
     if (self.async_from_sync_iter_proto != null) { self.mark_hobject(self.async_from_sync_iter_proto); }
+    if (self.array_iterator_proto != null) { self.mark_hobject(self.array_iterator_proto); }
     if (self.typedarray_proto != null) { self.mark_hobject(self.typedarray_proto); }
     if (self.typedarray_intrinsic != null) { self.mark_hobject(self.typedarray_intrinsic); }
     if (self.arraybuffer_proto != null) { self.mark_hobject(self.arraybuffer_proto); }
@@ -1896,6 +1904,16 @@ fn void Heap.mark_roots(&self) {
         while (scan < top) {
             self.mark_tval(scan);
             scan++;
+        }
+    }
+
+    // Promise jobs retain their handler, argument, and downstream promise until
+    // the queue is drained. These values live outside the VM stack, so mark
+    // every live triplet explicitly.
+    if (self.microtask_queue != null) {
+        uint queued_values = self.microtask_count * 3;
+        for (uint i = 0; i < queued_values; i++) {
+            self.mark_tval(&self.microtask_queue[i]);
         }
     }
 
@@ -2129,25 +2147,25 @@ $if $feature(HEAP_VERIFY):
     }
 
     // Check built-in constructor prototypes
-    ZString[24] ctor_names = {
+    ZString[25] ctor_names = {
         "object_proto", "bool_proto", "string_proto", "number_proto",
         "array_proto", "function_proto", "date_proto", "regexp_proto",
         "map_proto", "set_proto", "weakmap_proto", "weakset_proto",
         "symbol_proto", "bigint_proto", "promise_proto", "generator_proto", "generator_func_proto",
         "async_func_proto",
-        "iterator_proto", "typedarray_proto", "typedarray_intrinsic", "arraybuffer_proto", "dataview_proto",
+        "iterator_proto", "array_iterator_proto", "typedarray_proto", "typedarray_intrinsic", "arraybuffer_proto", "dataview_proto",
         "async_from_sync_iter_proto"
     };
-    HObject*[24] ctor_protos = {
+    HObject*[25] ctor_protos = {
         self.object_proto, self.bool_proto, self.string_proto, self.number_proto,
         self.array_proto, self.function_proto, self.date_proto, self.regexp_proto,
         self.map_proto, self.set_proto, self.weakmap_proto, self.weakset_proto,
         self.symbol_proto, self.bigint_proto, self.promise_proto, self.generator_proto, self.generator_func_proto,
         self.async_func_proto,
-        self.iterator_proto, self.typedarray_proto, self.typedarray_intrinsic, self.arraybuffer_proto, self.dataview_proto,
+        self.iterator_proto, self.array_iterator_proto, self.typedarray_proto, self.typedarray_intrinsic, self.arraybuffer_proto, self.dataview_proto,
         self.async_from_sync_iter_proto
     };
-    for (uint i = 0; i < 24; i++) {
+    for (uint i = 0; i < 25; i++) {
         if (ctor_protos[i] != null) {
             if (!self.validate_hobject((HeapHeader*)ctor_protos[i], ctor_names[i])) errors++;
             checked++;
@@ -2803,9 +2821,9 @@ fn void Heap.enqueue_microtask(&self, TVal handler, TVal arg, TVal downstream) {
         self.microtask_capacity = new_cap;
     }
     uint idx = self.microtask_count * 3;
-    self.microtask_queue[idx]     = handler;
-    self.microtask_queue[idx + 1] = arg;
-    self.microtask_queue[idx + 2] = downstream;
+    self.tval_copy_ref(&self.microtask_queue[idx], &handler);
+    self.tval_copy_ref(&self.microtask_queue[idx + 1], &arg);
+    self.tval_copy_ref(&self.microtask_queue[idx + 2], &downstream);
     self.microtask_count++;
 }
 
@@ -2845,6 +2863,15 @@ fn void Heap.drain_microtasks(&self, void* vm) {
                 self.microtask_after_fn != null && vm != null) {
                 self.microtask_after_fn((void*)self, vm, result, downstream);
             }
+
+            // The queue owns one reference to each value until the job has
+            // completed. Release those references before advancing.
+            self.decref_tval(&self.microtask_queue[base]);
+            self.microtask_queue[base].set_undefined();
+            self.decref_tval(&self.microtask_queue[base + 1]);
+            self.microtask_queue[base + 1].set_undefined();
+            self.decref_tval(&self.microtask_queue[base + 2]);
+            self.microtask_queue[base + 2].set_undefined();
         }
         self.microtask_count = 0;
     }
