@@ -1622,15 +1622,24 @@ fn TVal? Vm.run(Vm* vm) {
             }
             // Fast path: STRING + FASTINT or FASTINT + STRING
             // Format the integer directly into the concat buffer, avoiding
-            // the intermediate HString allocation for the integer.
-            if ((rb.is_string() && rc.is_fastint()) || (rb.is_fastint() && rc.is_string())) {
+            // the intermediate HString allocation for the integer. Symbols
+            // share the STRING tag but must throw TypeError instead of
+            // concatenating (ES2015 §7.1.1 ToPrimitive never stringifies a
+            // Symbol implicitly), so this path is gated on !is_symbol()
+            // and falls through to the generic ToPrimitive/ToString path
+            // below, which already rejects symbols correctly.
+            HString* str_b_chk = rb.is_string() ? (HString*)rb.get_heapptr() : null;
+            HString* str_c_chk = rc.is_string() ? (HString*)rc.get_heapptr() : null;
+            bool b_is_plain_str = str_b_chk != null && !str_b_chk.is_symbol();
+            bool c_is_plain_str = str_c_chk != null && !str_c_chk.is_symbol();
+            if ((b_is_plain_str && rc.is_fastint()) || (rb.is_fastint() && c_is_plain_str)) {
                 HString* str;
                 long int_val;
-                if (rb.is_string()) {
-                    str = (HString*)rb.get_heapptr();
+                if (b_is_plain_str) {
+                    str = str_b_chk;
                     int_val = rc.get_fastint();
                 } else {
-                    str = (HString*)rc.get_heapptr();
+                    str = str_c_chk;
                     int_val = rb.get_fastint();
                 }
                 if (str != null) {
@@ -1798,6 +1807,55 @@ fn TVal? Vm.run(Vm* vm) {
                 long sum = rb.get_fastint() + imm;
                 ra.set_fastint_or_number(sum);
                 continue;
+            }
+            // ES5 §11.6.1: `+` is string concatenation, not numeric addition,
+            // when either operand is a string (post-ToPrimitive) — the fusion
+            // pass folds LDINT+ADD into ADDI purely on register/opcode shape
+            // and cannot know rb's runtime type, so this mirrors ADD's
+            // STRING+FASTINT fast path (immediate always plays the FASTINT
+            // role: the fusion rule only fires for `rS + imm`/`imm + rS`).
+            // Symbols share the STRING tag but must throw TypeError instead
+            // of concatenating (ES2015 §7.1.1) — is_symbol() excludes them,
+            // falling through to the generic vm_to_number() path below,
+            // which already rejects symbols correctly.
+            if (rb.is_string() && rb.get_heapptr() != null && !((HString*)rb.get_heapptr()).is_symbol()) {
+                HString* str = (HString*)rb.get_heapptr();
+                if (str != null) {
+                    char[32] int_buf;
+                    int int_len = hstring::int_to_buf(imm, &int_buf, 32);
+                    if (int_len > 0) {
+                        uint s_len = str.blen;
+                        uint total = s_len + (uint)int_len;
+                        char[544] stack_buf;
+                        char* buf;
+                        bool heap_allocated = false;
+                        if (total <= 544) {
+                            buf = &stack_buf;
+                        } else {
+                            buf = (char*)vm.heap.alloc_func(vm.heap.heap_udata, total);
+                            if (buf == null) { ra.set_undefined(); continue; }
+                            heap_allocated = true;
+                        }
+                        mem::copy(buf, str.get_cstr(), (sz)(s_len));
+                        mem::copy(buf + s_len, &int_buf, (sz)((usz)int_len));
+                        bool is_accum = (ra == rb);
+                        if (is_accum) {
+                            uint hash = vm.heap.hash_string(buf[:total]);
+                            HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
+                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                            if (try s = maybe_s) {
+                                vm.heap.set_reg_string(ra, s);
+                            } else {
+                                ra.set_undefined();
+                            }
+                        } else {
+                            HString* interned = intern_string(vm, buf[:total]);
+                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                            vm.heap.set_reg_string(ra, interned);
+                        }
+                        continue;
+                    }
+                }
             }
             TVal immv; immv.set_fastint(imm);
             if (rb.is_bigint()) {
