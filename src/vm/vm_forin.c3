@@ -26,14 +26,20 @@ fn bool forin_ensure_cap(Heap* h, HString*** arr, uint* cap, uint need) {
 }
 
 /// Add a key if not already in the seen set (pointer compare for interned strings).
-fn bool forin_add_key(Heap* h, HString*** keys, uint* count,
-                      HString*** seen, uint* seen_cnt, uint* cap,
+/// `keys` and `seen` grow in lockstep (every add appends to both) but MUST use
+/// separate capacity trackers: forin_ensure_cap mutates *cap in place when it
+/// grows, so reusing one `cap` for both calls made the second call's growth
+/// check see the already-doubled capacity and wrongly skip reallocating
+/// `seen`, leaving it permanently undersized relative to `keys` — a heap
+/// buffer overflow on every subsequent write once `seen` fell behind.
+fn bool forin_add_key(Heap* h, HString*** keys, uint* count, uint* keys_cap,
+                      HString*** seen, uint* seen_cnt, uint* seen_cap,
                       HString* key) {
     for (uint j = 0; j < *seen_cnt; j++) {
         if ((*seen)[j] == key) return true;
     }
-    if (!forin_ensure_cap(h, keys, cap, *count + 1)) return false;
-    if (!forin_ensure_cap(h, seen, cap, *seen_cnt + 1)) return false;
+    if (!forin_ensure_cap(h, keys, keys_cap, *count + 1)) return false;
+    if (!forin_ensure_cap(h, seen, seen_cap, *seen_cnt + 1)) return false;
     (*keys)[*count] = key;
     (*count)++;
     (*seen)[*seen_cnt] = key;
@@ -48,13 +54,14 @@ fn bool forin_add_key(Heap* h, HString*** keys, uint* count,
 /// The caller (NEXTFOR) is responsible for freeing via `heap.free_func`.
 fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
 
-    uint cap = FORIN_INITIAL_CAP;
+    uint keys_cap = FORIN_INITIAL_CAP;
+    uint seen_cap = FORIN_INITIAL_CAP;
     Heap* h = vm.heap;
-    HString** keys = (HString**)h.alloc_func(h.heap_udata, cap * HString*::size);
+    HString** keys = (HString**)h.alloc_func(h.heap_udata, keys_cap * HString*::size);
     if (keys == null) return null;
     uint count = 0;
 
-    HString** seen = (HString**)h.alloc_func(h.heap_udata, cap * HString*::size);
+    HString** seen = (HString**)h.alloc_func(h.heap_udata, seen_cap * HString*::size);
     if (seen == null) { h.free_func(h.heap_udata, keys); return null; }
     uint seen_cnt = 0;
 
@@ -74,7 +81,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 return null;
             }
             for (uint i = 0; i < pn; i++) {
-                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, pkeys[i])) {
+                if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, pkeys[i])) {
                     h.free_func(h.heap_udata, pkeys);
                     h.free_func(h.heap_udata, keys);
                     h.free_func(h.heap_udata, seen);
@@ -100,7 +107,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 for (uint i = 0; i < prim.char_length(); i++) {
                     HString* k = vm.heap.int_to_hstring((long)i);
                     if (k == null) continue;
-                    if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, k)) {
                         h.free_func(h.heap_udata, keys);
                         h.free_func(h.heap_udata, seen);
                         return null;
@@ -120,7 +127,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 for (uint i = 0; i < ta_count; i++) {
                     HString* k = vm.heap.int_to_hstring((long)i);
                     if (k == null) continue;
-                    if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                    if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, k)) {
                         h.free_func(h.heap_udata, keys);
                         h.free_func(h.heap_udata, seen);
                         return null;
@@ -134,7 +141,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             if (!cur.array_part()[i].is_undefined()) {
                 HString* k = vm.heap.int_to_hstring((long)i);
                 if (k == null) continue;
-                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, k)) {
                     h.free_func(h.heap_udata, keys);
                     h.free_func(h.heap_udata, seen);
                     return null;
@@ -182,7 +189,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                     for (uint i = 0; i < int_count; i++) {
                         uint si = sbuf[i * 2 + 1];
                         HString* k = (HString*)cur.prop_key_at(si);
-                        if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                        if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, k)) {
                             h.free_func(h.heap_udata, sbuf);
                             h.free_func(h.heap_udata, keys);
                             h.free_func(h.heap_udata, seen);
@@ -200,7 +207,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 if (k.is_arridx()) continue;
                 if (k.is_symbol()) continue;
                 if (cur.flags.exotic_stringobj && (void*)k == vm.heap.strs[heap::BuiltinStr.LENGTH]) continue;
-                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, k)) {
                     h.free_func(h.heap_udata, keys);
                     h.free_func(h.heap_udata, seen);
                     return null;
@@ -213,7 +220,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
                 HString* k = (HString*)cur.prop_key_at(i);
                 if (!k.is_symbol()) continue;
                 if (k.is_hidden()) continue;
-                if (!forin_add_key(h, &keys, &count, &seen, &seen_cnt, &cap, k)) {
+                if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, k)) {
                     h.free_func(h.heap_udata, keys);
                     h.free_func(h.heap_udata, seen);
                     return null;

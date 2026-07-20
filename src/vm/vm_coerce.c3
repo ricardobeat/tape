@@ -178,10 +178,17 @@ fn bool ensure_valstack_grow(Vm* vm, uint needed) {
     while (new_size < used + needed) {
         new_size *= 2;
     }
-    void* new_raw = vm.heap.realloc_func(vm.heap.heap_udata, vm.valstack, (usz)new_size * TVal::size);
+    usz old_bytes = (usz)vm.valstack_size * TVal::size;
+    usz new_bytes = (usz)new_size * TVal::size;
+    void* new_raw = vm.heap.realloc_func(vm.heap.heap_udata, vm.valstack, new_bytes);
     if (new_raw == null) {
         return false;
     }
+    // Zero the newly-extended tail: realloc does not initialize grown space,
+    // and any stale bits there would later be misread as live TVal heap
+    // pointers by tval_copy_ref's destination decref (see vm_create's valstack
+    // zeroing for the same hazard on first allocation).
+    mem::clear((char*)new_raw + old_bytes, (sz)(new_bytes - old_bytes));
     TVal* new_base = (TVal*)new_raw;
     long diff = (char*)new_base - (char*)old_base;
 

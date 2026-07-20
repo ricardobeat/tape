@@ -43,7 +43,13 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
 TEST262_DIR = os.path.join(PROJECT_DIR, "test262", "test")
-VM_BINARY = os.path.join(PROJECT_DIR, "out", "test262_runner")
+# Worker binary. Override with TEST262_VM_BINARY=out/test262_runner_asan to run
+# the corpus under AddressSanitizer (for hunting contamination / UAF bugs).
+VM_BINARY = os.environ.get(
+    "TEST262_VM_BINARY", os.path.join(PROJECT_DIR, "out", "test262_runner")
+)
+if not os.path.isabs(VM_BINARY):
+    VM_BINARY = os.path.join(PROJECT_DIR, VM_BINARY)
 
 # Default timeout per test (seconds)
 TEST_TIMEOUT = 10
@@ -52,10 +58,14 @@ TEST_TIMEOUT = 10
 # see assignment from main without a global statement.
 LOG_FH = [None]
 
-# Serial retry of non-pass results. ON by default: under parallel worker
-# pressure ~30 tests per full run fail spuriously (timeout/GC timing); the
-# serial rerun reclassifies them. Disable with --no-retry-fails.
-RETRY_FAILS = [True]
+# Serial retry of non-pass results. OFF by default: a deterministic engine on a
+# fixed corpus must produce identical verdicts in parallel and serial, so a retry
+# that *changes* a verdict is masking a real bug (contamination / resource-
+# dependent behavior), not "flakiness" to smooth over. The parallel result is the
+# honest one. --retry-fails re-enables the serial rerun purely as a DIAGNOSTIC:
+# any test whose verdict differs parallel-vs-serial is a non-determinism bug to
+# fix. Never use it to inflate a reported pass rate.
+RETRY_FAILS = [False]
 
 # Shuffle test order within each phase (for contamination detection).
 # When combined with --workers 1 --no-retry-fails, running twice with and
@@ -1224,12 +1234,14 @@ def main():
     parser.add_argument(
         "--retry-fails",
         action="store_true",
-        help="Rerun FAIL/TIMEOUT/MEMKILL tests serially before reporting (default: on)",
+        help="DIAGNOSTIC: rerun non-pass tests serially and report the serial "
+             "verdict. Off by default — a verdict that changes on retry is a "
+             "non-determinism bug, not flakiness to mask.",
     )
     parser.add_argument(
         "--no-retry-fails",
         action="store_true",
-        help="Disable the serial retry of non-pass tests",
+        help="(No-op; serial retry is already off by default.)",
     )
     parser.add_argument(
         "--shuffle",
@@ -1270,8 +1282,8 @@ def main():
     if args.log:
         LOG_FH[0] = open(args.log, "w")
 
-    if args.no_retry_fails:
-        RETRY_FAILS[0] = False
+    if args.retry_fails:
+        RETRY_FAILS[0] = True
 
     if args.shuffle:
         SHUFFLE[0] = True

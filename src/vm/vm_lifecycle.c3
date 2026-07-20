@@ -29,12 +29,19 @@ fn Vm*? vm_create(Heap* heap) {
     Vm* vm = (Vm*)raw;
     vm.heap = heap;
 
-    // Allocate value stack
-    void* vs_raw = heap.alloc_func(heap.heap_udata, (usz)INITIAL_VALSTACK * TVal::size);
+    // Allocate value stack. Must be zeroed: register/valstack slots are only
+    // ever safe to tval_copy_ref/decref_tval when they hold a genuine TVal
+    // (0 = undefined) — malloc reuse of a just-freed valstack (e.g. the
+    // previous VM's, torn down by vm_destroy) can otherwise hand back memory
+    // still containing stale heap pointers, causing a later decref to hit an
+    // already-freed object and corrupt the pool freelist.
+    usz vs_bytes = (usz)INITIAL_VALSTACK * TVal::size;
+    void* vs_raw = heap.alloc_func(heap.heap_udata, vs_bytes);
     if (vs_raw == null) {
         heap.free_func(heap.heap_udata, raw);
         return VM_ERROR~;
     }
+    mem::clear(vs_raw, (sz)(vs_bytes));
     vm.valstack = (TVal*)vs_raw;
     vm.valstack_size = INITIAL_VALSTACK;
     vm.valstack_top = (TVal*)vs_raw;

@@ -257,6 +257,25 @@ fn void builtin_object(BuiltinContext* ctx) {
 /// enumerability (EnumerableOwnPropertyNames interleaves the descriptor
 /// check and the value fetch per key, it does not snapshot enumerability
 /// for the whole list up front).
+/// Upper bound on the number of own string keys collect_own_enum_string_keys
+/// (and the equivalent inline getOwnPropertyNames/Reflect.ownKeys walks) can
+/// write into key_buf. Named props + dense array slots are NOT enough: exotic
+/// objects synthesize virtual integer-index keys outside the property table —
+/// string-wrapper char indices [0, char_length) and TypedArray element
+/// indices [0, [[ArrayLength]]) — which must be budgeted for separately or
+/// the collector overflows key_buf (heap corruption).
+fn uint own_key_buf_capacity(HObject* obj) {
+    uint max_keys = obj.prop_count + obj.array_size + 32;
+    if (obj.flags.exotic_stringobj && (*obj.extra_ptr()).prim.primitive_value.is_string()) {
+        HString* prim = (HString*)(*obj.extra_ptr()).prim.primitive_value.get_heapptr();
+        if (prim != null) max_keys += prim.char_length();
+    }
+    if (is_typed_array_class(obj.get_class())) {
+        max_keys += ta_element_count(obj);
+    }
+    return max_keys;
+}
+
 fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString** key_buf, bool require_enumerable = true) {
     uint key_count = 0;
 
@@ -433,7 +452,7 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
     if (obj.flags.exotic_proxyobj) {
         if (!proxy_filtered_own_keys(ctx.vm, ctx.heap, obj, 0, &key_buf, &key_count)) { proxy_ctx_ok(ctx); return; }
     } else {
-        uint max_keys = obj.prop_count + obj.array_size + 32;
+        uint max_keys = own_key_buf_capacity(obj);
         key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
         if (key_buf == null) { ctx.result.set_undefined(); return; }
         key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
@@ -562,7 +581,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
     // that hasOwnProperty("0"), getOwnPropertyDescriptor("0"), and
     // for-in + result[stringKey] all work correctly on the result array.
 
-    uint max_keys = obj.prop_count + obj.array_size + 32;
+    uint max_keys = own_key_buf_capacity(obj);
     HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
     if (key_buf == null) { ctx.result.set_undefined(); return; }
     uint key_count = 0;
@@ -813,7 +832,7 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
     arr.prototype = ctx.heap.array_proto;
 
     // Collect keys into a temporary buffer, then write them into the result array.
-    uint max_keys = obj.prop_count + obj.array_size + 32;
+    uint max_keys = own_key_buf_capacity(obj);
     HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
     if (key_buf == null) { ctx.result.set_undefined(); return; }
     uint key_count = 0;
@@ -3883,7 +3902,7 @@ fn void builtin_object_entries(BuiltinContext* ctx) {
         // immediately before its [[Get]] (EnumerableOwnPropertyNames
         // interleaves the two per key, so a getter earlier in the walk can
         // make a later key non-enumerable before that key is reached).
-        uint max_keys = obj.prop_count + obj.array_size + 32;
+        uint max_keys = own_key_buf_capacity(obj);
         HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
         if (key_buf == null) { ctx.result.set_undefined(); return; }
         defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
@@ -3969,7 +3988,7 @@ fn void builtin_object_values(BuiltinContext* ctx) {
     } else {
         // Snapshot ALL own string keys, then re-check enumerability per key
         // right before its [[Get]] — see the comment in builtin_object_entries.
-        uint max_keys = obj.prop_count + obj.array_size + 32;
+        uint max_keys = own_key_buf_capacity(obj);
         HString** key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
         if (key_buf == null) { ctx.result.set_undefined(); return; }
         defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
