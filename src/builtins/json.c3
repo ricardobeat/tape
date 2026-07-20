@@ -988,6 +988,15 @@ fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
         return (*obj.extra_ptr()).prim.primitive_value;
     }
 
+    // BigInt wrapper: extract [[BigIntData]] primitive
+    // A BigInt wrapper has bigint_proto as its prototype
+    if (obj.prototype == jctx.heap.bigint_proto) {
+        TVal prim = (*obj.extra_ptr()).prim.primitive_value;
+        if (prim.is_bigint()) {
+            return prim;
+        }
+    }
+
     return val;
 }
 
@@ -997,7 +1006,7 @@ fn TVal json_unwrap_wrapper(JsonSerializeCtx* jctx, TVal val, bool* had_error) {
 fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal holder, bool* omit) {
     *omit = false;
 
-    // Step 2: Check toJSON on objects
+    // Step 2: Check toJSON on objects or BigInt primitives
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         HString* toJSON_key = builtin_intern_string(jctx.heap, "toJSON");
@@ -1018,6 +1027,46 @@ fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal
                 if (jctx.heap.call_fn != null && jctx.vm != null) {
                     val = jctx.heap.call_fn(jctx.vm, toJSON_fn, &json_args[0], 1, val);
                     if (jctx.heap.has_error) { jctx.error = true; *omit = true; return val; }
+                }
+            }
+        }
+    } else if (val.is_bigint()) {
+        // BigInt primitive: look up toJSON on BigInt.prototype
+        HString* toJSON_key = builtin_intern_string(jctx.heap, "toJSON");
+        if (jctx.heap.bigint_proto != null) {
+            // Use get_prop_or_accessor_proto to handle both data and accessor properties
+            PropLookupResult prop_result = jctx.heap.bigint_proto.get_prop_or_accessor_proto(toJSON_key, true);
+
+            TVal toJSON_fn;
+            toJSON_fn.set_undefined();
+
+            if (prop_result.kind == hobject::PropLookupKind.PROP_DATA) {
+                toJSON_fn = prop_result.data_val;
+            } else if (prop_result.kind == hobject::PropLookupKind.PROP_ACCESSOR && prop_result.acc.found) {
+                // Invoke the getter with the BigInt primitive as the receiver
+                if (jctx.heap.call_fn != null && jctx.vm != null) {
+                    toJSON_fn = jctx.heap.call_fn(jctx.vm, prop_result.acc.accessor_fn, null, 0, val);
+                    if (jctx.heap.has_error) { jctx.error = true; *omit = true; return val; }
+                }
+            }
+
+            if (!toJSON_fn.is_undefined()) {
+                bool callable = false;
+                if (toJSON_fn.is_object() && toJSON_fn.get_heapptr() != null) {
+                    HObject* fn_hobj = (HObject*)toJSON_fn.get_heapptr();
+                    callable = fn_hobj.is_callable();
+                } else if (toJSON_fn.is_lightfunc()) {
+                    callable = true;
+                }
+                if (callable) {
+                    TVal key_tv;
+                    key_tv.set_string(key);
+                    TVal[1] json_args;
+                    json_args[0] = key_tv;
+                    if (jctx.heap.call_fn != null && jctx.vm != null) {
+                        val = jctx.heap.call_fn(jctx.vm, toJSON_fn, &json_args[0], 1, val);
+                        if (jctx.heap.has_error) { jctx.error = true; *omit = true; return val; }
+                    }
                 }
             }
         }
@@ -1045,13 +1094,14 @@ fn TVal json_check_property(JsonSerializeCtx* jctx, HString* key, TVal val, TVal
         }
     }
 
-    // Step 4: Unwrap wrapper objects (String/Number/Boolean) per ES5 §15.12.3
+    // Step 4: Unwrap wrapper objects (String/Number/Boolean/BigInt) per ES5 §15.12.3
     // For String/Number wrappers, ToString/ToNumber calls toString()/valueOf()
     // — must respect any overridden methods on the wrapper.
     if (val.is_object() && val.get_heapptr() != null) {
         HObject* obj = (HObject*)val.get_heapptr();
         ObjClass cls = obj.get_class();
-        if (cls == ObjClass.STRING || cls == ObjClass.NUMBER || cls == ObjClass.BOOLEAN) {
+        bool is_bigint_wrapper = (obj.prototype == jctx.heap.bigint_proto);
+        if (cls == ObjClass.STRING || cls == ObjClass.NUMBER || cls == ObjClass.BOOLEAN || is_bigint_wrapper) {
             bool unwrap_err = false;
             TVal unwrapped = json_unwrap_wrapper(jctx, val, &unwrap_err);
             if (unwrap_err) { jctx.error = true; *omit = true; return unwrapped; }
@@ -1634,6 +1684,11 @@ fn int json_serialize_val(JsonSerializeCtx* jctx, TVal* val) {
                 jctx.buf[jctx.offset++] = str_buf[i];
             }
             return 0;
+        }
+        case BIGINT: {
+            // Per spec: If Type(value) is BigInt, throw a TypeError exception
+            json_throw_type_error(jctx, "Do not know how to serialize a BigInt");
+            return -1;
         }
         case OBJECT: {
             if (val.get_heapptr() == null) {
