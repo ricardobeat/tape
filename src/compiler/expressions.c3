@@ -3947,17 +3947,9 @@ fn ushort? CompilerContext.array_literal(&self) {
 /// Emit bytecode for a for-of loop.  The iterable expression has already been
 /// evaluated into `iter_reg` and the RParen was consumed.
 /// Uses the ES6 iterator protocol: Symbol.iterator → .next() → {value, done}.
-fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg, uint saved_scope, ushort saved_reg, bool is_lexical, bool is_const, bool is_bare) {
-    // Per-iteration lexical environments are required for ALL let/const
-    // bindings in for-of loops (ES2015 §14.7.5.6 CreatePerIterationEnvironment).
-    // Each iteration must see its own binding so closures created in different
-    // iterations capture distinct values.  Previously this was gated on
-    // capture-analysis, but the spec mandates per-iter envs unconditionally
-    // for lexical bindings (even without closures) to preserve the correct
-    // scope chain for nested functions and direct eval.
-    bool needs_per_iter_env = !is_bare && is_lexical;
-
-    // Declare loop variable register
+fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg, uint saved_scope, ushort saved_reg, bool is_lexical, bool is_const, bool is_bare, bool is_await = false) {
+    // Declare loop variable register. (Per-iteration lexical env, §14.7.5.6, is
+    // handled uniformly inside emit_forof.)
     ushort loop_var;
     if (is_bare) {
         loop_var = self.alloc_reg();
@@ -3975,6 +3967,6 @@ fn void? CompilerContext.emit_forof_loop(&self, char[] var_name, ushort iter_reg
     head.id_is_bare = is_bare;
     head.is_lexical = is_lexical;
     head.is_const = is_const;
-    self.emit_forof(head, iter_reg, saved_scope, saved_reg, false)!;
+    self.emit_forof(head, iter_reg, saved_scope, saved_reg, is_await)!;
 }
 

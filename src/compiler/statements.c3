@@ -1426,9 +1426,23 @@ fn void CompilerContext.emit_create_per_iteration_env(&self,
     }
 }
 
-/// Parse for statement (basic for, for-in, for-of).
+/// Parse for statement (basic for, for-in, for-of, for-await-of).
 fn void? CompilerContext.for_statement(&self) {
     self.expect(TokenType.FOR)!;
+
+    // `for await (LHS of expr)` — ES2018 async iteration (§14.7.5). Only valid
+    // inside an async function/method or at module top level (both set is_async).
+    // The async-ness rides on `for_is_await` and is threaded to emit_forof; the
+    // for-in and C-style forms reject it below (no async for-in / async C-for).
+    bool for_is_await = false;
+    if (self.check(TokenType.AWAIT)) {
+        if (!self.is_async) {
+            return self.fail("'for await' is only valid in an async function or at module top level")~;
+        }
+        self.advance()!; // consume 'await'
+        for_is_await = true;
+    }
+
     self.expect(TokenType.LPAREN)!;
 
     uint saved_scope = self.scope_depth;
@@ -1484,10 +1498,11 @@ fn void? CompilerContext.for_statement(&self) {
                     self.advance()!; // of_tok
                     ushort iter_reg = self.assignment_expr()!;
                     self.expect(TokenType.RPAREN)!;
-                    self.emit_forof_loop(id_tok.str_value, iter_reg, saved_scope, saved_reg, false, false, true)!;
+                    self.emit_forof_loop(id_tok.str_value, iter_reg, saved_scope, saved_reg, false, false, true, for_is_await)!;
                     return;
                 }
             } else if (tok2.type == TokenType.IN) {
+                if (for_is_await) return self.fail("'for await' requires 'of', not 'in'")~;
                 self.advance()!;  // consume "in"
                 ushort obj_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
@@ -1558,10 +1573,11 @@ fn void? CompilerContext.for_statement(&self) {
             self.advance()!; // consume 'of'
             ushort iter_reg = self.assignment_expr()!;
             self.expect(TokenType.RPAREN)!;
-            self.emit_forof_loop(paren_id_name, iter_reg, saved_scope, saved_reg, false, false, true)!;
+            self.emit_forof_loop(paren_id_name, iter_reg, saved_scope, saved_reg, false, false, true, for_is_await)!;
             return;
         }
         if (paren_is_forin) {
+            if (for_is_await) return self.fail("'for await' requires 'of', not 'in'")~;
             self.advance()!; // consume '('
             self.advance()!; // consume identifier
             self.advance()!; // consume ')'
@@ -1637,8 +1653,9 @@ fn void? CompilerContext.for_statement(&self) {
             if (head_is_of) {
                 ushort iter_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
-                self.emit_forof_loop_member(lhs_snap, iter_reg, saved_scope, saved_reg)!;
+                self.emit_forof_loop_member(lhs_snap, iter_reg, saved_scope, saved_reg, for_is_await)!;
             } else {
+                if (for_is_await) return self.fail("'for await' requires 'of', not 'in'")~;
                 ushort obj_reg = self.assignment_expr()!;
                 self.expect(TokenType.RPAREN)!;
                 self.emit_forin_loop_member(lhs_snap, obj_reg, saved_scope, saved_reg)!;
@@ -1719,8 +1736,9 @@ fn void? CompilerContext.for_statement(&self) {
             bool is_array_pattern = (next_tt == TokenType.LBRACKET);
             // Bare form: bindings are VAR-scoped, no PUSH_LEX/POP_LEX per iteration.
             if (bare_is_of) {
-                self.emit_bare_forof_destruct_loop(is_array_pattern, saved_scope, saved_reg)!;
+                self.emit_bare_forof_destruct_loop(is_array_pattern, saved_scope, saved_reg, for_is_await)!;
             } else {
+                if (for_is_await) return self.fail("'for await' requires 'of', not 'in'")~;
                 self.emit_bare_forin_destruct_loop(is_array_pattern, saved_scope, saved_reg)!;
             }
             return;
@@ -1885,9 +1903,10 @@ fn void? CompilerContext.for_statement(&self) {
                 head.is_array_pattern = is_array_pattern;
                 head.is_lexical = is_lexical;
                 head.is_const = is_const;
-                self.emit_forof(head, iter_reg, saved_scope, saved_reg, false)!;
+                self.emit_forof(head, iter_reg, saved_scope, saved_reg, for_is_await)!;
                 return;
             } else if (is_forin_destr) {
+                if (for_is_await) return self.fail("'for await' requires 'of', not 'in'")~;
                 // for-in with destructuring: for (let {x, y} in obj) or for (let [a, b] in obj)
                 bool is_array_pattern = (after_decl == TokenType.LBRACKET);
                 ushort obj_reg = 0;
@@ -1965,6 +1984,7 @@ fn void? CompilerContext.for_statement(&self) {
                 self.free_regs_to(saved_reg);
                 return;
             } else {
+                if (for_is_await) return self.fail("'for await' requires a 'for await (... of ...)' head")~;
                 // Standard for-loop with destructuring init: for (var [a,b] = ...; ...; ...)
                 // A lexical head owns one environment for the whole loop.  The
                 // destructuring helpers emit PUTLEX/PUTLEX_C while evaluating the
@@ -2014,6 +2034,7 @@ fn void? CompilerContext.for_statement(&self) {
 
             // Check for "in" (for-in) or "of" (for-of)
             if (self.peek_type() == TokenType.IN) {
+                if (for_is_await) return self.fail("'for await' requires 'of', not 'in'")~;
                 // for (let/const/var x in obj) { ... }
                 self.advance()!;  // consume 'in'
                 // Declare the for-in variable so let/const semantics
@@ -2105,12 +2126,13 @@ fn void? CompilerContext.for_statement(&self) {
                     }
                     self.expect(TokenType.RPAREN)!;
                     uint name_idx = self.add_string_constant(name_tok.str_value);
-                    self.emit_forof_loop(name_tok.str_value, iter_reg, saved_scope, saved_reg, is_lexical, is_const, false)!;
+                    self.emit_forof_loop(name_tok.str_value, iter_reg, saved_scope, saved_reg, is_lexical, is_const, false, for_is_await)!;
                     return;
                 }
             }
 
             // Standard for loop: we already consumed the decl keyword and identifier
+            if (for_is_await) return self.fail("'for await' requires a 'for await (... of ...)' head")~;
             // Declare the variable and optionally initialize
             ushort var_reg;
             if (!is_lexical) {
@@ -2209,7 +2231,8 @@ fn void? CompilerContext.for_statement(&self) {
             self.expect(TokenType.SEMICOLON)!;
         }
     } else if (next_tt != TokenType.SEMICOLON) {
-        // Expression init
+        // Expression init (C-style for) — no async form.
+        if (for_is_await) return self.fail("'for await' requires a 'for await (... of ...)' head")~;
         ushort init_reg = self.expression()!;
         self.free_reg(init_reg);
         // Guard: if the init expression returned a local variable's register
@@ -2222,7 +2245,8 @@ fn void? CompilerContext.for_statement(&self) {
         }
         self.expect(TokenType.SEMICOLON)!;
     } else {
-        // Empty init
+        // Empty init (C-style `for (;;)`) — no async form.
+        if (for_is_await) return self.fail("'for await' requires a 'for await (... of ...)' head")~;
         self.expect(TokenType.SEMICOLON)!;
     }
 
@@ -2891,7 +2915,7 @@ fn void? CompilerContext.emit_head_bind(&self, ForOfHead head, ushort val_slot) 
 /// `for ([a, b] of arr) { ... }` or `for ({x, y} of arr) { ... }`.
 /// Bindings are VAR-scoped and persist across iterations (no per-iter
 /// block scope). The '[' or '{' has NOT been consumed on entry.
-fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_pattern, uint saved_scope, ushort saved_reg) {
+fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_pattern, uint saved_scope, ushort saved_reg, bool is_await = false) {
     // ── Collect the assignment pattern via the shared collectors ──
     // Bare for-of (`for ([a] of ...)` / `for ({x} of ...)`) assigns to existing
     // lvalues, so this uses the assignment collectors (full LHS grammar) and
@@ -2946,7 +2970,7 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     head.is_array_pattern = is_array_pattern;
     head.is_lexical = false;
     head.is_const = false;
-    self.emit_forof(head, iter_reg, saved_scope, saved_reg, false)!;
+    self.emit_forof(head, iter_reg, saved_scope, saved_reg, is_await)!;
 }
 
 /// Emit a for-in loop with a bare destructuring pattern LHS:
@@ -3024,11 +3048,11 @@ fn void? CompilerContext.emit_bare_forin_destruct_loop(&self, bool is_array_patt
 /// fresh at the top of every iteration (right before the body), which
 /// gives correct per-iteration re-evaluation of the member base per
 /// spec, reusing the same PUTPROP path normal assignment uses.
-fn void? CompilerContext.emit_forof_loop_member(&self, ForLhsSnapshot lhs_snap, ushort iter_reg, uint saved_scope, ushort saved_reg) {
+fn void? CompilerContext.emit_forof_loop_member(&self, ForLhsSnapshot lhs_snap, ushort iter_reg, uint saved_scope, ushort saved_reg, bool is_await = false) {
     ForOfHead head;
     head.kind = MEMBER;
     head.lhs_snap = lhs_snap;
-    self.emit_forof(head, iter_reg, saved_scope, saved_reg, false)!;
+    self.emit_forof(head, iter_reg, saved_scope, saved_reg, is_await)!;
 }
 
 
