@@ -105,6 +105,7 @@ struct LoopInfo {
     bool is_loop;             ///< false for switch pseudo-loops (continue skips these)
     int  saved_lex_depth;     ///< cur_lex_depth at loop entry — break/continue POP_LEX back to this
     int  iter_close_reg;      ///< >= 0: for-of iterator reg — emit ITER_CLOSE on break/return; -1 = none
+    bool is_await_loop;       ///< for-await-of: break/return unwind uses ITER_CLOSE_ASYNC (plan 057)
 }
 
 struct TryInfo {

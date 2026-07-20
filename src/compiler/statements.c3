@@ -57,6 +57,44 @@ struct ForLhsSnapshot {
     Token[4] pbs;
 }
 
+// ── for-of / for-await-of unified codegen (plan 057) ──
+// All for-of loops share one skeleton (emit_forof); only what happens to each
+// yielded value differs. ForOfHead is a tagged union describing that per-value
+// step. `is_await` on emit_forof selects the sync vs async iterator protocol —
+// the loop shape is otherwise identical.
+enum ForOfKind {
+    IDENT,        // for (x of e) / for (let x of e) / for (const x of e) / for (var x of e)
+    DESTRUCTURE,  // for ([a] of e) / for ({x} of e), lexical-declared or bare-assignment
+    MEMBER,       // for (obj.p of e)
+}
+
+struct ForOfHead {
+    ForOfKind kind;
+
+    // IDENT: bind the value to a single variable.
+    ushort id_reg;         // loop-variable register (declared/allocated by caller)
+    uint   id_name_idx;    // constant index of the variable name
+    bool   id_is_bare;     // true = assign to existing lvalue (PUTVAR), no declaration
+
+    // Shared by IDENT and DESTRUCTURE.
+    bool   is_lexical;     // let/const (needs per-iteration env)
+    bool   is_const;
+
+    // DESTRUCTURE: extract the value through a pattern via emit_destruct_bindings.
+    // The bind arrays are owned by the caller (stack) and pointed at val_slot
+    // per iteration. store_mode is DECLARE (let/const/var decl) or ASSIGN_TARGET
+    // (bare assignment pattern). is_array_pattern selects REQUIRE_OBJ vs empty-arr.
+    DestructBind[] binds;
+    uint           bind_count;
+    ushort[]       group_regs;
+    ushort[]       binding_regs;
+    DestructStoreMode store_mode;
+    bool           is_array_pattern;
+
+    // MEMBER: re-parse and store into a member reference each iteration.
+    ForLhsSnapshot lhs_snap;
+}
+
 const uint COMP_MAX_IMPORTS      = 64;
 const uint COMP_MAX_EXPORTS      = 64;
 const uint COMP_MAX_STAR_EXPORTS = 16;
@@ -1837,192 +1875,17 @@ fn void? CompilerContext.for_statement(&self) {
 
                 self.expect(TokenType.RPAREN)!;
 
-                // ── Outer iterator protocol setup ──
-                ushort sym_reg = self.alloc_reg();
-                self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
-
-                ushort iter_key_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
-
-                ushort symbol_val_reg = self.alloc_reg();
-                self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
-                self.free_reg(iter_key_reg);
-                self.free_reg(sym_reg);
-
-                ushort method_reg = self.alloc_reg();
-                self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)iter_reg, (uint)symbol_val_reg);
-                self.free_reg(symbol_val_reg);
-
-                ushort this_slot = self.alloc_reg();
-                self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)iter_reg, 0);
-                self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
-                self.free_reg(this_slot);
-
-                ushort next_reg = self.alloc_reg();
-                ushort next_key_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
-                self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
-                self.free_reg(next_key_reg);
-
-                // Persistent holder for the yielded value, allocated BELOW the
-                // callee window so it survives the outer .next() CALL frame
-                // overlay.  When the source is a generator, its suspended frame
-                // occupies the sliding window at/above callee_reg; running the
-                // inner (nested) destructuring's iterator protocol there would
-                // otherwise clobber a value held in a register inside that
-                // window on the next resume.  We copy the extracted value here,
-                // free the above-callee per-iteration temps, then destructure
-                // this holder — mirroring how the plain for-of copies to its
-                // loop variable and frees temps before the body.
-                ushort val_holder = self.alloc_persistent_reg();
-
-                ushort callee_reg = self.alloc_reg();
-                ushort callee_this_reg = self.alloc_reg();
-
-                // ── Loop ──
-                // Per-iteration lexical environment (ES2015 §14.7.5.6):
-                // For let/const destructuring, each iteration must create a fresh
-                // declarative environment so closures in the body capture distinct
-                // bindings per iteration.  INITTZ marks each binding as TDZ before
-                // the destructuring store writes the actual value.
-                uint loop_start = self.code_count;
-                self.push_loop(loop_start, true);
-                self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)method_reg;
-
-                bool has_lex_destr = is_lexical && bind_count > 0;
-                if (has_lex_destr) {
-                    self.emit_simple(Opcode.PUSH_LEX);
-                    self.cur_lex_depth++;
-                    // TDZ-initialize each head binding in the fresh per-iter env.
-                    for (uint i = 0; i < bind_count; i++) {
-                        if (dbinds[i].is_synthetic) continue;
-                        HString* hs = (HString*)self.constants[dbinds[i].name_idx].get_heapptr();
-                        uint name_idx = self.add_string_constant(hs.get_data());
-                        self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
-                    }
-                }
-
-                // Reload callee/this from the below-window next_reg/method_reg
-                // each iteration: a generator source (or any iterator that
-                // re-dispatches) resuming through the nested destructuring can
-                // overwrite the callee window, so refresh it before every
-                // .next() — mirrors the plain for-of loop.
-                self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
-                self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
-
-                ushort result_reg = self.alloc_reg();
-                self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
-
-                ushort done_key_reg = self.alloc_reg();
-                ushort done_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
-                self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
-                uint exit_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
-
-                ushort value_key_reg = self.alloc_reg();
-                ushort val_reg = self.alloc_reg();
-                self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
-                self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
-
-                // Move the value into the below-callee holder, then release the
-                // above-callee protocol temps so the nested destructuring below
-                // runs at a watermark that does not overlap the outer iterator's
-                // (possibly generator) call frame.
-                self.emit_abc(Opcode.LDREG, (uint)val_holder, (uint)val_reg, 0);
-                self.free_reg(val_reg);
-                self.free_reg(value_key_reg);
-                self.free_reg(done_reg);
-                self.free_reg(done_key_reg);
-                self.free_reg(result_reg);
-
-                // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
-                // Wrap the destructuring + body in TRY/CATCH so that any abrupt
-                // completion (throw from destructuring, body, etc.) calls
-                // IteratorClose on the for-of iterator before propagating.
-                // B=1: throw completion — suppress errors from .return access/call.
-                uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
-                uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
-
-                // ── Destructure the yielded value via the shared emitter ──
-                // RequireObjectCoercible (ES2015 §13.3.3.6): an object pattern
-                // rejects a null/undefined source even when empty, matching the
-                // object_destructure / object_destructure_assign wrappers.
-                if (!is_array_pattern) {
-                    self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_holder, 0, 0);
-                }
-                // Point every top-level bind at the persistent value holder and
-                // run the same emit_destruct_bindings used by declarations,
-                // parameters, and assignment targets (iterator protocol, defaults,
-                // IteratorClose, done-latching all handled there).
-                for (uint bi = 0; bi < bind_count; bi++) {
-                    if (dbinds[bi].parent_idx == 0xFFFF) dbinds[bi].arg_idx = val_holder;
-                }
-                self.emit_destruct_bindings(dbinds[..], bind_count, dgroup_regs[..], dbinding_regs[..],
-                                            DestructStoreMode.DECLARE, is_lexical, is_const);
-
-                self.statement()!;
-
-                // Normal path: end the try region and jump over the catch block.
-                self.emit_simple(Opcode.ENDTRY);
-                uint jump_over = self.emit_jump(Opcode.JUMP);
-
-                // Catch block: called on any abrupt completion (throw, etc.).
-                uint catch_target = self.code_count;
-                ushort err_reg = self.alloc_reg();
-                self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
-
-                // Unwind per-iter env if present, then call IteratorClose.
-                if (has_lex_destr) {
-                    self.emit_simple(Opcode.POP_LEX);
-                    self.cur_lex_depth--;
-                }
-                self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 1, 0);
-
-                // Re-throw the original error.
-                self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
-                self.free_reg(err_reg);
-
-                // Patch the jump to skip the catch block.
-                self.patch_jump(jump_over);
-
-                // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
-                uint catch_off = catch_target - iter_try_addr;
-                self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
-                self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
-
-                // Per-iter env epilogue: pop before the back-edge.
-                // For continue: the continue statement's own POP_LEX unwinds
-                // cur_lex_depth back to the per-iter level, so continue lands
-                // on the JUMP below rather than double-popping.
-                if (has_lex_destr) {
-                    self.emit_simple(Opcode.POP_LEX);
-                    self.cur_lex_depth--;
-                }
-
-                self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
-
-                int back_offset = (int)loop_start - (int)self.code_count - 1;
-                self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
-
-                self.patch_jump(exit_jump);
-                // Exit path (done=true): pop per-iter env pushed at loop_start,
-                // then emit the exhaustion ITER_CLOSE before pop_loop so
-                // break-patch targets land after this.
-                if (has_lex_destr) {
-                    self.emit_simple(Opcode.POP_LEX);
-                    self.cur_lex_depth--;
-                }
-                self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
-                self.pop_loop();
-
-                self.free_reg(callee_this_reg);
-                self.free_reg(callee_reg);
-                self.free_reg(val_holder);
-                self.free_reg(next_reg);
-                self.free_reg(method_reg);
-                self.free_reg(iter_reg);
-                self.pop_scope_to(saved_scope);
-                self.free_regs_to(saved_reg);
+                ForOfHead head;
+                head.kind = DESTRUCTURE;
+                head.binds = dbinds[..];
+                head.bind_count = bind_count;
+                head.group_regs = dgroup_regs[..];
+                head.binding_regs = dbinding_regs[..];
+                head.store_mode = DestructStoreMode.DECLARE;
+                head.is_array_pattern = is_array_pattern;
+                head.is_lexical = is_lexical;
+                head.is_const = is_const;
+                self.emit_forof(head, iter_reg, saved_scope, saved_reg, false)!;
                 return;
             } else if (is_forin_destr) {
                 // for-in with destructuring: for (let {x, y} in obj) or for (let [a, b] in obj)
@@ -2767,6 +2630,263 @@ fn void? CompilerContext.emit_bare_forin_loop(&self, char[] var_name, ushort obj
     self.free_regs_to(saved_reg);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Unified for-of codegen (plan 057). One skeleton drives every for-of form;
+// ForOfHead selects the per-value step (bind identifier / destructure / member
+// store). `is_await` selects the sync vs async iterator protocol — currently
+// always false; the async protocol lands in plan 057 phases 2–3.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Iterator record produced by emit_iter_open and threaded through the loop.
+struct IterRec {
+    ushort method_reg;  // the iterator object (also the ITER_CLOSE target)
+    ushort next_reg;    // its .next method
+    ushort callee_reg;  // per-iteration callee slot (reloaded each step)
+    ushort callee_this_reg;
+    bool   is_await;
+}
+
+/// GetIterator(src): look up Symbol.iterator, call it, fetch .next. Leaves the
+/// iterator in method_reg (below the callee window) and .next in next_reg, then
+/// allocates the callee/this window ABOVE them. All four returned registers live
+/// below any per-iteration temporary, so a generator source that overlays the
+/// sliding call window on resume cannot clobber them (see plan 042/043).
+fn IterRec? CompilerContext.emit_iter_open(&self, ushort src_reg, bool is_await) {
+    // TODO(plan 057 phase 2): when is_await, prefer Symbol.asyncIterator and,
+    // when absent, wrap the sync iterator (AsyncFromSyncIterator).
+    ushort sym_reg = self.alloc_reg();
+    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
+    ushort iter_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
+    ushort symbol_val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
+    self.free_reg(iter_key_reg);
+    self.free_reg(sym_reg);
+
+    ushort method_reg = self.alloc_reg();
+    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)src_reg, (uint)symbol_val_reg);
+    self.free_reg(symbol_val_reg);
+
+    ushort this_slot = self.alloc_reg();
+    self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)src_reg, 0);
+    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
+    self.free_reg(this_slot);
+
+    ushort next_reg = self.alloc_reg();
+    ushort next_key_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
+    self.free_reg(next_key_reg);
+
+    IterRec rec;
+    rec.method_reg = method_reg;
+    rec.next_reg = next_reg;
+    rec.callee_reg = self.alloc_reg();
+    rec.callee_this_reg = self.alloc_reg();
+    rec.is_await = is_await;
+    return rec;
+}
+
+/// One iteration step: reload callee/this (healing a generator source that
+/// overwrote the callee window last iteration), call .next(), require an object
+/// result, unpack .done/.value. Writes the value into val_slot (which the caller
+/// allocated below the callee window) and returns the exit jump to patch at the
+/// done=true target. Leaves no live temps above val_slot.
+fn uint? CompilerContext.emit_iter_step(&self, IterRec rec, ushort val_slot) {
+    self.emit_abc(Opcode.LDREG, (uint)rec.callee_reg, (uint)rec.next_reg, 0);
+    self.emit_abc(Opcode.LDREG, (uint)rec.callee_this_reg, (uint)rec.method_reg, 0);
+
+    ushort result_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)rec.callee_reg, 0);
+
+    // TODO(plan 057 phase 3): when rec.is_await, AWAIT result_reg here
+    // (result is a promise of an IteratorResult) before CHKOBJ/unpack.
+
+    // ES2022 §14.7.5.6 step 3.b: the .next() result must be an Object.
+    self.emit_abc(Opcode.CHKOBJ, (uint)result_reg, 0, 0);
+
+    ushort done_key_reg = self.alloc_reg();
+    ushort done_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
+    uint exit_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
+
+    ushort value_key_reg = self.alloc_reg();
+    ushort val_reg = self.alloc_reg();
+    self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
+    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
+
+    // Move the value below the callee window, then release the above-window
+    // protocol temps so the per-value consumer (which may run a nested iterator
+    // protocol for destructuring) does not overlap the outer call frame.
+    self.emit_abc(Opcode.LDREG, (uint)val_slot, (uint)val_reg, 0);
+    self.free_reg(val_reg);
+    self.free_reg(value_key_reg);
+    self.free_reg(done_reg);
+    self.free_reg(done_key_reg);
+    self.free_reg(result_reg);
+
+    return exit_jump;
+}
+
+/// IteratorClose on the loop iterator. throw_variant=true suppresses errors from
+/// .return access/call (the original throw takes precedence, §7.4.6 steps 6,8).
+fn void CompilerContext.emit_iter_close(&self, IterRec rec, bool throw_variant) {
+    // TODO(plan 057 phase 3): when rec.is_await, use ITER_CLOSE_ASYNC and AWAIT
+    // the returned promise (AsyncIteratorClose, §7.4.11).
+    self.emit_abc(Opcode.ITER_CLOSE, (uint)rec.method_reg, throw_variant ? 1 : 0, 0);
+}
+
+/// Free the four iterator-record registers (reverse allocation order).
+fn void CompilerContext.free_iter_rec(&self, IterRec rec) {
+    self.free_reg(rec.callee_this_reg);
+    self.free_reg(rec.callee_reg);
+    self.free_reg(rec.next_reg);
+    self.free_reg(rec.method_reg);
+}
+
+/// The single for-of loop skeleton. The RHS has already been evaluated into
+/// src_reg; head describes the per-iteration value binding. On entry the loop
+/// variable / pattern (per head) is already declared in the current scope.
+/// Emits the full ForIn/OfBodyEvaluation loop (§14.7.5.6): GetIterator → loop
+/// { per-iter env, .next, done? exit, bind, body } → IteratorClose. Frees
+/// src_reg and restores scope/regs to saved_scope/saved_reg on exit.
+fn void? CompilerContext.emit_forof(&self, ForOfHead head, ushort src_reg, uint saved_scope, ushort saved_reg, bool is_await) {
+    IterRec rec = self.emit_iter_open(src_reg, is_await)!;
+
+    // Value lives below the callee window for the whole loop, so a nested
+    // iterator protocol (destructuring) never overlaps the outer call frame.
+    ushort val_slot = self.alloc_persistent_reg();
+
+    // ES §14.7.5.6: V starts as undefined; reset the eval accumulator so a
+    // zero-iteration loop yields undefined (identifier form, eval mode only).
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+
+    uint loop_start = self.code_count;
+    self.push_loop(loop_start, true);
+    self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)rec.method_reg;
+    self.loop_stack[self.loop_depth - 1].is_await_loop = is_await;
+
+    // Per-iteration lexical environment (§14.7.5.6 CreatePerIterationEnvironment):
+    // fresh declarative env each iteration so body closures capture distinct
+    // bindings. INITTZ marks each head binding TDZ before the value is stored.
+    bool needs_per_iter_env = head.is_lexical && !head.id_is_bare;
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.PUSH_LEX);
+        self.cur_lex_depth++;
+        self.emit_head_inittz(head);
+    }
+
+    uint exit_jump = self.emit_iter_step(rec, val_slot)!;
+
+    // ── IteratorClose-on-throw guard (§14.7.5.6): wrap bind + body so any
+    // abrupt completion closes the iterator before propagating. ──
+    uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
+    uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
+
+    self.emit_head_bind(head, val_slot)!;
+
+    if (self.eval_mode) {
+        self.emit_abc(Opcode.LDUNDEF, (uint)self.eval_acc_reg, 0, 0);
+    }
+    self.statement()!;
+
+    self.emit_simple(Opcode.ENDTRY);
+    uint jump_over = self.emit_jump(Opcode.JUMP);
+
+    uint catch_target = self.code_count;
+    ushort err_reg = self.alloc_reg();
+    self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
+    self.emit_iter_close(rec, true);
+    self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
+    self.free_reg(err_reg);
+
+    self.patch_jump(jump_over);
+    uint catch_off = catch_target - iter_try_addr;
+    self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
+    self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
+
+    // Normal-path per-iter env epilogue (continue already popped its own env
+    // back to the loop level, so it lands on the back-jump, not here).
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
+
+    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
+    int back_offset = (int)loop_start - (int)self.code_count - 1;
+    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
+
+    // Exit path (done=true): pop the per-iter env, close on exhaustion.
+    self.patch_jump(exit_jump);
+    if (needs_per_iter_env) {
+        self.emit_simple(Opcode.POP_LEX);
+        self.cur_lex_depth--;
+    }
+    self.emit_iter_close(rec, false);
+    self.pop_loop();
+
+    self.free_reg(val_slot);
+    self.free_iter_rec(rec);
+    self.free_reg(src_reg);
+    self.pop_scope_to(saved_scope);
+    self.free_regs_to(saved_reg);
+}
+
+/// Per-iteration TDZ init for lexical head bindings (fresh env each iteration).
+fn void CompilerContext.emit_head_inittz(&self, ForOfHead head) {
+    switch (head.kind) {
+        case IDENT:
+            self.emit_a_bc(Opcode.INITTZ, 0, head.id_name_idx);
+        case DESTRUCTURE:
+            for (uint i = 0; i < head.bind_count; i++) {
+                if (head.binds[i].is_synthetic) continue;
+                HString* hs = (HString*)self.constants[head.binds[i].name_idx].get_heapptr();
+                uint name_idx = self.add_string_constant(hs.get_data());
+                self.emit_a_bc(Opcode.INITTZ, 0, name_idx);
+            }
+        case MEMBER:
+            // no head bindings
+    }
+}
+
+/// The per-value step: bind val_slot to the loop target (§14.7.5.6). Runs inside
+/// the IteratorClose-on-throw guard.
+fn void? CompilerContext.emit_head_bind(&self, ForOfHead head, ushort val_slot) {
+    switch (head.kind) {
+        case IDENT:
+            self.emit_abc(Opcode.LDREG, (uint)head.id_reg, (uint)val_slot, 0);
+            if (head.id_is_bare) {
+                self.emit_a_bc(Opcode.PUTVAR, (uint)head.id_reg, head.id_name_idx);
+            } else {
+                self.emit_var_store(head.id_reg, head.id_name_idx, head.is_lexical, head.is_const);
+            }
+        case DESTRUCTURE:
+            // Object patterns reject null/undefined even when empty.
+            if (!head.is_array_pattern) {
+                self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_slot, 0, 0);
+            }
+            for (uint bi = 0; bi < head.bind_count; bi++) {
+                if (head.binds[bi].parent_idx == 0xFFFF) head.binds[bi].arg_idx = val_slot;
+            }
+            if (head.bind_count > 0) {
+                self.emit_destruct_bindings(head.binds, head.bind_count, head.group_regs,
+                    head.binding_regs, head.store_mode, head.is_lexical, head.is_const);
+            } else if (head.is_array_pattern) {
+                // Empty array pattern `for ([] of e)`: still GetIterator+close.
+                self.emit_empty_array_iter(val_slot);
+            }
+        case MEMBER:
+            self.emit_member_lhs_store(head.lhs_snap, val_slot)!;
+    }
+}
+
 /// Emit a for-of loop with a bare destructuring pattern LHS:
 /// `for ([a, b] of arr) { ... }` or `for ({x, y} of arr) { ... }`.
 /// Bindings are VAR-scoped and persist across iterations (no per-iter
@@ -2815,143 +2935,18 @@ fn void? CompilerContext.emit_bare_forof_destruct_loop(&self, bool is_array_patt
     ushort iter_reg = self.assignment_expr()!;
     self.expect(TokenType.RPAREN)!;
 
-    // ── Outer iterator protocol setup ──
-    ushort sym_reg = self.alloc_reg();
-    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
-    ushort iter_key_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
-    ushort symbol_val_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
-    self.free_reg(iter_key_reg);
-    self.free_reg(sym_reg);
-
-    ushort method_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)iter_reg, (uint)symbol_val_reg);
-    self.free_reg(symbol_val_reg);
-
-    ushort this_slot = self.alloc_reg();
-    self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)iter_reg, 0);
-    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
-    self.free_reg(this_slot);
-
-    ushort next_reg = self.alloc_reg();
-    ushort next_key_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
-    self.free_reg(next_key_reg);
-
-    // Persistent value holder below the callee window (see the let/const
-    // for-of destructuring path for the rationale): a generator source resuming
-    // through the nested destructuring can clobber registers inside the .next()
-    // call frame, so the yielded value is copied here — below callee_reg — and
-    // the above-callee temps are freed before the destructuring runs.
-    ushort val_holder = self.alloc_persistent_reg();
-
-    ushort callee_reg = self.alloc_reg();
-    ushort callee_this_reg = self.alloc_reg();
-
-    // ── Loop ──
-    uint loop_start = self.code_count;
-    self.push_loop(loop_start, true);
-    self.loop_stack[self.loop_depth - 1].iter_close_reg = (int)method_reg;
-
-    // Reload callee/this from the below-window next_reg/method_reg every
-    // iteration so a generator (or re-dispatching iterator) that overwrote the
-    // callee window during the previous iteration's destructuring is healed.
-    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
-    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
-
-    ushort result_reg = self.alloc_reg();
-    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
-
-    ushort done_key_reg = self.alloc_reg();
-    ushort done_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
-    uint exit_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
-
-    ushort value_key_reg = self.alloc_reg();
-    ushort val_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
-    // Move value below the callee window, then release the above-callee temps.
-    self.emit_abc(Opcode.LDREG, (uint)val_holder, (uint)val_reg, 0);
-    self.free_reg(val_reg);
-    self.free_reg(value_key_reg);
-    self.free_reg(done_reg);
-    self.free_reg(done_key_reg);
-    self.free_reg(result_reg);
-
-    // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
-    // Wrap the destructuring + body in TRY/CATCH so that any abrupt completion
-    // (throw from destructuring, body, etc.) calls IteratorClose on the
-    // outer for-of iterator before propagating.  B=1: throw completion —
-    // suppress errors from .return access/call (the original throw takes
-    // precedence, per ES2022 §7.4.6 steps 6,8).
-    uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
-    uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
-
-    // ── Destructure the yielded value via the shared emitter ──
-    // RequireObjectCoercible for object patterns (rejects null/undefined even
-    // when empty); array patterns open the iterator inside the emitter.
-    if (!is_array_pattern) {
-        self.emit_abc(Opcode.REQUIRE_OBJ, (uint)val_holder, 0, 0);
-    }
-    for (uint bi = 0; bi < dcount; bi++) {
-        if (dbinds[bi].parent_idx == 0xFFFF) dbinds[bi].arg_idx = val_holder;
-    }
-    if (dcount > 0) {
-        self.emit_destruct_bindings(dbinds[..], dcount, dgroup_regs[..], dbinding_regs[..],
-                                    DestructStoreMode.ASSIGN_TARGET);
-    } else if (is_array_pattern) {
-        // Empty array pattern `for ([] of ...)`: still GetIterator(value) and
-        // immediately IteratorClose it per DestructuringAssignmentEvaluation.
-        self.emit_empty_array_iter(val_holder);
-    }
-
-    // Compile body
-    self.statement()!;
-
-    // Normal path: end the try region and jump over the catch block.
-    self.emit_simple(Opcode.ENDTRY);
-    uint jump_over = self.emit_jump(Opcode.JUMP);
-
-    // Catch block: called on any abrupt completion (throw, etc.).
-    uint catch_target = self.code_count;
-    ushort err_reg = self.alloc_reg();
-    self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
-
-    // Call IteratorClose (throw variant — suppress .return errors).
-    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 1, 0);
-
-    // Re-throw the original error.
-    self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
-    self.free_reg(err_reg);
-
-    // Patch the jump to skip the catch block.
-    self.patch_jump(jump_over);
-
-    // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
-    uint catch_off = catch_target - iter_try_addr;
-    self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
-    self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
-
-    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
-    int back_offset = (int)loop_start - (int)self.code_count - 1;
-    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
-
-    self.patch_jump(exit_jump);
-    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
-    self.pop_loop();
-
-    self.free_reg(callee_this_reg);
-    self.free_reg(callee_reg);
-    self.free_reg(val_holder);
-    self.free_reg(next_reg);
-    self.free_reg(method_reg);
-    self.free_reg(iter_reg);
-    self.pop_scope_to(saved_scope);
-    self.free_regs_to(saved_reg);
+    // Bare assignment pattern: VAR-scoped (no per-iter env), ASSIGN_TARGET store.
+    ForOfHead head;
+    head.kind = DESTRUCTURE;
+    head.binds = dbinds[..];
+    head.bind_count = dcount;
+    head.group_regs = dgroup_regs[..];
+    head.binding_regs = dbinding_regs[..];
+    head.store_mode = DestructStoreMode.ASSIGN_TARGET;
+    head.is_array_pattern = is_array_pattern;
+    head.is_lexical = false;
+    head.is_const = false;
+    self.emit_forof(head, iter_reg, saved_scope, saved_reg, false)!;
 }
 
 /// Emit a for-in loop with a bare destructuring pattern LHS:
@@ -3030,114 +3025,12 @@ fn void? CompilerContext.emit_bare_forin_destruct_loop(&self, bool is_array_patt
 /// gives correct per-iteration re-evaluation of the member base per
 /// spec, reusing the same PUTPROP path normal assignment uses.
 fn void? CompilerContext.emit_forof_loop_member(&self, ForLhsSnapshot lhs_snap, ushort iter_reg, uint saved_scope, ushort saved_reg) {
-    ushort sym_reg = self.alloc_reg();
-    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
-    ushort iter_key_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
-    ushort symbol_val_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
-    self.free_reg(iter_key_reg);
-    self.free_reg(sym_reg);
-
-    ushort method_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)iter_reg, (uint)symbol_val_reg);
-    self.free_reg(symbol_val_reg);
-
-    ushort this_slot = self.alloc_reg();
-    self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)iter_reg, 0);
-    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
-    self.free_reg(this_slot);
-
-    ushort next_reg = self.alloc_reg();
-    ushort next_key_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)next_key_reg, self.add_string_constant("next"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)next_reg, (uint)method_reg, (uint)next_key_reg);
-    self.free_reg(next_key_reg);
-
-    ushort callee_reg = self.alloc_reg();
-    ushort callee_this_reg = self.alloc_reg();
-
-    uint loop_start = self.code_count;
-    self.push_loop(loop_start, true);
-
-    self.emit_abc(Opcode.LDREG, (uint)callee_reg, (uint)next_reg, 0);
-    self.emit_abc(Opcode.LDREG, (uint)callee_this_reg, (uint)method_reg, 0);
-    ushort result_reg = self.alloc_reg();
-    self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)callee_reg, 0);
-
-    // Validate .next() result is an Object (ES2022 §14.7.5.6 step 3.b).
-    self.emit_abc(Opcode.CHKOBJ, (uint)result_reg, 0, 0);
-
-    ushort done_key_reg = self.alloc_reg();
-    ushort done_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)done_key_reg, self.add_string_constant("done"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)done_reg, (uint)result_reg, (uint)done_key_reg);
-    uint exit_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)done_reg);
-
-    ushort value_key_reg = self.alloc_reg();
-    ushort val_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)value_key_reg, self.add_string_constant("value"), 0);
-    self.emit_abc(Opcode.GETPROP, (uint)val_reg, (uint)result_reg, (uint)value_key_reg);
-
-    self.free_reg(val_reg);
-    self.free_reg(value_key_reg);
-    self.free_reg(done_reg);
-    self.free_reg(done_key_reg);
-    self.free_reg(result_reg);
-
-    // ── IteratorClose-on-error guard (ES2022 §14.7.5.6) ──
-    // Wrap the assignment + body in TRY/CATCH so that any abrupt completion
-    // calls IteratorClose before propagating.
-    uint iter_try_addr  = self.emit_a_bc(Opcode.TRY, 0, 0);
-    uint iter_jump_slot = self.emit_a_bc(Opcode.NOP, 0, 0);
-
-    // Re-parse and re-compile the member LHS from source, then store the
-    // per-iteration value into it via PUTPROP. This must happen after the
-    // iterator-result registers above are freed (their reg slots are
-    // reused by the LHS compile) and before the body statement.
-    self.emit_member_lhs_store(lhs_snap, val_reg)!;
-
-    self.statement()!;
-
-    // Normal path: end the try region and jump over the catch block.
-    self.emit_simple(Opcode.ENDTRY);
-    uint jump_over = self.emit_jump(Opcode.JUMP);
-
-    // Catch block: called on any abrupt completion (throw, etc.).
-    uint catch_target = self.code_count;
-    ushort err_reg = self.alloc_reg();
-    self.emit_abc(Opcode.CATCH, (uint)err_reg, 0, 0);
-
-    // Call IteratorClose (throw variant — suppress .return errors).
-    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 1, 0);
-
-    // Re-throw the original error.
-    self.emit_abc(Opcode.THROW, (uint)err_reg, 0, 0);
-    self.free_reg(err_reg);
-
-    // Patch the jump to skip the catch block.
-    self.patch_jump(jump_over);
-
-    // Patch the TRY instruction: flags=1 (catch only), BC=offset to catch block.
-    uint catch_off = catch_target - iter_try_addr;
-    self.code[iter_try_addr] = bytecode::make_a_bc(Opcode.TRY, 1, catch_off);
-    self.code[iter_jump_slot] = bytecode::make_a_bc(Opcode.NOP, 0, 0);
-
-    self.loop_stack[self.loop_depth - 1].continue_target = self.code_count;
-    int back_offset = (int)loop_start - (int)self.code_count - 1;
-    self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
-
-    self.patch_jump(exit_jump);
-    self.emit_abc(Opcode.ITER_CLOSE, (uint)method_reg, 0, 0);
-    self.pop_loop();
-
-    self.free_reg(callee_this_reg);
-    self.free_reg(callee_reg);
-    self.free_reg(next_reg);
-    self.free_reg(method_reg);
-    self.pop_scope_to(saved_scope);
-    self.free_regs_to(saved_reg);
+    ForOfHead head;
+    head.kind = MEMBER;
+    head.lhs_snap = lhs_snap;
+    self.emit_forof(head, iter_reg, saved_scope, saved_reg, false)!;
 }
+
 
 /// Emit a for-in loop whose head LHS is a member expression, e.g.
 /// `for (obj.prop in x) { ... }`. Same re-parse-per-iteration strategy
