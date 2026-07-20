@@ -1858,14 +1858,58 @@ fn TVal? Vm.run(Vm* vm) {
                 }
             }
             TVal immv; immv.set_fastint(imm);
-            if (rb.is_bigint()) {
-                if (vm_bigint_binop(vm, Opcode.ADD, ra, rb, &immv) == BigIntOpResult.THREW) {
+            // Object operand: ToPrimitive(rb, hint number) per ES5 §11.6.1
+            // BEFORE deciding string-concat vs numeric-add — mirrors ADD's
+            // object handling. The immediate is always a plain number, so
+            // (unlike ADD, which must ToPrimitive both sides) only rb can
+            // ever be an object here.
+            TVal prim_b = *rb;
+            if (rb.get_tag() == OBJECT) {
+                prim_b = to_primitive_value(vm, rb, 0);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                if (ds.needs_restart) break;
+                if (prim_b.is_string() && prim_b.get_heapptr() != null && !((HString*)prim_b.get_heapptr()).is_symbol()) {
+                    HString*? left_str_opt = vm_to_string(vm, &prim_b);
+                    if (vm.throw_pending) {
+                        if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                        continue;
+                    }
+                    if (try left_str = left_str_opt) {
+                        char[32] int_buf;
+                        int int_len = hstring::int_to_buf(imm, &int_buf, 32);
+                        if (int_len > 0) {
+                            uint s_len = left_str.blen;
+                            uint total = s_len + (uint)int_len;
+                            char[544] stack_buf;
+                            char* buf;
+                            bool heap_allocated = false;
+                            if (total <= 544) {
+                                buf = &stack_buf;
+                            } else {
+                                buf = (char*)vm.heap.alloc_func(vm.heap.heap_udata, total);
+                                if (buf == null) { ra.set_undefined(); continue; }
+                                heap_allocated = true;
+                            }
+                            mem::copy(buf, left_str.get_cstr(), (sz)(s_len));
+                            mem::copy(buf + s_len, &int_buf, (sz)((usz)int_len));
+                            HString* interned = intern_string(vm, buf[:total]);
+                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                            vm.heap.set_reg_string(ra, interned);
+                            continue;
+                        }
+                    }
+                    ra.set_undefined();
+                    continue;
+                }
+            }
+            if (prim_b.is_bigint()) {
+                if (vm_bigint_binop(vm, Opcode.ADD, ra, &prim_b, &immv) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                     if (ds.needs_restart) break;
                 }
                 continue;
             }
-            double add_b = vm_to_number(vm, rb);
+            double add_b = vm_to_number(vm, &prim_b);
             if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
             if (ds.needs_restart) break;
             ra.set_number(add_b + (double)imm);
