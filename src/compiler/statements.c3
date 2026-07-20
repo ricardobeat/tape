@@ -2670,31 +2670,43 @@ struct IterRec {
     bool   is_await;
 }
 
-/// GetIterator(src): look up Symbol.iterator, call it, fetch .next. Leaves the
-/// iterator in method_reg (below the callee window) and .next in next_reg, then
-/// allocates the callee/this window ABOVE them. All four returned registers live
-/// below any per-iteration temporary, so a generator source that overlays the
-/// sliding call window on resume cannot clobber them (see plan 042/043).
+/// GetIterator(src, hint): look up the iterator method, call it, fetch .next.
+/// For sync (hint=sync) this is Symbol.iterator. For async (hint=async,
+/// for-await) this is GET_ITER_ASYNC, which does the spec GetIterator(obj,async):
+/// prefer Symbol.asyncIterator; if absent, wrap Symbol.iterator() in an
+/// %AsyncFromSyncIterator% adapter so a plain sync iterable (array, generator)
+/// works under `for await`. Either way the iterator lands in method_reg (below
+/// the callee window) and .next in next_reg, with the callee/this window ABOVE
+/// them — so a generator source overlaying the sliding window on resume cannot
+/// clobber them (see plan 042/043).
 fn IterRec? CompilerContext.emit_iter_open(&self, ushort src_reg, bool is_await) {
-    // TODO(plan 057 phase 2): when is_await, prefer Symbol.asyncIterator and,
-    // when absent, wrap the sync iterator (AsyncFromSyncIterator).
-    ushort sym_reg = self.alloc_reg();
-    self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
-    ushort iter_key_reg = self.alloc_reg();
-    self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
-    ushort symbol_val_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
-    self.free_reg(iter_key_reg);
-    self.free_reg(sym_reg);
+    ushort method_reg;
+    if (is_await) {
+        // GET_ITER_ASYNC A, B: A ← GetIterator(reg B, async). Handles the
+        // @@asyncIterator lookup + AsyncFromSync wrapping in one VM step, so the
+        // iterator object lands directly in method_reg (allocated first → below
+        // the callee window, same invariant as the sync path's CALL result).
+        method_reg = self.alloc_reg();
+        self.emit_abc(Opcode.GET_ITER_ASYNC, (uint)method_reg, (uint)src_reg, 0);
+    } else {
+        ushort sym_reg = self.alloc_reg();
+        self.emit_a_bc(Opcode.GETVAR, (uint)sym_reg, self.add_string_constant("Symbol"));
+        ushort iter_key_reg = self.alloc_reg();
+        self.emit_abc(Opcode.LDCONST, (uint)iter_key_reg, self.add_string_constant("iterator"), 0);
+        ushort symbol_val_reg = self.alloc_reg();
+        self.emit_abc(Opcode.GETPROP, (uint)symbol_val_reg, (uint)sym_reg, (uint)iter_key_reg);
+        self.free_reg(iter_key_reg);
+        self.free_reg(sym_reg);
 
-    ushort method_reg = self.alloc_reg();
-    self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)src_reg, (uint)symbol_val_reg);
-    self.free_reg(symbol_val_reg);
+        method_reg = self.alloc_reg();
+        self.emit_abc(Opcode.GETPROP, (uint)method_reg, (uint)src_reg, (uint)symbol_val_reg);
+        self.free_reg(symbol_val_reg);
 
-    ushort this_slot = self.alloc_reg();
-    self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)src_reg, 0);
-    self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
-    self.free_reg(this_slot);
+        ushort this_slot = self.alloc_reg();
+        self.emit_abc(Opcode.LDREG, (uint)this_slot, (uint)src_reg, 0);
+        self.emit_abc(Opcode.CALL, (uint)method_reg, (uint)method_reg, 0);
+        self.free_reg(this_slot);
+    }
 
     ushort next_reg = self.alloc_reg();
     ushort next_key_reg = self.alloc_reg();
@@ -2723,8 +2735,15 @@ fn uint? CompilerContext.emit_iter_step(&self, IterRec rec, ushort val_slot) {
     ushort result_reg = self.alloc_reg();
     self.emit_abc(Opcode.CALL, (uint)result_reg, (uint)rec.callee_reg, 0);
 
-    // TODO(plan 057 phase 3): when rec.is_await, AWAIT result_reg here
-    // (result is a promise of an IteratorResult) before CHKOBJ/unpack.
+    // for-await (§14.7.5.6): the async .next() returns a Promise of the
+    // IteratorResult — await it, then treat the settled value as the result.
+    // GET_ITER_ASYNC guarantees a genuine async iterator (sync sources are
+    // adapter-wrapped, and the adapter awaits the value internally), so a single
+    // await here suffices; the settled result is a plain {value, done} object.
+    if (rec.is_await) {
+        self.emit_abc(Opcode.AWAIT, (uint)result_reg, 0, 0);
+        self.emit_abc(Opcode.LOAD_RESUME, (uint)result_reg, 0, 0);
+    }
 
     // ES2022 §14.7.5.6 step 3.b: the .next() result must be an Object.
     self.emit_abc(Opcode.CHKOBJ, (uint)result_reg, 0, 0);
@@ -2755,9 +2774,18 @@ fn uint? CompilerContext.emit_iter_step(&self, IterRec rec, ushort val_slot) {
 
 /// IteratorClose on the loop iterator. throw_variant=true suppresses errors from
 /// .return access/call (the original throw takes precedence, §7.4.6 steps 6,8).
+/// For for-await this is AsyncIteratorClose (§7.4.11): the .return() result is
+/// awaited before the completion propagates.
 fn void CompilerContext.emit_iter_close(&self, IterRec rec, bool throw_variant) {
-    // TODO(plan 057 phase 3): when rec.is_await, use ITER_CLOSE_ASYNC and AWAIT
-    // the returned promise (AsyncIteratorClose, §7.4.11).
+    if (rec.is_await) {
+        // ITER_CLOSE_ASYNC leaves the .return() result in method_reg (or
+        // undefined when there is nothing to close); AWAIT settles it. AWAIT on
+        // undefined/non-thenable is a no-op, so the no-close case stays cheap.
+        self.emit_abc(Opcode.ITER_CLOSE_ASYNC, (uint)rec.method_reg, throw_variant ? 1 : 0, 0);
+        self.emit_abc(Opcode.AWAIT, (uint)rec.method_reg, 0, 0);
+        self.emit_abc(Opcode.LOAD_RESUME, (uint)rec.method_reg, 0, 0);
+        return;
+    }
     self.emit_abc(Opcode.ITER_CLOSE, (uint)rec.method_reg, throw_variant ? 1 : 0, 0);
 }
 
@@ -3153,6 +3181,22 @@ fn void? CompilerContext.do_while_statement(&self) {
     self.pop_loop();
 }
 
+/// Emit the non-throw IteratorClose for the loop at loop_stack[li] during an
+/// abrupt-exit unwind (break/return/labeled break). For a for-await loop this is
+/// AsyncIteratorClose (§7.4.11): the .return() result must be awaited. Clobbering
+/// the iterator register with the awaited result is safe here — the loop is being
+/// abandoned. Assumes loop_stack[li].iter_close_reg >= 0.
+fn void CompilerContext.emit_unwind_iter_close(&self, uint li) {
+    uint reg = (uint)self.loop_stack[li].iter_close_reg;
+    if (self.loop_stack[li].is_await_loop) {
+        self.emit_abc(Opcode.ITER_CLOSE_ASYNC, reg, 0, 0);
+        self.emit_abc(Opcode.AWAIT, reg, 0, 0);
+        self.emit_abc(Opcode.LOAD_RESUME, reg, 0, 0);
+    } else {
+        self.emit_abc(Opcode.ITER_CLOSE, reg, 0, 0);
+    }
+}
+
 /// Parse return statement.
 /// Emit ITER_CLOSE for every enclosing for-of loop, innermost first.
 /// A return exits all loops in the function, so each loop's iterator must be
@@ -3160,7 +3204,7 @@ fn void? CompilerContext.do_while_statement(&self) {
 fn void CompilerContext.emit_return_iter_closes(&self) {
     for (int li = (int)self.loop_depth - 1; li >= 0; li--) {
         if (self.loop_stack[li].iter_close_reg >= 0) {
-            self.emit_abc(Opcode.ITER_CLOSE, (uint)self.loop_stack[li].iter_close_reg, 0, 0);
+            self.emit_unwind_iter_close((uint)li);
         }
     }
 }
@@ -3761,6 +3805,15 @@ fn void? CompilerContext.break_statement(&self) {
                     self.emit_simple(Opcode.POP_LEX);
                     self.cur_lex_depth--;
                 }
+                // IteratorClose for every for-of loop being exited, innermost
+                // first, down to AND INCLUDING the labeled loop (a labeled break
+                // exits loop_idx itself). For for-await loops this awaits the
+                // AsyncIteratorClose (§7.4.11).
+                for (int li = (int)self.loop_depth - 1; li >= (int)loop_idx; li--) {
+                    if (self.loop_stack[li].iter_close_reg >= 0) {
+                        self.emit_unwind_iter_close((uint)li);
+                    }
+                }
                 uint jump_addr = self.emit_jump(Opcode.BREAK);
                 self.loop_stack[loop_idx].break_patch_head =
                     self.add_patch(self.loop_stack[loop_idx].break_patch_head, jump_addr);
@@ -3790,7 +3843,7 @@ fn void? CompilerContext.break_statement(&self) {
     }
     // IteratorClose: if breaking from a for-of loop, close the iterator.
     if (self.loop_stack[loop_idx].iter_close_reg >= 0) {
-        self.emit_abc(Opcode.ITER_CLOSE, (uint)self.loop_stack[loop_idx].iter_close_reg, 0, 0);
+        self.emit_unwind_iter_close((uint)loop_idx);
     }
     uint jump_addr = self.emit_jump(Opcode.BREAK);
     self.add_break_patch(jump_addr);
@@ -3826,7 +3879,7 @@ fn void? CompilerContext.continue_statement(&self) {
                 // (all loops from innermost down to but NOT including loop_idx).
                 for (int li = (int)self.loop_depth - 1; li > (int)loop_idx; li--) {
                     if (self.loop_stack[li].iter_close_reg >= 0) {
-                        self.emit_abc(Opcode.ITER_CLOSE, (uint)self.loop_stack[li].iter_close_reg, 0, 0);
+                        self.emit_unwind_iter_close((uint)li);
                     }
                 }
                 // Use deferred patching so the continue target can be updated

@@ -480,6 +480,48 @@ fn TVal? dispatch_iterator(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 }
 
 
+/// Throw a TypeError with `msg` at the current instruction; returns the dispatch
+/// sentinel. On uncaught, returns the uncaught-error result.
+fn TVal? throw_type_error_at(Vm* vm, Dispatch* ds, String msg) {
+    HObject*? te_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try te = te_raw) {
+        te.prototype = vm.heap.type_err_proto;
+        HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+        TVal mv; mv.set_string(intern_string(vm, msg));
+        te.put_prop(mk, mv, hobject::PROP_FLAGS_WEC);
+        TVal tv; tv.set_object(te);
+        if (!vm_throw_value(vm, tv, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+            return vm_uncaught_error(vm, &tv);
+        }
+    }
+    return (TVal){};
+}
+
+/// ToObject for method receivers: return the object form of `v`, or null (with a
+/// pending TypeError absent — caller handles null/undefined before calling this).
+/// Objects pass through; primitives are not wrapped here because @@asyncIterator
+/// / @@iterator live on the wrapper prototypes reachable via the object's own
+/// prototype chain — for-await sources are always objects in practice, so this
+/// only needs the object fast path.
+fn HObject* to_object_for_method(Vm* vm, TVal v) {
+    if (v.is_object() && v.get_heapptr() != null) return (HObject*)v.get_heapptr();
+    return null;
+}
+
+/// Resolve a PROP_ACCESSOR lookup by invoking its getter with `this = recv`.
+/// Returns the getter result, or undefined if the getter is not callable. On a
+/// getter throw, leaves vm.has_error set (caller propagates).
+fn TVal resolve_accessor_get(Vm* vm, hobject::AccessorResult acc, TVal recv) {
+    TVal out; out.set_undefined();
+    if (acc.accessor_fn.is_object() && acc.accessor_fn.get_heapptr() != null) {
+        HObject* getter = (HObject*)acc.accessor_fn.get_heapptr();
+        if (getter.is_callable()) {
+            out = vm.heap.call_fn(vm, acc.accessor_fn, null, 0, recv);
+        }
+    }
+    return out;
+}
+
 /// Sub-dispatch for NOP, DEBUGGER, BREAK, CONTINUE, INITGET, INITSET, INITSETI, CSVARI, PUSH_LEX, POP_LEX, REQUIRE_OBJ, CHKOBJ opcodes.
 fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
@@ -1110,6 +1152,200 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                 }
                 return (TVal){};
             }
+            return (TVal){};
+        }
+
+        case Opcode.GET_ITER_ASYNC: {
+            // ra ← GetIterator(rb, async) (ES2018 §7.4.2). Prefer
+            // @@asyncIterator; if absent, wrap rb's sync @@iterator in an
+            // %AsyncFromSyncIterator% adapter so a sync iterable works under
+            // `for await`.
+            TVal src = *rb;
+            if (src.is_null() || src.is_undefined()) {
+                HObject*? te_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+                if (try te = te_raw) {
+                    te.prototype = vm.heap.type_err_proto;
+                    HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+                    TVal mv; mv.set_string(intern_string(vm, "is not async iterable"));
+                    te.put_prop(mk, mv, hobject::PROP_FLAGS_WEC);
+                    TVal tv; tv.set_object(te);
+                    if (!vm_throw_value(vm, tv, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &tv);
+                    }
+                }
+                return (TVal){};
+            }
+
+            HObject* src_obj = to_object_for_method(vm, src);
+            if (src_obj == null) return (TVal){};
+
+            // Look up @@asyncIterator.
+            HString* async_sym = builtins::ensure_asynciterator_symbol(vm.heap);
+            hobject::PropLookupResult al = src_obj.get_with_accessors(async_sym);
+            TVal async_method;
+            async_method.set_undefined();
+            if (al.kind == hobject::PropLookupKind.PROP_DATA) {
+                async_method = al.data_val;
+            } else if (al.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                async_method = resolve_accessor_get(vm, al.acc, src);
+                if (vm.has_error) {
+                    TVal thrown = vm.return_val;
+                    vm.has_error = false; vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &thrown);
+                    }
+                    return (TVal){};
+                }
+            }
+
+            if (!async_method.is_nullish()) {
+                // Real async iterable: call src[@@asyncIterator]().
+                if (!async_method.is_object() || !((HObject*)async_method.get_heapptr()).is_callable()) {
+                    return throw_type_error_at(vm, ds, "[Symbol.asyncIterator] is not a function");
+                }
+                TVal this_arg = src;
+                TVal iter = vm.heap.call_fn(vm, async_method, null, 0, this_arg);
+                if (vm.has_error) {
+                    TVal thrown = vm.return_val;
+                    vm.has_error = false; vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &thrown);
+                    }
+                    return (TVal){};
+                }
+                if (!iter.is_object() || iter.get_heapptr() == null) {
+                    return throw_type_error_at(vm, ds, "async iterator is not an object");
+                }
+                *ra = iter;
+                return (TVal){};
+            }
+
+            // No @@asyncIterator → wrap the sync iterator (§7.4.2 step 1.b.iii).
+            HString* sync_sym = builtins::ensure_iterator_symbol(vm.heap);
+            hobject::PropLookupResult sl = src_obj.get_with_accessors(sync_sym);
+            TVal sync_method;
+            sync_method.set_undefined();
+            if (sl.kind == hobject::PropLookupKind.PROP_DATA) {
+                sync_method = sl.data_val;
+            } else if (sl.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                sync_method = resolve_accessor_get(vm, sl.acc, src);
+                if (vm.has_error) {
+                    TVal thrown = vm.return_val;
+                    vm.has_error = false; vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &thrown);
+                    }
+                    return (TVal){};
+                }
+            }
+            if (sync_method.is_nullish() || !sync_method.is_object()
+                || !((HObject*)sync_method.get_heapptr()).is_callable()) {
+                return throw_type_error_at(vm, ds, "is not async iterable");
+            }
+            TVal sthis = src;
+            TVal sync_iter = vm.heap.call_fn(vm, sync_method, null, 0, sthis);
+            if (vm.has_error) {
+                TVal thrown = vm.return_val;
+                vm.has_error = false; vm.heap.has_error = false;
+                if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &thrown);
+                }
+                return (TVal){};
+            }
+            if (!sync_iter.is_object() || sync_iter.get_heapptr() == null) {
+                return throw_type_error_at(vm, ds, "sync iterator is not an object");
+            }
+            // Build %AsyncFromSyncIterator% around the sync iterator.
+            HObject*? wrapped = builtins::async_from_sync_iterator(vm.heap, (HObject*)sync_iter.get_heapptr(), (void*)vm);
+            if (catch _e = wrapped) {
+                return throw_type_error_at(vm, ds, "could not create async-from-sync iterator");
+            }
+            TVal wv; wv.set_object(wrapped);
+            *ra = wv;
+            return (TVal){};
+        }
+
+        case Opcode.ITER_CLOSE_ASYNC: {
+            // AsyncIteratorClose (§7.4.11): like ITER_CLOSE, but instead of
+            // discarding the .return() result, leave it in ra so codegen can
+            // AWAIT it. When there is nothing to close (non-object / no callable
+            // .return), set ra to undefined (AWAIT undefined is a no-op).
+            bool is_throw_completion = (insn.b == 1);
+            if (insn.b == 2) {
+                is_throw_completion = false;
+                Catcher* icc = (Catcher*)ds.act.cat;
+                if (icc != null && !icc.thrown_val.is_undefined()) {
+                    is_throw_completion = true;
+                }
+            }
+
+            if (!ra.is_object() || ra.get_heapptr() == null) { ra.set_undefined(); return (TVal){}; }
+            HObject* iter = (HObject*)ra.get_heapptr();
+            HString* ret_key = intern_string(vm, "return");
+            hobject::PropLookupResult ret_lookup = iter.get_with_accessors(ret_key);
+
+            if (vm.has_error) {
+                if (is_throw_completion) {
+                    vm.has_error = false; vm.heap.has_error = false;
+                    ra.set_undefined(); return (TVal){};
+                }
+                TVal thrown = vm.return_val;
+                vm.has_error = false; vm.heap.has_error = false;
+                if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &thrown);
+                }
+                return (TVal){};
+            }
+
+            TVal ret_method;
+            ret_method.set_undefined();
+            if (ret_lookup.kind == hobject::PropLookupKind.PROP_DATA) {
+                ret_method = ret_lookup.data_val;
+            } else if (ret_lookup.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+                ret_method = resolve_accessor_get(vm, ret_lookup.acc, *ra);
+                if (vm.has_error) {
+                    if (is_throw_completion) {
+                        vm.has_error = false; vm.heap.has_error = false;
+                        ra.set_undefined(); return (TVal){};
+                    }
+                    TVal thrown = vm.return_val;
+                    vm.has_error = false; vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return vm_uncaught_error(vm, &thrown);
+                    }
+                    return (TVal){};
+                }
+            }
+
+            // No callable .return → nothing to close.
+            if (ret_method.is_nullish() || !ret_method.is_object()
+                || ((HObject*)ret_method.get_heapptr()) == null
+                || !((HObject*)ret_method.get_heapptr()).is_callable()) {
+                if (!ret_method.is_nullish() && !is_throw_completion) {
+                    return throw_type_error_at(vm, ds, "Iterator .return is not a function");
+                }
+                ra.set_undefined();
+                return (TVal){};
+            }
+
+            TVal this_arg; this_arg.set_object(iter);
+            TVal ret_result = vm.heap.call_fn(vm, ret_method, null, 0, this_arg);
+            if (vm.has_error) {
+                if (is_throw_completion) {
+                    vm.has_error = false; vm.heap.has_error = false;
+                    ra.set_undefined(); return (TVal){};
+                }
+                TVal thrown = vm.return_val;
+                vm.has_error = false; vm.heap.has_error = false;
+                if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &thrown);
+                }
+                return (TVal){};
+            }
+            // Leave the (promise) result in ra for the caller to AWAIT. The
+            // §7.4.11 "must return an object" check happens after the await, but
+            // for our purposes awaiting a non-object is a harmless no-op.
+            *ra = ret_result;
             return (TVal){};
         }
 

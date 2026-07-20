@@ -497,6 +497,12 @@ enum Builtin : uint {
     BIGINT_PROTO_TOSTRING,        // BigInt.prototype.toString([radix])
     BIGINT_PROTO_VALUEOF,         // BigInt.prototype.valueOf()
     BIGINT_PROTO_TOLOCALESTRING,  // BigInt.prototype.toLocaleString()
+    // --- %AsyncFromSyncIteratorPrototype% (plan 057, ES2018 §27.1.4) ---
+    ASYNC_FROM_SYNC_NEXT,           // %AsyncFromSyncIteratorPrototype%.next(value)
+    ASYNC_FROM_SYNC_RETURN,         // %AsyncFromSyncIteratorPrototype%.return(value)
+    ASYNC_FROM_SYNC_THROW,          // %AsyncFromSyncIteratorPrototype%.throw(value)
+    ASYNC_FROM_SYNC_VALUE_UNWRAP,   // native fulfill reaction: builds {value, done}
+    ASYNC_FROM_SYNC_REJECT_FORWARD, // native reject reaction: forwards rejection
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2235,6 +2241,12 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.BIGINT_AS_UINTN.ordinal: return { "asUintN", 2 };
         case Builtin.BIGINT_PROTO_TOSTRING.ordinal: return { "toString", 0 };
         case Builtin.BIGINT_PROTO_VALUEOF.ordinal: return { "valueOf", 0 };
+        // %AsyncFromSyncIteratorPrototype%
+        case Builtin.ASYNC_FROM_SYNC_NEXT.ordinal: return { "next", 1 };
+        case Builtin.ASYNC_FROM_SYNC_RETURN.ordinal: return { "return", 1 };
+        case Builtin.ASYNC_FROM_SYNC_THROW.ordinal: return { "throw", 1 };
+        case Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal: return { "", 1 };
+        case Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal: return { "", 1 };
         default: return { "", -1 };
     }
 }
@@ -3134,6 +3146,11 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.BIGINT_AS_UINTN.ordinal]             = &builtin_bigint_as_uintn,
     [Builtin.BIGINT_PROTO_TOSTRING.ordinal]       = &builtin_bigint_proto_toString,
     [Builtin.BIGINT_PROTO_VALUEOF.ordinal]        = &builtin_bigint_proto_valueOf,
+    [Builtin.ASYNC_FROM_SYNC_NEXT.ordinal]           = &builtin_async_from_sync_next,
+    [Builtin.ASYNC_FROM_SYNC_RETURN.ordinal]         = &builtin_async_from_sync_return,
+    [Builtin.ASYNC_FROM_SYNC_THROW.ordinal]          = &builtin_async_from_sync_throw,
+    [Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal]   = &builtin_async_from_sync_value_unwrap,
+    [Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal] = &builtin_async_from_sync_reject_forward,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3454,6 +3471,10 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // built-in iterators, providing [Symbol.iterator]() that returns `this`.
     if (!register_iterator_prototype(heap)) return false;
 
+    // Register %AsyncFromSyncIteratorPrototype% (ES2018 §27.1.4) — wraps a
+    // sync iterator so `for await` can drive it.
+    if (!register_async_from_sync_iterator_prototype(heap)) return false;
+
     // Register TypedArray constructors (Int8Array, Uint8Array, etc.)
     if (!register_typed_array_constructors(global_env, heap)) return false;
 
@@ -3480,6 +3501,7 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.promise_proto != null) heap.promise_proto.prototype = heap.object_proto;
     if (heap.generator_proto != null) heap.generator_proto.prototype = heap.object_proto;
     if (heap.iterator_proto != null)  heap.iterator_proto.prototype = heap.object_proto;
+    if (heap.async_from_sync_iter_proto != null) heap.async_from_sync_iter_proto.prototype = heap.object_proto;
 
     // Wire constructor functions' [[Prototype]] to Function.prototype.
     // Constructor functions (Object, Number, Function, etc.) are HObjects

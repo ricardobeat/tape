@@ -642,6 +642,20 @@ enum Opcode : char {
     /// .return method (allocated by the VM); B = C on exit.
     ITER_CLOSE,
 
+    /// `A ← GetIterator(reg B, async)` (ES2018 §7.4.2 for-await). Reads
+    /// B[@@asyncIterator]; if absent, reads B[@@iterator], calls it, and wraps
+    /// the sync iterator in an %AsyncFromSyncIterator% adapter so a plain sync
+    /// iterable works under `for await`. Calls the chosen method and stores the
+    /// resulting (async) iterator object in A. A-B format (C=0).
+    GET_ITER_ASYNC,
+
+    /// AsyncIteratorClose (ES2018 §7.4.11): like ITER_CLOSE but leaves the
+    /// `.return()` result in register A so codegen can AWAIT it before
+    /// propagating the completion. If A is not an object or has no callable
+    /// `.return`, A is set to undefined (nothing to await). B encodes completion
+    /// type exactly as ITER_CLOSE (0=non-throw, 1=throw-suppress, 2=auto).
+    ITER_CLOSE_ASYNC,
+
     /// `IsConstructor(A)` — throw TypeError if register A is not a constructor.
     /// Used at class `extends` time (ES2022 §15.7.14 step 5.f).
     /// A-only format: A=value_reg, B=0, C=0.
@@ -789,6 +803,8 @@ case PUTLEX:     return A_BC;
         case GETPROPC2:  return ABC;
         case REQUIRE_OBJ: return ABC;
         case ITER_CLOSE: return ABC;
+        case GET_ITER_ASYNC:   return ABC;
+        case ITER_CLOSE_ASYNC: return ABC;
         case CHKOBJ:     return ABC;
         case CHKCTOR:    return ABC;
         case CHK_PROT:   return ABC;

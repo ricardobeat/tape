@@ -3812,6 +3812,8 @@ fn TVal? Vm.run(Vm* vm) {
         case Opcode.REQUIRE_OBJ:
         case Opcode.CHKOBJ:
         case Opcode.ITER_CLOSE:
+        case Opcode.GET_ITER_ASYNC:
+        case Opcode.ITER_CLOSE_ASYNC:
         case Opcode.CHKCTOR:
         case Opcode.CHK_PROT:
         case Opcode.NEW_PRIV_SYM:
