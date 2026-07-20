@@ -212,6 +212,7 @@ SKIP_FILES = {
     # lex_env split, this-binding, (0,eval) direct-eval detection);
     # removed from this list.
     "language/eval-code/indirect/always-non-strict.js",  # `with ({}) {}` — unsupported (AGENTS.md)
+    "language/comments/hashbang/use-strict.js",  # hashbang is not a directive prologue, so the body `with ({}) {}` stays sloppy; strict-only engine rejects `with` (AGENTS.md)
     "language/eval-code/indirect/var-env-var-init-global-exstng.js",  # needs value-write to preserve an EXISTING global prop's configurable=false while a sibling case (function redecl over a configurable prop) needs a full descriptor reset — same opcode, no way to distinguish yet
     "language/eval-code/indirect/var-env-func-init-multi.js",
     "language/eval-code/indirect/var-env-func-init-global-update-non-configurable.js",

@@ -958,15 +958,23 @@ fn void? CompilerContext.var_declaration(&self) {
             // `yield`/`await` in non-generator / non-module contexts. We're
             // strict-only but still support script-level `await`/`yield`.
             Token name_tok;
+            // `await`/`yield` reach here only when the context already permits
+            // them as identifiers, so the context-blind is_restricted_name
+            // check below must not re-reject them — it applies to the plain
+            // Identifier path only. `await` is an identifier only outside a
+            // module AND outside an async function/arrow (§13.1.1); `yield`
+            // only outside a generator.
+            bool ctx_keyword_ident = false;
             if (next == TokenType.IDENTIFIER) {
                 name_tok = self.advance()!;
-            } else if ((next == TokenType.AWAIT && !self.is_module) ||
+            } else if ((next == TokenType.AWAIT && !self.is_module && !self.is_async) ||
                        (next == TokenType.YIELD && !self.is_generator)) {
                 name_tok = self.advance()!;
+                ctx_keyword_ident = true;
             } else {
                 return COMPILE_ERROR~;
             }
-            if (is_restricted_name(name_tok.str_value)) {
+            if (!ctx_keyword_ident && is_restricted_name(name_tok.str_value)) {
                 return self.fail("reserved word cannot be used as a binding identifier")~;
             }
             ushort reg;
