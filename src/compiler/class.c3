@@ -116,7 +116,7 @@ fn CompiledFunction*? make_default_constructor(Heap* hp, bool has_super, char[] 
 }
 
 /// Parse a class declaration: `class Name [extends Base] { body }`
-fn void? CompilerContext.class_declaration(&self) {
+fn void? CompilerContext.class_declaration(&self, char[]* out_name = null) {
     // Capture class source start before consuming `class` keyword.
     self.lexer.refresh_token_start();
     uint class_decl_src_start = self.lexer.token_start;
@@ -133,6 +133,9 @@ fn void? CompilerContext.class_declaration(&self) {
     } else {
         return COMPILE_ERROR~;
     }
+    // Surface the bound class name to callers (e.g. `export class Foo {}`,
+    // which must register `Foo` as an export without re-parsing the header).
+    if (out_name != null) *out_name = name_tok.str_value;
 
     // ES6 §14.5.14 Runtime Semantics: ClassDefinitionEvaluation creates a
     // fresh lexical environment (classScope) as a child of the current

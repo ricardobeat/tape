@@ -4489,16 +4489,13 @@ fn void? CompilerContext.export_declaration(&self) {
 
     // export class Foo {}
     if (tt == TokenType.CLASS) {
-        // class_declaration() expects CLASS already consumed, but we need the name first.
-        // Read the name, then put tokens back and call class_declaration().
-        // Peek ahead for the class name
-        Token saved_class = self.advance()!; // consume CLASS
-        Token name_tok = self.expect(TokenType.IDENTIFIER)!;
-        // Put both back so class_declaration can re-consume them
-        self.lexer.pushback(name_tok);
-        self.lexer.pushback(saved_class);
-        self.class_declaration()!;
-        mod_register_export(mod, name_tok.str_value, name_tok.str_value, false, 0, true);
+        // class_declaration() consumes `class` + the name itself; ask it to
+        // report the bound name via out_name so we can register the export.
+        // (The lexer has only a single-token pushback slot, so the old
+        // read-name-then-push-both-back approach corrupted the token stream.)
+        char[] class_name;
+        self.class_declaration(&class_name)!;
+        mod_register_export(mod, class_name, class_name, false, 0, true);
         self.match(TokenType.SEMICOLON);
         return;
     }
