@@ -20,19 +20,12 @@ import duktape::lexer;
 /// Function(p1, p2, ..., pn, body) — creates a new function dynamically.
 /// Called as function or constructor, behavior is identical per ES5 §15.3.1.
 fn void builtin_function(BuiltinContext* ctx) {
-    // Per ES5 §15.3.1: when Function is called as a function (not via `new`),
-    // the thisArg argument must be IGNORED. Function() and `new Function()`
-    // produce identical results — both create a fresh function object.
-    // ctx.is_constructor is false on Function.call(...)/Function.apply(...)/plain
-    // Function() and true on `new Function(...)`. ctx.this_val carries the
-    // thisArg; per spec we discard it and proceed as if called via `new`.
-    if (!ctx.is_constructor) {
-        // Defensive: ensure thisArg doesn't leak into the new function's scope.
-        // ctx.this_val is irrelevant below — var_env/lex_env come from the
-        // global env (set unconditionally on the new function below).
-        void* ignored_this = (void*)ctx.this_val.get_heapptr();
-        (void)ignored_this;
-    }
+    // Per ES5 §15.3.1: Function() called as a plain function and `new Function()`
+    // are identical — both create a fresh function object and the thisArg is
+    // ignored. Nothing below reads ctx.this_val (the new function's var_env/
+    // lex_env come unconditionally from the global env), so there is no thisArg
+    // path to suppress; called-as-function vs. called-as-constructor need no
+    // distinction here.
 
     // Collect the body string (last arg) and param names (preceding args).
     // Per ES5 §15.3.2.1:

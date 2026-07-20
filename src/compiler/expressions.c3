@@ -2081,8 +2081,11 @@ fn ushort? CompilerContext.new_expr(&self) {
                     self.last_member_prop_reg = priv_prop_reg;
                     self.call_prop_obj_reg = ctor_reg;
                 }
+                // priv_result is the freshly-allocated top register; priv_prop_reg
+                // sits directly below it and stays live for postfix PUTPROP (same
+                // reasoning as member_expr's DOT branch — free_reg is a no-op below
+                // the top, and next_reg already == priv_result + 1 here).
                 ctor_reg = priv_result;
-                self.next_reg = ctor_reg + 1;
                 continue;
             }
             Token? prop_name_opt = self.lexer.next_token();
