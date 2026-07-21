@@ -728,6 +728,70 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
         int di = ctor.find_prop_idx(key_downstream);
         if (di < 0) return undef;  // malformed bound fn
         TVal target_tv = ctor.prop_values()[di];
+
+        // ES2015 §9.4.1.2: Extract bound arguments and prepend them.
+        HString* key_args = builtins::builtin_intern_string(heap,
+            { '\x00', 'b', 'o', 'u', 'n', 'd', '_', 'a', 'r', 'g', 's' });
+        if (key_args == null) return undef;
+        int ai = ctor.find_prop_idx(key_args);
+
+        uint bound_argc = 0;
+        TVal* bound_args = null;
+        if (ai >= 0) {
+            TVal args_val = ctor.prop_values()[ai];
+            if (args_val.is_object()) {
+                HObject* arr = (HObject*)args_val.get_heapptr();
+                if (arr != null && arr.get_class() == hobject::ObjClass.ARRAY) {
+                    HString* len_key = builtins::builtin_intern_string(heap, "length");
+                    if (len_key != null) {
+                        TVal? lv = arr.get_prop_proto(len_key);
+                        if (try l = lv) {
+                            if (l.is_fastint()) {
+                                bound_argc = (uint)l.get_fastint();
+                            } else if (l.is_number()) {
+                                bound_argc = (uint)l.get_number();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        uint total_argc = bound_argc + nargs;
+        TVal* combined_args = null;
+        if (total_argc > 0) {
+            combined_args = (TVal*)heap.alloc_func(heap.heap_udata, TVal::size * total_argc);
+            if (combined_args == null) return undef;
+        }
+        defer if (combined_args != null) heap.free_func(heap.heap_udata, combined_args);
+
+        // Copy bound args
+        uint combined_idx = 0;
+        if (ai >= 0) {
+            TVal args_val = ctor.prop_values()[ai];
+            if (args_val.is_object()) {
+                HObject* arr = (HObject*)args_val.get_heapptr();
+                if (arr != null && arr.get_class() == hobject::ObjClass.ARRAY) {
+                    for (uint i = 0; i < bound_argc && combined_idx < total_argc; i++) {
+                        char[20] buf;
+                        int n = (int)(io::bprintf(&buf, "%d", i) ?? buf[:0]).len;
+                        if (n > 0 && n < 20) {
+                            HString* ek = builtins::builtin_intern_string(heap, buf[:n]);
+                            if (ek != null) {
+                                TVal? e = arr.get_prop_proto(ek);
+                                if (try ev = e) combined_args[combined_idx++] = ev;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Append call args
+        for (uint i = 0; i < nargs && combined_idx < total_argc; i++) {
+            combined_args[combined_idx++] = args[i];
+        }
+
         TVal target_as_new = new_target;
         // SameValue(F, newTarget): if the caller passed the bound fn itself
         // as newTarget, swap it for the underlying target so downstream's
@@ -736,7 +800,7 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
         if (builtins::same_value(f_as_tv, new_target)) {
             target_as_new = target_tv;
         }
-        return vm_construct_fn_impl(vm_ptr, target_tv, args, nargs, target_as_new);
+        return vm_construct_fn_impl(vm_ptr, target_tv, combined_args, combined_idx, target_as_new);
     }
 
     // Allocate a fresh plain object as `this`.
