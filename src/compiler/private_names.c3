@@ -291,7 +291,7 @@ fn void? CompilerContext.prescan_private_names(&self) {
     }
 
     uint depth = 1;  // inside the class body's own braces
-    uint template_depth = 0;  // open template substitution levels
+    TemplateScan tscan;  // template-aware `}` classification (see template_scan.c3)
 
     // Rolling state for the CURRENT class element, reset at every element
     // boundary (`;` at depth 1, or depth returning to 1 after a nested
@@ -310,21 +310,20 @@ fn void? CompilerContext.prescan_private_names(&self) {
         if (tok.type == TokenType.TEMPLATE_HEAD) {
             // The lexer consumed `...${; expression tokens follow, then a
             // RBRACE that belongs to the template substitution, not a block.
-            template_depth++;
-        } else if (tok.type == TokenType.RBRACE && template_depth > 0) {
-            Token? part_opt = self.lexer.scan_template_after_expr();
-            if (catch _e3 = part_opt) break;
-            if (part_opt.type != TokenType.TEMPLATE_MIDDLE) {
-                template_depth--;
-            }
+            tscan.on_template_head();
         } else if (tok.type == TokenType.LBRACE) {
+            tscan.on_lbrace();
             depth++;
         } else if (tok.type == TokenType.RBRACE) {
-            depth--;
-            if (depth == 1) {
-                // Closed a method body / computed-key function: element done.
-                elem_saw_static = false;
-                elem_get_set = 0;
+            TemplateBrace tb = tscan.classify_rbrace(self.lexer);
+            if (tb == TemplateBrace.LEX_ERROR) break;
+            if (tb == TemplateBrace.BLOCK) {
+                depth--;
+                if (depth == 1) {
+                    // Closed a method body / computed-key function: element done.
+                    elem_saw_static = false;
+                    elem_get_set = 0;
+                }
             }
         } else if (depth == 1 && tok.type == TokenType.SEMICOLON) {
             // Empty class element / end of a field declaration.
