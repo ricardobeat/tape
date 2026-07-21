@@ -3244,6 +3244,13 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     arrow_ctx.private_scope_start = self.private_scope_start;
     arrow_ctx.private_scope_depth = self.private_scope_depth;
 
+    // Propagate eval context flags (for new.target checks in eval context).
+    // Arrow functions must respect the parent eval context's restrictions
+    // on new.target — if the arrow is in an indirect/global eval, new.target
+    // is a SyntaxError even though the arrow doesn't have its own [[NewTarget]].
+    arrow_ctx.eval_mode = self.eval_mode;
+    arrow_ctx.eval_direct_in_function = self.eval_direct_in_function;
+
     // Parse parameter list from source (including defaults and rest)
     // Note: lexer is already past '(' when called from parse_arrow_function_reparse
     ushort arg_count = 0;
@@ -3709,6 +3716,13 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner(&self, char[]* params,
     arrow_ctx.adopt_private_names(self);
     arrow_ctx.private_scope_start = self.private_scope_start;
     arrow_ctx.private_scope_depth = self.private_scope_depth;
+
+    // Propagate eval context flags (for new.target checks in eval context).
+    // Arrow functions must respect the parent eval context's restrictions
+    // on new.target — if the arrow is in an indirect/global eval, new.target
+    // is a SyntaxError even though the arrow doesn't have its own [[NewTarget]].
+    arrow_ctx.eval_mode = self.eval_mode;
+    arrow_ctx.eval_direct_in_function = self.eval_direct_in_function;
 
     // Register parameters
     ushort formal_count = param_count;
