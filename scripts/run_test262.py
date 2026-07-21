@@ -283,14 +283,6 @@ SKIP_FILES = {
     # Defer until we revisit super-in-eval plumbing.
     "language/expressions/super/prop-dot-obj-val-from-eval.js",
     "language/expressions/super/prop-expr-obj-val-from-eval.js",
-    # B54 — arrow-body-private-indirect-eval-err-contains-newtarget: tests
-    # that `new.target` in indirect eval inside a class field initializer
-    # (specifically an arrow function body inside the eval string) is a
-    # SyntaxError. Our parser/compiler doesn't enforce the indirect-eval
-    # new.target static rule for class-field-initializer contexts; it
-    # would need to lex-time detect the arrow-body template. Defer.
-    "language/expressions/class/elements/arrow-body-private-indirect-eval-err-contains-newtarget.js",
-    "language/statements/class/elements/arrow-body-private-indirect-eval-err-contains-newtarget.js",
     # B54 — private-fieldset-evaluation-order-3 + private-class-field-on-
     # nonextensible-return-override. These rely on the constructor's
     # field-init/brand stamp propagating to the override object when
