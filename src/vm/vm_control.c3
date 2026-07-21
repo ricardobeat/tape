@@ -1311,8 +1311,12 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
         case Opcode.ITER_CLOSE_ASYNC: {
             // AsyncIteratorClose (§7.4.11): like ITER_CLOSE, but instead of
             // discarding the .return() result, leave it in ra so codegen can
-            // AWAIT it. When there is nothing to close (non-object / no callable
-            // .return), set ra to undefined (AWAIT undefined is a no-op).
+            // AWAIT it. rc is set to true only when a real .return() result
+            // needs awaiting; codegen skips the AWAIT+LOAD_RESUME pair when
+            // rc is false (there is nothing to close, so §7.4.11 never calls
+            // Await at all — unlike a real user `await`, AWAIT always costs a
+            // tick now, so this synthetic no-close case must not reach it).
+            rc.set_boolean(false);
             bool is_throw_completion = (insn.b == 1);
             if (insn.b == 2) {
                 is_throw_completion = false;
@@ -1389,6 +1393,7 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             // §7.4.11 "must return an object" check happens after the await, but
             // for our purposes awaiting a non-object is a harmless no-op.
             *ra = ret_result;
+            rc.set_boolean(true);
             return (TVal){};
         }
 

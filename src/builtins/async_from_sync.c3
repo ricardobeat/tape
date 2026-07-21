@@ -86,15 +86,22 @@ fn HObject*? async_from_sync_continuation(Heap* heap, void* vm, TVal result_valu
     if (catch err = outer_raw) return null;
     HObject* outer = outer_raw;
 
-    HObject*? value_promise_raw = promise_create(heap);
+    // ES2018 §27.1.4.4 step: "Let valueWrapper be PromiseResolve(%Promise%,
+    // value)" — the full PromiseResolve abstract operation, which performs an
+    // observable `Get(value, "constructor")` lookup when value is already a
+    // Promise (returning it unchanged when the constructor is %Promise%)
+    // before falling back to the internal [[Resolve]] procedure (thenable
+    // coercion / plain fulfillment) for every other case.
+    HObject*? value_promise_raw = promise_resolve_default_ctor(heap, vm, result_value);
+    if (heap.has_error) {
+        TVal ctor_err = heap.error_value;
+        heap.has_error = false;
+        promise_settle(outer, PROMISE_REJECTED, &ctor_err, heap);
+        promise_trigger_reactions(outer, heap, vm);
+        return outer;
+    }
     if (catch err = value_promise_raw) return null;
     HObject* value_promise = value_promise_raw;
-    // ES2018 §27.1.4.4 step 8: Perform ! Call(promiseCapability.[[Resolve]], undefined, « value »).
-    // promise_resolve_with_value implements the full [[Resolve]] procedure
-    // (ES6 §25.4.1.3.2 steps 7-13), including thenable coercion, so a
-    // synchronously- or asynchronously-thenable result.value is genuinely
-    // awaited rather than passed through unresolved.
-    promise_resolve_with_value(value_promise, result_value, heap, vm);
 
     HObject*? fulfill_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = fulfill_raw) return null;

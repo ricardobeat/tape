@@ -475,6 +475,37 @@ fn void promise_resolve_with_value(HObject* promise, TVal value, Heap* heap, voi
     promise_adopt_native(heap, vm, wrapper_raw, promise);
 }
 
+/// PromiseResolve(%Promise%, value) — ES2017 §25.4.4.5, specialised for the
+/// default Promise constructor (the only constructor Await ever uses, per
+/// §27.7.5.3 Await). Performs the observable `Get(value, "constructor")`
+/// lookup when value is already a Promise (returning it unchanged if the
+/// constructor is %Promise%), otherwise creates a fresh Promise and resolves
+/// it with value via the ordinary Resolve procedure. Errors (a throwing
+/// `constructor` getter) are reported through heap.has_error/heap.error_value,
+/// matching the other heap-error-channel helpers in this file.
+fn HObject*? promise_resolve_default_ctor(Heap* heap, void* vm, TVal value) {
+    if (value.is_object() && value.get_heapptr() != null) {
+        HObject* value_obj = (HObject*)value.get_heapptr();
+        if (value_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+            HString* constructor_key = builtin_intern_string(heap, "constructor");
+            if (constructor_key == null) return null;
+            TVal value_ctor;
+            if (!promise_object_get(heap, vm, value_obj, constructor_key, &value_ctor)) {
+                return null;
+            }
+            if (value_ctor.is_object() && value_ctor.get_heapptr() != null &&
+                (HObject*)value_ctor.get_heapptr() == heap.promise_ctor) {
+                return value_obj;
+            }
+        }
+    }
+    HObject*? prom_raw = promise_create(heap);
+    if (catch err = prom_raw) return null;
+    HObject* promise = prom_raw;
+    promise_resolve_with_value(promise, value, heap, vm);
+    return promise;
+}
+
 fn void builtin_promise_resolve_callback(BuiltinContext* ctx) {
     Heap* heap = ctx.heap;
 

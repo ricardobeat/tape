@@ -2828,11 +2828,18 @@ fn uint? CompilerContext.emit_iter_step(&self, IterRec rec, ushort val_slot) {
 fn void CompilerContext.emit_iter_close(&self, IterRec rec, bool throw_variant) {
     if (rec.is_await) {
         // ITER_CLOSE_ASYNC leaves the .return() result in method_reg (or
-        // undefined when there is nothing to close); AWAIT settles it. AWAIT on
-        // undefined/non-thenable is a no-op, so the no-close case stays cheap.
-        self.emit_abc(Opcode.ITER_CLOSE_ASYNC, (uint)rec.method_reg, throw_variant ? 1 : 0, 0);
+        // undefined when there is nothing to close) and reports whether a
+        // real result needs awaiting in did_await_reg. §7.4.11 only calls
+        // Await when .return() was actually invoked — unlike a real user
+        // `await`, AWAIT always costs a microtask tick now, so the no-close
+        // case must skip it entirely rather than "awaiting undefined".
+        ushort did_await_reg = self.alloc_reg();
+        self.emit_abc(Opcode.ITER_CLOSE_ASYNC, (uint)rec.method_reg, throw_variant ? 1 : 0, (uint)did_await_reg);
+        uint skip_await = self.emit_cond_jump(Opcode.IF_FALSE, (uint)did_await_reg);
         self.emit_abc(Opcode.AWAIT, (uint)rec.method_reg, 0, 0);
         self.emit_abc(Opcode.LOAD_RESUME, (uint)rec.method_reg, 0, 0);
+        self.patch_jump(skip_await);
+        self.free_reg(did_await_reg);
         return;
     }
     self.emit_abc(Opcode.ITER_CLOSE, (uint)rec.method_reg, throw_variant ? 1 : 0, 0);
@@ -2924,13 +2931,16 @@ fn void? CompilerContext.emit_forof(&self, ForOfHead head, ushort src_reg, uint 
     int back_offset = (int)loop_start - (int)self.code_count - 1;
     self.emit(bytecode::make_sabc(Opcode.JUMP, back_offset));
 
-    // Exit path (done=true): pop the per-iter env, close on exhaustion.
+    // Exit path (done=true): pop the per-iter env. Per ES2022 §14.7.5.7
+    // ForIn/OfBodyEvaluation, a `nextResult.[[Done]]` of true ends the loop
+    // with a normal completion directly — IteratorClose/AsyncIteratorClose
+    // is only invoked for an abrupt completion out of the loop (break,
+    // throw, or a `return` inside the body), never on natural exhaustion.
     self.patch_jump(exit_jump);
     if (needs_per_iter_env) {
         self.emit_simple(Opcode.POP_LEX);
         self.cur_lex_depth--;
     }
-    self.emit_iter_close(rec, false);
     self.pop_loop();
 
     self.free_reg(val_slot);

@@ -141,79 +141,30 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
 
         case Opcode.AWAIT: {
             // AWAIT A — await the value in register A.
-            // If the value is not a thenable, continue (no-op).
-            // If the value is a settled Promise, extract the result.
-            // If the value is a pending Promise, suspend and resume later.
-            TVal await_val = ra[0];
-
-            // Not an object → not a thenable, continue
-            if (!await_val.is_object() || await_val.get_heapptr() == null) {
-                return (TVal){};
-            }
-
-            HObject* await_obj = (HObject*)await_val.get_heapptr();
-
-            // Non-Promise thenable: wrap in a Promise via the thenable protocol
-            if (await_obj.flags.obj_class != hobject::ObjClass.PROMISE) {
-                HObject*? wrapper_raw = builtins::promise_coerce_thenable(vm.heap, await_val, (void*)vm);
-                if (try HObject* wrapper = wrapper_raw) {
-                    if (wrapper != null) {
-                        await_val.set_object(wrapper);
-                        await_obj = wrapper;
-                    } else {
-                        // Not a thenable: await is a no-op for plain objects
-                        return (TVal){};
-                    }
-                } else {
-                    // Not a thenable (fault)
-                    return (TVal){};
-                }
-            }
-
-            // Check if it's a Promise
-            if (await_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
-                // Per ES2017 §25.5.5.3 / §27.7.5.3 Await, the runtime must
-                // always route the value through PromiseResolve(value) and
-                // attach a resume reaction via .then — even when value is an
-                // already-fulfilled Promise. The short-circuit at the prior
-                // implementer version (extract result synchronously, skip
-                // microtask) silently drops the [[Resolve]] `IsPromise` /
-                // `Get(x, "constructor")` lookup the spec mandates, and
-                // collapses the resume into the current tick. test262's
-                // `for-await-of/ticks-with-*-constructor-lookup-*.js`
-                // asserts that lookup; observed before fix:
-                //   ["pre", "loop", "post", "tick 1", "tick 2", ...]
-                // instead of
-                //   ["pre", "constructor", "tick 1", "loop",
-                //    "constructor", "tick 2", "post"].
-                //
-                // Re-enable the FULFILLED short-circuit (synchronous extract)
-                // for now — the spec-faithful path regresses phase 24
-                // (331 fails) because the test262_runner harness somehow
-                // interferes with the suspension path; see BACKLOG S6.
-                uint pstate = builtins::promise_get_state(await_obj, 0);
-                if (pstate == builtins::PROMISE_FULFILLED) {
-                    // Fulfilled: extract the value into the register
-                    TVal result = builtins::promise_get_result(await_obj);
-                    vm.heap.tval_copy_ref(&ra[0], &result);
-                    return (TVal){};
-                }
-                if (pstate == builtins::PROMISE_REJECTED) {
-                    // Rejected: throw the rejection reason.
-                    // If caught by try/catch, execution continues; otherwise
-                    // the error propagates (rejecting the async Promise if applicable).
-                    TVal reason = builtins::promise_get_result(await_obj);
-                    if (!vm_throw_value(vm, reason, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                        // No catcher — if async, reject the outer Promise
+            // Per ES2017 §25.5.5.3 / §27.7.5.3 Await, every awaited value —
+            // including non-objects and non-thenables — is routed through
+            // PromiseResolve(%Promise%, value) and a resume reaction is
+            // attached via .then. PromiseResolve performs an observable
+            // `Get(x, "constructor")` lookup when x is already a Promise,
+            // and .then always defers the reaction to a queued job, so
+            // every await costs exactly one microtask tick regardless of
+            // the value's type or settled state.
+            {
+                TVal await_val = ra[0];
+                HObject*? resolved_raw = builtins::promise_resolve_default_ctor(vm.heap, (void*)vm, await_val);
+                if (vm.heap.has_error) {
+                    TVal ctor_err = vm.heap.error_value;
+                    vm.heap.has_error = false;
+                    if (!vm_throw_value(vm, ctor_err, ds.act, &ds.curr_pc, &ds.needs_restart)) {
                         if ((ds.act.flags & ACT_FLAG_ASYNC) != 0 && ds.act.async_promise != null) {
-                            builtins::promise_settle(ds.act.async_promise, builtins::PROMISE_REJECTED, &reason, vm.heap);
+                            builtins::promise_settle(ds.act.async_promise, builtins::PROMISE_REJECTED, &ctor_err, vm.heap);
                             builtins::promise_trigger_reactions(ds.act.async_promise, vm.heap, (void*)vm);
                             decref_callee_regs(vm, ds.act);
                             vm.activation_count--;
                             if (vm.activation_count == 0) {
-                                TVal undef_val;
-                                undef_val.set_undefined();
-                                vm.heap.tval_copy_ref(&vm.return_val, &undef_val);
+                                TVal undef_val3;
+                                undef_val3.set_undefined();
+                                vm.heap.tval_copy_ref(&vm.return_val, &undef_val3);
                                 ds.halt = true;
                                 ds.halt_value = vm.return_val;
                                 return (TVal){};
@@ -221,33 +172,41 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                             ds.act = &vm.activations[vm.activation_count - 1];
                             vm.valstack_bottom = ds.act.bottom;
                             vm.valstack_top = ds.act.caller_valstack_top;
-                            CompiledFunction* caller_f = (CompiledFunction*)ds.act.func;
-                            if (caller_f != vm.current_func) {
-                                vm.current_func = caller_f;
-                                ds.code_base = caller_f.code;
-                                ds.code_count = caller_f.code_count;
+                            CompiledFunction* caller_f3 = (CompiledFunction*)ds.act.func;
+                            if (caller_f3 != vm.current_func) {
+                                vm.current_func = caller_f3;
+                                ds.code_base = caller_f3.code;
+                                ds.code_count = caller_f3.code_count;
                                 ds.code_end = ds.code_base + ds.code_count;
-                                ds.constants = caller_f.constants;
-                                ds.ic_base = (hobject::ICEntry*)caller_f.ic_entries;
-                                ds.var_ic_base = (hobject::VarICEntry*)caller_f.var_ic_entries;
-                                ds.nregs = caller_f.num_regs;
+                                ds.constants = caller_f3.constants;
+                                ds.ic_base = (hobject::ICEntry*)caller_f3.ic_entries;
+                                ds.var_ic_base = (hobject::VarICEntry*)caller_f3.var_ic_entries;
+                                ds.nregs = caller_f3.num_regs;
                             }
                             ds.curr_pc = ds.act.curr_pc;
                             ds.regs_base = ds.act.bottom;
                         } else {
-                            // Not an async frame (or its promise is missing):
-                            // an uncaught rejected await terminates execution.
-                            // Restarting here would rerun the frame from its
-                            // stale saved pc and loop forever.
-                            return vm_uncaught_error(vm, &reason);
+                            return vm_uncaught_error(vm, &ctor_err);
                         }
                     }
                     ds.needs_restart = true;
                     return (TVal){};
                 }
-                // Pending (pstate == 0): fall through to suspension below
+                if (catch _err = resolved_raw) {
+                    // OOM creating the resolved Promise: treat as a no-op
+                    // continuation, matching the OOM handling further below.
+                    return (TVal){};
+                }
+                HObject* await_obj = resolved_raw;
+                bool await_was_settled =
+                    builtins::promise_get_state(await_obj, 0) != builtins::PROMISE_PENDING;
 
-                // Pending Promise: suspend the async function
+                // Suspend the async function and attach a resume/reject
+                // reaction to the resolved Promise. If it is already settled,
+                // promise_trigger_reactions below enqueues the reaction as a
+                // microtask job (never invoked inline), matching .then's
+                // "always a queued job" semantics for both fulfilled and
+                // rejected Promises (PromiseReactionJob, ES2015+ §27.2.2.1).
                 // 1. Allocate GeneratorState for saving execution state
                 void* gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
                 if (gs_raw == null) {
@@ -385,6 +344,13 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 if (ff_key != null) rxn.put_prop(ff_key, resume_tv, hobject::PROP_FLAGS_WEC);
                 if (rj_key != null) rxn.put_prop(rj_key, reject_tv, hobject::PROP_FLAGS_WEC);
                 builtins::promise_add_reaction(await_obj, rxn, vm.heap);
+                if (await_was_settled) {
+                    // Promise was already fulfilled/rejected: enqueue the
+                    // reaction we just attached as a microtask job now,
+                    // since promise_trigger_reactions only fires at the
+                    // moment of settlement.
+                    builtins::promise_trigger_reactions(await_obj, vm.heap, (void*)vm);
+                }
 
                 // 5. Pop activation (suspend the async function)
                 decref_callee_regs(vm, ds.act);
@@ -420,11 +386,6 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 ds.needs_restart = true;
                 return (TVal){};
             }
-            // Unreachable: the thenable-wrap above ensures await_obj is
-            // always a PROMISE by this point.  The only way to reach here
-            // is via the alloc-failure `break` at line 227, which exits
-            // the case entirely (falling out of the switch).
-            return (TVal){};
         }
 
         case Opcode.YIELD: {

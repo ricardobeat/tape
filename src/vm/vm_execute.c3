@@ -661,8 +661,19 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                 result = cfn_gen_result_slot;
             }
 
-            // Drain microtasks after callback execution
-            vm.heap.drain_microtasks((void*)vm);
+            // Drain microtasks after callback execution, but only when this
+            // invocation is the outermost native→VM reentry: nesting deeper
+            // than one live activation means some other synchronous script
+            // or async-function frame is still mid-statement above us on the
+            // real call stack, and draining here would run its unrelated
+            // queued jobs (e.g. an unrelated top-level `.then()` chain) out
+            // of order relative to work that frame hasn't finished queuing
+            // yet. That outer frame's own eventual drain point (end of
+            // script, or its own return through this same path) still runs
+            // the queue once its synchronous work is done.
+            if (saved_act_count == 0) {
+                vm.heap.drain_microtasks((void*)vm);
+            }
 
             return result;
         }
