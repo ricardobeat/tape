@@ -613,8 +613,6 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
 
         if (self.check(TokenType.LBRACKET)) {
             self.advance()!;  // consume `[`
-            io::eprintf("DEBUG: bracket branch entered, next tok type=%d, line=%d col=%d\n", (int)self.peek_type(), (int)self.lexer.line, (int)self.lexer.col);
-            io::eprintf("DEBUG: is_generator=%d is_async=%d\n", (int)self.is_generator, (int)self.is_async);
             // ES2015 §14.5.13 step 1: a computed key whose *literal string value* is
             // "prototype" combined with `static` is an early SyntaxError (covered by
             // §14.5.1's "static method named prototype" rule — test262
@@ -895,12 +893,6 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             char[] fkey_slot = "";
             ushort fkey_reg = 0xFFFF;
             if (has_computed_key) {
-                if (computed_field_key_count >= self.private_class_id[self.private_scope_depth - 1]
-                    && self.private_scope_depth > 0) {
-                    // Unused capacity guard; falls back to a class-id-derived
-                    // unique name (the user can't have more than 64 class
-                    // bodies nested in this scope anyway).
-                }
                 uint class_id_f = self.private_scope_depth > 0
                     ? self.private_class_id[self.private_scope_depth - 1]
                     : 0;

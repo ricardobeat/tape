@@ -2530,8 +2530,11 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
         ProxyDesc pd;
         pd.has_value = desc_fields.has_value; pd.value = desc_vals[0];
         pd.has_writable = desc_fields.has_writable; pd.writable = desc_flags.writable;
-        pd.has_get = desc_fields.has_get; pd.getter = desc_vals[0];
-        pd.has_set = desc_fields.has_set; pd.setter = desc_vals[1];
+        // ArraySetLength only inspects the accessor PRESENCE flags (an
+        // accessor desc on "length" is rejected outright), so getter/setter
+        // stay zeroed.
+        pd.has_get = desc_fields.has_get;
+        pd.has_set = desc_fields.has_set;
         pd.has_enumerable = desc_fields.has_enumerable; pd.enumerable = desc_flags.enumerable;
         pd.has_configurable = desc_fields.has_configurable; pd.configurable = desc_flags.configurable;
         bool dok;
@@ -2978,8 +2981,9 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 ProxyDesc pd;
                 pd.has_value = has_value_in_desc_helper(ctx.heap, desc_obj); pd.value = desc_vals[0];
                 pd.has_writable = has_writable_in_desc_helper(ctx.heap, desc_obj); pd.writable = desc_flags.writable;
-                pd.has_get = has_get_in_desc_helper(ctx.heap, desc_obj); pd.getter = desc_vals[0];
-                pd.has_set = has_set_in_desc_helper(ctx.heap, desc_obj); pd.setter = desc_vals[1];
+                // Accessor PRESENCE flags only — see the defineProperty site.
+                pd.has_get = has_get_in_desc_helper(ctx.heap, desc_obj);
+                pd.has_set = has_set_in_desc_helper(ctx.heap, desc_obj);
                 pd.has_enumerable = has_enumerable_in_desc_helper(ctx.heap, desc_obj); pd.enumerable = desc_flags.enumerable;
                 pd.has_configurable = has_configurable_in_desc_helper(ctx.heap, desc_obj); pd.configurable = desc_flags.configurable;
                 bool dok;

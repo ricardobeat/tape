@@ -186,21 +186,19 @@ fn void class_initaccessor_set_name(Vm* vm, HObject* fn_obj, TVal* key_tval, cha
 }
 
 /// Shared INITPROP/INITPROPN body: define a data property with WEC flags
-/// using DefinePropertyOrThrow semantics — if the property already exists
-/// and is configurable, it is replaced; non-configurable existing properties
-/// are silently left untouched for object-literal use (caller has already
-/// coerced the key on computed-key paths via TOPROPKEY, so `get_prop_key`
-/// here is idempotent).
-///
-/// P7 class-field deviation: when called from the class-field initializer
-/// (CreateDataPropertyOrThrow, ES2022 §7.3.4 step 4 + §15.7.10 step 8.b)
-/// existing non-configurable properties MUST throw a TypeError (e.g.
-/// `class { static [x] = 42 }` where x="prototype" hits the class's
-/// non-configurable .prototype). The class-field callers set `is_class_field`
-/// to true and handle the throw themselves via the returned state — we
-/// return `false` here on the throw condition so the caller can do the
-/// vm_throw_error_fmt call (which needs the opcode handler's `ds` state).
-fn bool initprop_define(Vm* vm, HObject* hobj, TVal* key_val, TVal* val, bool is_class_field = false) {
+/// using CreateDataPropertyOrThrow semantics (ES2022 §7.3.4 step 4, also
+/// reached via §15.7.10 step 8.b for class fields) — if the property already
+/// exists and is configurable, it is replaced. An existing non-configurable
+/// property (e.g. `class { static [x] = 42 }` where x="prototype" hits the
+/// class's non-configurable .prototype) or a non-extensible receiver (e.g.
+/// `Object.freeze(this)` inside a sibling field initializer) must throw a
+/// TypeError: we return `false` so the opcode handler can do the
+/// vm_throw_error_fmt call (which needs its `ds` state). Object/array
+/// literals also route through here; their receivers are freshly allocated
+/// (always extensible, all props configurable), so the `false` paths are
+/// unreachable for them. Callers have already coerced the key on
+/// computed-key paths via TOPROPKEY, so `get_prop_key` here is idempotent.
+fn bool initprop_define(Vm* vm, HObject* hobj, TVal* key_val, TVal* val) {
     void* key = get_prop_key(vm, key_val);
     if (key == null) return true;
     int idx = hobj.find_prop_idx(key);
@@ -215,17 +213,14 @@ fn bool initprop_define(Vm* vm, HObject* hobj, TVal* key_val, TVal* val, bool is
             nf.configurable = true;
             nf.is_accessor = false;
             hobj.set_prop_flags((uint)idx, nf);
-        } else if (is_class_field) {
-            // Caller will throw TypeError.
+        } else {
+            // Existing non-configurable property — caller throws TypeError.
             return false;
         }
-        // non-configurable, object-literal: do nothing (silent)
     } else {
-        // CreateDataPropertyOrThrow (ES2022 §7.3.4): if O.[[Extensible]] is
-        // false (e.g. `Object.freeze(this)` inside a sibling field
-        // initializer), throw TypeError. The object-literal path silently
-        // drops (matches the legacy loose behavior).
-        if (is_class_field && !hobj.is_extensible()) {
+        // CreateDataPropertyOrThrow (ES2022 §7.3.4): non-extensible
+        // receiver — caller throws TypeError.
+        if (!hobj.is_extensible()) {
             return false;
         }
         hobj.put_prop(key, *val, hobject::PROP_FLAGS_WEC);
@@ -724,7 +719,7 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
                     }
                 }
 
-                if (!initprop_define(vm, hobj, rb, rc, true)) {
+                if (!initprop_define(vm, hobj, rb, rc)) {
                     HString* key_hs = (HString*)rb.get_heapptr();
                     char* key_str = key_hs != null ? key_hs.get_cstr() : (char*)"";
                     if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,
@@ -752,7 +747,7 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             // cases directly, so this only fires for computed keys.
             if (ra.is_object()) {
                 HObject* hobj = (HObject*)ra.get_heapptr();
-                if (!initprop_define(vm, hobj, rb, rc, true)) {
+                if (!initprop_define(vm, hobj, rb, rc)) {
                     HString* key_hs = (HString*)rb.get_heapptr();
                     char* key_str = key_hs != null ? key_hs.get_cstr() : (char*)"";
                     if (!vm_throw_error_fmt(vm, vm.heap.type_err_proto,

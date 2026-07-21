@@ -773,15 +773,20 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
                 HObject* arr = (HObject*)args_val.get_heapptr();
                 if (arr != null && arr.get_class() == hobject::ObjClass.ARRAY) {
                     for (uint i = 0; i < bound_argc && combined_idx < total_argc; i++) {
+                        // A miss (hole / failed key intern) still consumes a
+                        // slot as undefined so the call args don't shift left.
+                        TVal ev;
+                        ev.set_undefined();
                         char[20] buf;
                         int n = (int)(io::bprintf(&buf, "%d", i) ?? buf[:0]).len;
                         if (n > 0 && n < 20) {
                             HString* ek = builtins::builtin_intern_string(heap, buf[:n]);
                             if (ek != null) {
                                 TVal? e = arr.get_prop_proto(ek);
-                                if (try ev = e) combined_args[combined_idx++] = ev;
+                                if (try got = e) ev = got;
                             }
                         }
+                        combined_args[combined_idx++] = ev;
                     }
                 }
             }
