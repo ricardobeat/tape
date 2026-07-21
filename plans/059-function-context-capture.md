@@ -1,6 +1,6 @@
 # Plan 059 — Function-Context Capture: eval-super, arrow scopes, optional-chain calls, public fields
 
-**Status**: DRAFT (session 289)
+**Status**: Phase 1 DONE (session 289, all 5 fixes + arrow-scope-leak follow-up landed; class-method eval-super also fixed via opencode-jul merge — obj-literal eval-super, eval super(), nested-eval new.target remain for Phases 2-3). Phases 2-5 pending.
 **Target clusters** (from 2026-07-20 full run, 229 fails total): eval-super (5), arrow scope-paramsbody (3), arrow lexical-super-call (1), optional-chaining (1), class/elements field-arrow + new.target early-error (2), plus P7 public fields unlocking the currently-skipped `class-fields-public`/`class-static-fields-public` suites.
 
 ## Reframing C8
