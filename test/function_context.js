@@ -131,9 +131,11 @@ t("recursion via funcexpr name", function () {
 });
 
 // --- optional chain call receivers ---
-t("(o?.m)() calls with undefined this", function () {
+// A non-short-circuited optional chain is a Reference like plain member
+// access; parens preserve it (test262 optional-call-preserves-this.js).
+t("(o?.m)() keeps receiver", function () {
   var o = { m: function () { return this; } };
-  return (o?.m)() === undefined;
+  return (o?.m)() === o;
 });
 t("(o.m)() keeps receiver", function () {
   var o = { m: function () { return this; } };
@@ -143,11 +145,11 @@ t("o?.m() keeps receiver", function () {
   var o = { m: function () { return this; } };
   return o?.m() === o;
 });
-t("(o.a?.m)() drops receiver", function () {
+t("(o.a?.m)() keeps receiver", function () {
   var o = { a: { m: function () { return this; } } };
-  return (o.a?.m)() === undefined;
+  return (o.a?.m)() === o.a;
 });
-t("(0, o.m)() drops receiver", function () {
+t("(0, o.m)() drops receiver (comma does GetValue)", function () {
   var o = { m: function () { return this; } };
   return (0, o.m)() === undefined;
 });

@@ -1251,17 +1251,18 @@ fn ushort? CompilerContext.postfix_expr(&self) {
 }
 
 /// After the ')' of a grouping expression: decide whether a pending
-/// member-call receiver survives the parens. A plain member access keeps
-/// its Reference through parens (`(o.m)()` calls with this=o, ES2015
-/// §12.2.10.5), but an optional chain evaluates to a VALUE (ES2020
-/// OptionalExpression), so `(o?.m)()` must call with this=undefined.
-/// The receiver is also dropped when nothing call-like follows — the
-/// parenthesized value is consumed as plain data.
+/// member-call receiver survives the parens. Member accesses — optional
+/// chains included — keep their Reference through parens (`(o.m)()` and
+/// `(o?.b)()` both call with this=o; test262
+/// optional-chaining/optional-call-preserves-this.js). A short-circuited
+/// chain yields undefined and the call throws regardless, so no receiver
+/// handling is needed for that case. The receiver is dropped only when
+/// nothing call-like follows — the parenthesized value is consumed as
+/// plain data.
 fn void CompilerContext.drop_paren_receiver_unless_ref(&self) {
     TokenType next_tt = self.peek_type();
     bool call_follows = next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN;
-    if ((!call_follows || self.last_was_optional_chain)
-        && self.call_prop_obj_reg != MAX_REGISTERS) {
+    if (!call_follows && self.call_prop_obj_reg != MAX_REGISTERS) {
         self.free_reg(self.call_prop_obj_reg);
         self.call_prop_obj_reg = MAX_REGISTERS;
     }

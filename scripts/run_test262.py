@@ -223,6 +223,15 @@ SKIP_GLOBS = {
     # own path structure (no test-body scanning).
     "*async-gen*",
     "*async-private-gen*",
+    # Async generators confirmed a NON-GOAL 2026-07-20 (session 289b); the
+    # engine parse-rejects `async function*` in all forms. These for-await-of
+    # tests are consumer-NAMED (`async-func-dstr-*`) but their iterable
+    # fixture is an async generator — marked structurally by a second
+    # `-async-` token after the binding kind (`async-func-dstr-let-async-*`
+    # vs the supported `async-func-dstr-let-*`). Verified exact against the
+    # session-289 full run: matches all 168 async-gen-fixture fails, zero
+    # passing tests. (Path-structural on purpose — no test-body scanning.)
+    "language/statements/for-await-of/async-func-dstr-*-async-*",
     # Async-generator built-ins (the AsyncGenerator function/prototype). The
     # %AsyncIteratorPrototype% is reached via async generators too. (The
     # AsyncFromSyncIterator adapter IS implemented — plan 057 — but its test262
@@ -233,6 +242,16 @@ SKIP_GLOBS = {
     "built-ins/AsyncFromSyncIteratorPrototype/*",
 }
 SKIP_FILES = {
+    # Async-generator SYNTAX present incidentally (case lists / fixtures) in
+    # tests whose names don't match the async-gen globs above. The engine
+    # parse-rejects `async function*` (non-goal until plan 060), so these
+    # whole files CE. Un-skip with plan 060.
+    "built-ins/Object/seal/seal-asyncgeneratorfunction.js",
+    "built-ins/Function/prototype/toString/AsyncGenerator.js",
+    "language/comments/hashbang/function-constructor.js",
+    "language/expressions/optional-chaining/member-expression.js",
+    "language/destructuring/binding/syntax/destructuring-array-parameters-function-arguments-length.js",
+    "language/destructuring/binding/syntax/destructuring-object-parameters-function-arguments-length.js",
     # B04 — Function constructor duplicate params / restricted names in non-strict
     "built-ins/Function/15.3.2.1-11-1.js",     # duplicate separate param allowed
     "built-ins/Function/15.3.2.1-11-3.js",     # formal param named 'eval' allowed
@@ -757,20 +776,7 @@ def skip_reason(path, es5_only=False):
     # params, etc.) which the engine now rejects at parse time.
     if re.search(r"flags:\s*\[.*\bnoStrict\b", header):
         return "noStrict (strict-only engine)"
-    # Async generators are a NON-GOAL (plan 057 implements the for-await-of
-    # CONSUMER only; producer confirmed out of scope 2026-07-20). The path
-    # globs above catch `*async-gen*` names, but ~168 for-await-of tests are
-    # named `async-func-*` (consumer-shaped) while their iterable FIXTURE is
-    # an `async function*` — skip those by content. The engine parse-rejects
-    # the syntax, so without this skip they'd count as CE:unexpected.
-    if _ASYNC_GEN_SYNTAX_RE.search(header):
-        return "async-generator syntax (non-goal)"
     return None
-
-
-# Matches async-generator syntax in test source: `async function*` (decl/expr)
-# and `async *name` / `async *[computed]` / `async *"str"` method forms.
-_ASYNC_GEN_SYNTAX_RE = re.compile(r"async\s+function\s*\*|\basync\s*\*\s*(?=[\w$\[\"'])")
 
 
 def should_skip(path, es5_only=False):
