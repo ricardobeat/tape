@@ -105,6 +105,19 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
     bool pending_body_brace = false;  // `) {` opens a callable body
     bool pending_arrow = false;       // just saw `=>`; body shape unknown
 
+    // Deferred capture buffer for parameter-default expressions: identifiers
+    // seen inside a non-control `(...)` that is followed by `{` (a param list)
+    // must be captured even though they appear outside any callable body.
+    // Buffered when entering a non-control `(`, flushed on `) {`, discarded
+    // on any other token after `)`.
+    uint[16] param_buf_paren_depth;   // paren_depth when each buffered name was seen
+    char[][16] param_buf_names;       // buffered identifier names
+    ushort[16] param_buf_lens;
+    uint param_buf_count = 0;
+    bool param_buf_active = false;    // true while inside a non-control `(`
+    int param_buf_base_paren = -1;    // paren_depth of the opening `(`
+    bool param_buf_pending = false;   // `)` seen, waiting for `{` or discard
+
     bool done = false;
     while (!done && !self.capture_all) {
         Token? tok_opt = self.lexer.next_token();
@@ -118,6 +131,13 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
         pending_body_brace = false;
         pending_arrow = false;
 
+        // If `)` was seen but the next token is not `{`, this was a call or
+        // grouping expression, not a param list — discard the deferred buffer.
+        if (param_buf_pending && tt != TokenType.LBRACE && tt != TokenType.ARROW) {
+            param_buf_pending = false;
+            param_buf_count = 0;
+        }
+
         // An expression-bodied arrow (`=>` followed by anything but `{`)
         // collects from here until its expression ends.
         if (was_pending_arrow && tt != TokenType.LBRACE
@@ -128,7 +148,17 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
         if (tt == TokenType.LBRACE) {
             if ((was_pending_brace || was_pending_arrow) && region_depth < 0) {
                 region_depth = (int)brace_depth;
+                // Flush deferred param-default capture buffer: identifiers
+                // seen inside the `(...)` that preceded this `{` are in
+                // parameter-default expressions and must be captured.
+                if (param_buf_count > 0) {
+                    for (uint pi = 0; pi < param_buf_count; pi++) {
+                        self.add_captured_name(param_buf_names[pi][:param_buf_lens[pi]]);
+                    }
+                }
             }
+            param_buf_pending = false;
+            param_buf_count = 0;
             if (!expr_mode && !started && brace_depth == 0) started = true;
             brace_depth++;
             combined_depth++;
@@ -160,7 +190,14 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
             }
         } else if (tt == TokenType.LPAREN) {
             if (paren_depth < 64) {
-                paren_ctrl[paren_depth] = is_control_paren_kw(prev_tt);
+                bool is_ctrl = is_control_paren_kw(prev_tt);
+                paren_ctrl[paren_depth] = is_ctrl;
+                if (!is_ctrl && !param_buf_active && region_depth < 0) {
+                    param_buf_active = true;
+                    param_buf_base_paren = (int)paren_depth;
+                    param_buf_count = 0;
+                    param_buf_pending = false;
+                }
             } else {
                 self.capture_all = true;
             }
@@ -170,6 +207,10 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
             if (paren_depth > 0) {
                 paren_depth--;
                 if (!paren_ctrl[paren_depth]) pending_body_brace = true;
+                if (param_buf_active && (int)paren_depth == param_buf_base_paren) {
+                    param_buf_active = false;
+                    param_buf_pending = true;
+                }
             }
             combined_depth--;
             if (expr_mode && combined_depth < 0) {
@@ -205,6 +246,13 @@ fn void CompilerContext.pre_scan_captures(&self, bool expr_mode = false) {
                 self.capture_all = true;
             } else if (region_depth >= 0 || expr_region_depth >= 0) {
                 self.add_captured_name(name);
+            }
+            // Buffer identifiers seen inside a non-control `(...)` so they
+            // can be captured if the paren turns out to be a param list.
+            if (param_buf_active && param_buf_count < 16 && region_depth < 0) {
+                param_buf_names[param_buf_count] = name;
+                param_buf_lens[param_buf_count] = (ushort)name.len;
+                param_buf_count++;
             }
         }
 
