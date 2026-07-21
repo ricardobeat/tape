@@ -52,6 +52,8 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 - [ ] **U1** — Unicode property escapes `\p{...}`/`\P{...}` in unicode-mode. libregexp has property-table infra (`libregexp/unicode_wrapper.{h,c}`); wire `\p{}` through lexer/parser and property-name lookup, or confirm `lre_compile` support. QuickJS libunicode (vendored) has full UCD 17.0 tables.
 - [ ] **CharacterClassEscapes** — residual RegExp fails; may share tables with U1.
 
+- [ ] **QoI: unshift on huge sparse arrays** — `b.length = 4294967294; b.unshift(x)` runs the naive per-spec O(len) element-move loop (~minutes); smart engines skip holes. Correctness is fine (terminates); found session 289d while auditing stale worktrees. Low priority.
+
 ## Long tail
 
 - [ ] **Z** — Cluster remaining ~250 fails by stderr signature and batch by root cause. Bins: Promise race/any/finally, Object seal/assign/prototype/defineProperty, Set/Array Symbol.species, Number/prototype, Function/length, super, template-literal, block-scope/leave.
