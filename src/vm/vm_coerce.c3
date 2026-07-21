@@ -328,6 +328,7 @@ fn bool builtin_fn_is_constructor(Vm* vm, uint fn_idx) {
         case builtins::Builtin.ARRAYBUFFER.ordinal:
         case builtins::Builtin.DATAVIEW.ordinal:
         case builtins::Builtin.PROXY.ordinal:
+        case builtins::Builtin.BIGINT.ordinal:
             return true;
         case builtins::Builtin.PROXY_CALL.ordinal:
             // Callable proxy trampoline: constructability mirrors the proxy

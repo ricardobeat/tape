@@ -328,7 +328,9 @@ fn bool register_bigint_constructor(EnvRecord* global_env, Heap* heap) {
     HObject* ctor = ctor_raw;
     (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.BIGINT.ordinal;
     ctor.flags.callable = true;
-    ctor.flags.constructable = false;   // BigInt is not a constructor
+    // BigInt is not constructable with new, but must have [[Construct]] to be
+    // detected by isConstructor() — the construct behavior throws TypeError.
+    // Keep constructable = true (default) so Reflect.construct() works.
     ctor.prototype = heap.function_proto;
 
     // .constructor / .prototype cross-links.
