@@ -31,8 +31,11 @@ typedef struct ReCompiled ReCompiled;
 #define RE_NO_MATCH (0)
 #define RE_MATCH    (1)
 
-/* Maximum number of capture groups we support */
-#define RE_MAX_CAPTURES 32
+/* Maximum number of capture groups we support. The 256-slot stack buffer
+ * covers realistic patterns including deep nesting (the 200-group test
+ * S15.10.2.8_A3_T15). Regexps with more captures heap-allocate a
+ * capture[] buffer in re_exec(). */
+#define RE_MAX_CAPTURES 256
 
 /*
  * Compile a regexp pattern.

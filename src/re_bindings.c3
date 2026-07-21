@@ -32,4 +32,6 @@ const int RE_MATCH    = 1;
 const int RE_NO_MATCH = 0;
 const int RE_ERROR    = -1;
 
-const int RE_MAX_CAPTURES = 32;
+/* Must match libregexp/re_wrapper.h. The 256-slot stack buffer covers
+ * realistic patterns; regexps with more captures heap-allocate in re_exec. */
+const int RE_MAX_CAPTURES = 256;

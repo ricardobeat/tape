@@ -220,7 +220,21 @@ int re_exec(ReCompiled* re, const char* input, int input_len,
     int total_captures = re->capture_count;
     if (total_captures > RE_MAX_CAPTURES) total_captures = RE_MAX_CAPTURES;
 
-    uint8_t* capture[RE_MAX_CAPTURES * 2];
+    /* lre_exec NULL-initialises capture[0..2*capture_count-1] (it reads the
+     * count from the compiled bytecode header) and writes back matching
+     * pointers for the captures that participate in the match. A regex with
+     * more than RE_MAX_CAPTURES capture groups would blow the 64-slot
+     * stack array on every call, so we heap-allocate when the compiled
+     * regex carries more captures than the stack buffer can hold. The
+     * outer cap on `total_captures` (above) and the inner cap on the
+     * copy-out loop (using max_captures) keep callers' caps_* arrays safe
+     * even when lre_exec was passed a larger capture buffer. */
+    uint8_t* capture_stack[RE_MAX_CAPTURES * 2];
+    uint8_t** capture = capture_stack;
+    if (re->capture_count > RE_MAX_CAPTURES) {
+        capture = (uint8_t**)calloc((size_t)re->capture_count * 2, sizeof(uint8_t*));
+        if (!capture) return RE_ERROR;
+    }
 
     /* Fast path: pure-ASCII input. Each byte is exactly one UTF-16 code unit
      * (value < 0x80), so the raw bytes can be matched directly in 8-bit mode
@@ -244,8 +258,10 @@ int re_exec(ReCompiled* re, const char* input, int input_len,
                 caps_start[i - 1] = capture[idx]     ? (int)(capture[idx]     - base) : -1;
                 caps_end[i - 1]   = capture[idx + 1] ? (int)(capture[idx + 1] - base) : -1;
             }
+            if (capture != capture_stack) free(capture);
             return RE_MATCH;
         }
+        if (capture != capture_stack) free(capture);
         if (ret == 0) return RE_NO_MATCH;
         return RE_ERROR;
     }
@@ -295,11 +311,13 @@ int re_exec(ReCompiled* re, const char* input, int input_len,
         }
         free(units);
         free(byte_offsets);
+        if (capture != capture_stack) free(capture);
         return RE_MATCH;
     }
 
     free(units);
     free(byte_offsets);
+    if (capture != capture_stack) free(capture);
 
     if (ret == 0) return RE_NO_MATCH;
     return RE_ERROR;
