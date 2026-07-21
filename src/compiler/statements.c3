@@ -4074,6 +4074,11 @@ fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false)
     // Generator functions are never constructable (ES2015 §14.4) — `new` on
     // one must throw TypeError, so is_constructable must flip to false here.
     if (self.match(TokenType.STAR)) {
+        // Async generator functions (`async function*`) are not supported
+        // (same policy as async generator methods).
+        if (is_async_decl) {
+            return self.fail("async generator functions are not supported")~;
+        }
         self.is_generator = true;
         self.is_constructable = false;
     }

@@ -18,7 +18,7 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 - [ ] **E2** — Escaped-arrow `super()` double-call not detected (live-frame walk in `super_init_this_chain`; needs captured this-state cell, plan 059 §4).
 - [ ] **X4** — Arrow with BLOCK body inside a template substitution inside a function silently truncates the program (everything after the enclosing statement never compiles/runs; no error surfaced). Pre-existing (predates session 289 hoist fixes); likely the swallowed-lexer-error/synthetic-EOF family from session 281. Repro: `print("a"); function f(){ var q = ` + "`${ (() => { var t = 1; })() }`" + `; } print("b");` → prints only "a". Expression-body arrows in substitutions are fine.
 - [ ] **X3** — Writes to an enclosing function's local from a parameter-default expression are lost (both ordinary fns and arrows; reads work; body writes work). Capture scan doesn't cover param-default expressions, so the local stays register-resident and the env copy takes the write. Repro: `function w(){ var p=null; (function(_ = p = 6){})(); return p; }` → null, must be 6. Found session 289 by test/function_context.js; same family as the bare-for-of register-residency fix.
-- [ ] **Async generators** — `async function*` producer (168 of 229 current fails; for-await consumer + destructuring already correct). Biggest single lever; plan 060 candidate. Interim: parse-reject `async function*` expressions (currently compile as broken plain-async objects). Plus AsyncFromSync tick-ordering fidelity (3 tests, separable).
+- [ ] **AsyncFromSync tick ordering** — the 3 `for-await-of/ticks-*` tests: adapter performs wrong number/order of PromiseResolve/constructor lookups vs §27.1.4.2.1 (`vm_control.c3` ~1229-1253). In scope (no async generators needed).
 
 ## Builtins
 
@@ -64,6 +64,7 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 
 ## Non-goals (do not reopen)
 
+- **Async generators** (`async function*`, `async *m()`) — confirmed out of scope 2026-07-20 (session 289b). All four syntactic forms parse-reject with SyntaxError; runner skips by path glob (`*async-gen*`) AND by content (`_ASYNC_GEN_SYNTAX_RE` — catches the ~168 `async-func-dstr-*` for-await tests whose FIXTURE is an async generator). The for-await-of consumer, destructuring LHS, and AsyncFromSync adapter ARE supported and stay in scope.
 - **Reflect API** — runner-skipped by policy (A9 implemented the surface; narrow the skip if reopened).
 - **Sloppy-mode-only tests** — runner-skipped by policy; engine is strict-only by design.
 - **F1 apply/call sloppy `this`** — unfixable under strict-only design; skip-listed.

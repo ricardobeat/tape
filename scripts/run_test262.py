@@ -757,7 +757,20 @@ def skip_reason(path, es5_only=False):
     # params, etc.) which the engine now rejects at parse time.
     if re.search(r"flags:\s*\[.*\bnoStrict\b", header):
         return "noStrict (strict-only engine)"
+    # Async generators are a NON-GOAL (plan 057 implements the for-await-of
+    # CONSUMER only; producer confirmed out of scope 2026-07-20). The path
+    # globs above catch `*async-gen*` names, but ~168 for-await-of tests are
+    # named `async-func-*` (consumer-shaped) while their iterable FIXTURE is
+    # an `async function*` — skip those by content. The engine parse-rejects
+    # the syntax, so without this skip they'd count as CE:unexpected.
+    if _ASYNC_GEN_SYNTAX_RE.search(header):
+        return "async-generator syntax (non-goal)"
     return None
+
+
+# Matches async-generator syntax in test source: `async function*` (decl/expr)
+# and `async *name` / `async *[computed]` / `async *"str"` method forms.
+_ASYNC_GEN_SYNTAX_RE = re.compile(r"async\s+function\s*\*|\basync\s*\*\s*(?=[\w$\[\"'])")
 
 
 def should_skip(path, es5_only=False):

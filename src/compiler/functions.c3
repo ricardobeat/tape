@@ -3112,6 +3112,13 @@ fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
     // Generator functions are never constructable (ES2015 §14.4) — `new` on
     // one must throw TypeError, so is_constructable must flip to false here.
     if (self.match(TokenType.STAR)) {
+        // Async generator functions (`async function*`) are not supported
+        // (same policy as async generator methods; without this rejection the
+        // expression silently compiled as a plain async function whose result
+        // object has no iterator protocol at all).
+        if (is_async_expr) {
+            return self.fail("async generator functions are not supported")~;
+        }
         self.is_generator = true;
         self.is_constructable = false;
     }
