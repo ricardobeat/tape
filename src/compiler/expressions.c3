@@ -255,6 +255,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
     // Save LHS info (will be overwritten by RHS evaluation)
     bool lhs_was_getvar = self.last_was_getvar;
     uint lhs_getvar_name_idx = self.last_getvar_name_idx;
+    ushort lhs_ref_reg = MAX_REGISTERS;
     bool lhs_was_member = self.last_was_member;
     ushort lhs_member_obj = self.last_member_obj_reg;
     ushort lhs_member_prop = self.last_member_prop_reg;
@@ -463,16 +464,19 @@ fn ushort? CompilerContext.assignment_expr(&self) {
         }
     }
 
-    // For plain assignment to an identifier, strip the GETVAR emitted during
-    // LHS parsing. Per ES2022 §13.15.2 step 1, evaluating the LHS
-    // IdentifierReference produces a Reference (not a value) — GetValue
-    // is never called on the LHS reference. The PUTVAR_ASSIGN at the end
-    // handles the actual write (and throws ReferenceError for undeclared
-    // variables). Stripping GETVAR ensures the RHS is evaluated first.
+    // For plain assignment to an identifier, preserve whether the identifier
+    // resolved before evaluating the RHS. Per ES2022 §13.15.2 step 1,
+    // evaluating the LHS IdentifierReference produces a Reference, not a
+    // value. Non-strict code keeps the old value-discarding path.
     if (is_assign && lhs_was_getvar && self.code_count > 0) {
         Instruction lhs_last = self.code[self.code_count - 1];
         if (lhs_last.op == Opcode.GETVAR && (ushort)lhs_last.a == left) {
-            self.code_count--;
+            if (self.is_strict) {
+                self.code[self.code_count - 1] = bytecode::make_a_bc(Opcode.RESOLVEVAR, (uint)left, lhs_getvar_name_idx);
+                lhs_ref_reg = left;
+            } else {
+                self.code_count--;
+            }
         }
     }
 
@@ -512,6 +516,14 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             if (!right_is_local) { self.free_reg(right); }
             left = right;
         } else {
+            if (lhs_ref_reg != MAX_REGISTERS) {
+                uint skip_ref_throw = self.emit_cond_jump(Opcode.IF_TRUE, (uint)lhs_ref_reg);
+                uint ref_msg_idx = self.add_string_constant("Unresolvable reference");
+                ushort ref_throw_reg = self.alloc_reg();
+                self.emit(bytecode::make_a_bc(Opcode.THROW_REF, (uint)ref_throw_reg, ref_msg_idx));
+                self.patch_jump(skip_ref_throw);
+                self.free_reg(ref_throw_reg);
+            }
             // Simple assignment: left = right
             if (left != right) {
                 self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);

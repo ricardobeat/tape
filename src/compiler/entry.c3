@@ -133,7 +133,9 @@ fn CompiledFunction*? compile(Lexer* lex, void* heap) {
 fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool allow_super = false,
                                     bool direct_in_function = false,
                                     void* parent_private_names = null,
-                                    uint  parent_private_name_count = 0) {
+                                    uint  parent_private_name_count = 0,
+                                    bool  is_direct_eval = false,
+                                    bool  parent_super_is_home_object = false) {
     g_last_err_msg[0] = 0;
     g_last_err_line = 0;
     g_last_err_col  = 0;
@@ -142,6 +144,7 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool allow_super = fa
     ctx.is_global = true;
     ctx.eval_mode = true;
     ctx.has_super_binding = allow_super;
+    ctx.super_is_home_object = parent_super_is_home_object;
     ctx.eval_direct_in_function = direct_in_function;
     ctx.eval_acc_reg = ctx.alloc_reg();
 
@@ -231,7 +234,7 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool allow_super = fa
     // varEnv; direct eval and strict indirect eval get a fresh declarative env.
     // Emit the CanDeclareGlobalFunction/Var checks as a prologue so a failure
     // is atomic (no earlier declaration from the same eval has leaked yet).
-    if (!allow_super && !ctx.saw_use_strict) {
+    if (!is_direct_eval && !ctx.saw_use_strict) {
         ctx.hoist_global_fn_decls(true)!;
         ctx.hoist_decls(true, true)!;
     }

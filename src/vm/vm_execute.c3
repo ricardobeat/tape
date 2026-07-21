@@ -3391,6 +3391,24 @@ fn TVal? Vm.run(Vm* vm) {
             if (catch err = dispatch_returns(&ds, op, ra)) { return err~; }
             continue;
 
+        case Opcode.RESOLVEVAR: {
+            uint bc = insn.get_bc();
+            bool found = false;
+            if (bc < vm.current_func.const_count) {
+                TVal name_val = ds.constants[bc];
+                if (name_val.is_string()) {
+                    void* key = name_val.get_heapptr();
+                    found = env::env_has(ds.act.lex_env, key);
+                    if (!found && ds.act.lex_env != ds.act.var_env) {
+                        found = env::env_has(ds.act.var_env, key);
+                    }
+                }
+            }
+            ra.set_boolean(found);
+            track_heap_store(ds.act, ra, (uint)insn.a);
+            continue;
+        }
+
         // === VARIABLE ACCESS (inlined: hot in var-heavy / recursive code) ===
         case Opcode.GETVAR: {
             uint bc = insn.get_bc();

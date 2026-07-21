@@ -386,6 +386,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
     bool caller_eval_allows_super = false;
     void* parent_priv_names = null;
     uint parent_priv_count = 0;
+    bool caller_super_is_home_object = false;
     if (precheck_act_count > 0) {
         precheck_caller = &precheck_vm.activations[precheck_act_count - 1];
         caller_has_direct_eval = (precheck_caller.flags & vm::ACT_FLAG_DIRECT_EVAL) != 0;
@@ -412,6 +413,7 @@ fn void builtin_eval(BuiltinContext* ctx) {
                 if (caller_cf.has_home_object()) {
                     caller_eval_allows_super = true;
                 }
+                caller_super_is_home_object = caller_cf.super_is_home_object();
                 parent_priv_names = caller_cf.eval_private_names;
                 parent_priv_count = caller_cf.eval_private_name_count;
             }
@@ -423,7 +425,9 @@ fn void builtin_eval(BuiltinContext* ctx) {
     lex.skip_hashbang();
     CompiledFunction*? cf = compiler::compile_eval(&lex, ctx.heap, caller_eval_allows_super,
                                                     caller_direct_eval_in_function,
-                                                    parent_priv_names, parent_priv_count);
+                                                    parent_priv_names, parent_priv_count,
+                                                    caller_has_direct_eval,
+                                                    caller_super_is_home_object);
     CompiledFunction* func;
     if (try f = cf) {
         func = f;

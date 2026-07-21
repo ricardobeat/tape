@@ -259,6 +259,7 @@ enum Opcode : char {
     /// `A = variable[constants[BC]]`  — read a variable by name
     /// looked up in the constant pool (A-BC format).
     GETVAR,
+    RESOLVEVAR,
     /// `variable[constants[BC]] = A`  — write a variable by name (A-BC).
     /// Initialization store: does NOT perform a TDZ check (used by param sync,
     /// for-loop iteration variables, etc. which legitimately write a binding
@@ -766,6 +767,7 @@ fn OpFormat get_op_format(Opcode op) {
         case LDINTX:    return A_BC;
         case SETALEN:   return A_BC;
         case GETVAR:    return A_BC;
+        case RESOLVEVAR: return A_BC;
         case TYPEOFIDENT: return A_BC;
         case PUTVAR:    return A_BC;
         case DECLVAR:   return A_BC;
@@ -1067,6 +1069,19 @@ bitstruct FuncFlags : uint {
     /// Function is a method/accessor with a [[HomeObject]] (enables super.x
     /// syntax).  Set at compile time when super_is_home_object is true.
     bool  has_home_object  : 26;
+    /// Function inherited a HomeObject context (object-literal concise
+    /// method, class method without `extends`, or any other method whose
+    /// super base is the receiver's [[Prototype]] rather than the
+    /// superclass's `.prototype`). The value is the same as
+    /// CompilerContext.super_is_home_object at finish() time. Direct eval
+    /// inherits this from the caller (entry.c3: compile_eval) so `super.x`
+    /// inside `eval` resolves against `Object.getPrototypeOf(homeObject)`
+    /// (per ES2015 §15.7.3 PerformEval step 7, which requires
+    /// HasHomeObject on the calling EnvRec), not `__super__.prototype`.
+    /// Distinct from has_home_object, which is also set on derived-class
+    /// methods whose super base is the SUPERCLASS prototype (not the
+    /// receiver's prototype).
+    bool  super_is_home_object : 27;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -1315,6 +1330,18 @@ macro bool CompiledFunction.has_direct_eval(&self) {
 /// (enables super.x/super[x] syntax in direct eval).
 macro bool CompiledFunction.has_home_object(&self) {
     return self.flags.has_home_object;
+}
+
+/// Returns `true` when the function's super base is derived from its
+/// [[HomeObject]] (object-literal concise method, class method without
+/// `extends`, or any other HomeObject-context). Distinct from
+/// `has_home_object`, which is also true for derived-class methods whose
+/// super base is `superclass.prototype`. Used by `builtin_eval` to decide
+/// whether `super.x` inside a direct eval should call `GetSuperBase` via
+/// `__super__` directly (HomeObject form) or via `__super__.prototype`
+/// (class-extends form).
+macro bool CompiledFunction.super_is_home_object(&self) {
+    return self.flags.super_is_home_object;
 }
 
 /// Returns `true` when the function has a rest parameter.

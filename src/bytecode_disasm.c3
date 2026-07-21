@@ -172,6 +172,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.RET.ordinal]         = "RET",
     [Opcode.RETUNDEF.ordinal]    = "RETUNDEF",
     [Opcode.GETVAR.ordinal]      = "GETVAR",
+    [Opcode.RESOLVEVAR.ordinal]  = "RESOLVEVAR",
     [Opcode.TYPEOFIDENT.ordinal]  = "TYPEOFIDENT",
     [Opcode.PUTVAR.ordinal]      = "PUTVAR",
     [Opcode.DECLVAR.ordinal]     = "DECLVAR",
