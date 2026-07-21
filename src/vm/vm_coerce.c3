@@ -901,33 +901,50 @@ fn TVal to_primitive_value(Vm* vm, TVal* val, int hint = 0) {
     return *val;
 }
 
-/// ToPrimitive(hint number) both operands of a bitwise/shift op — ES2020
+/// ToNumeric(hint number) both operands of a bitwise/shift op — ES2020
 /// §12.12.3/§12.9.4 etc. all begin "Let lnum be ? ToNumeric(lval)" / "Let
-/// rnum be ? ToNumeric(rval)" BEFORE dispatching on whether the result is
-/// BigInt or Number. The opcode handlers in vm_execute.c3 previously
-/// checked `rb.is_bigint() || rc.is_bigint()` on the RAW operands, which
-/// misses an object whose valueOf/toString/Symbol.toPrimitive produces a
-/// BigInt (e.g. `Object(1n) << 1n`) — that object is neither BigInt nor
-/// fastint/number, so it fell through to the plain-numeric path and threw
-/// or coerced wrongly instead of being recognized as BigInt-typed.
+/// rnum be ? ToNumeric(rval)" — each ToNumeric is itself ToPrimitive followed
+/// immediately by the BigInt-or-ToNumber dispatch (ES2020 §7.1.3). Both steps
+/// for lval must fully complete, including a Symbol-typed primitive throwing
+/// TypeError, before rval's ToPrimitive is even invoked — so this resolves
+/// lval all the way to numeric first, then rval, rather than ToPrimitive'ing
+/// both up front. The opcode handlers in vm_execute.c3 previously checked
+/// `rb.is_bigint() || rc.is_bigint()` on the RAW operands, which misses an
+/// object whose valueOf/toString/Symbol.toPrimitive produces a BigInt (e.g.
+/// `Object(1n) << 1n`) — that object is neither BigInt nor fastint/number, so
+/// it fell through to the plain-numeric path and threw or coerced wrongly
+/// instead of being recognized as BigInt-typed.
 ///
-/// Writes the ToPrimitive'd results into *out_b/*out_c and returns true on
-/// success. Returns false if either ToPrimitive call threw (vm.throw_pending
-/// is set; caller must check/propagate exactly like any other coercion).
-/// Non-object operands pass through unchanged (ToPrimitive is a no-op for
-/// primitives), so this is safe to call unconditionally before the
+/// Writes the ToNumeric'd results (BIGINT pass-through, everything else
+/// converted to NUMBER) into *out_b/*out_c and returns true on success.
+/// Returns false if either step threw (vm.throw_pending is set; caller must
+/// check/propagate exactly like any other coercion). Non-object operands
+/// still go through the BigInt-or-ToNumber dispatch (a bare Symbol operand
+/// must also throw here), so this is safe to call unconditionally before the
 /// is_bigint() dispatch.
 fn bool vm_bitwise_to_primitive(Vm* vm, TVal* rb, TVal* rc, TVal* out_b, TVal* out_c) {
-    *out_b = *rb;
-    if (rb.get_tag() == OBJECT) {
-        *out_b = to_primitive_value(vm, rb, 2);
+    if (!vm_to_numeric_bitwise(vm, rb, out_b)) return false;
+    if (!vm_to_numeric_bitwise(vm, rc, out_c)) return false;
+    return true;
+}
+
+/// ES2020 §7.1.3 ToNumeric: ToPrimitive(hint number), then pass BigInt
+/// through unchanged or ToNumber everything else (including throwing on a
+/// Symbol primitive). Used by vm_bitwise_to_primitive to resolve one operand
+/// completely before touching the other.
+fn bool vm_to_numeric_bitwise(Vm* vm, TVal* val, TVal* out) {
+    TVal prim = *val;
+    if (val.get_tag() == OBJECT) {
+        prim = to_primitive_value(vm, val, 2);
         if (vm.throw_pending) return false;
     }
-    *out_c = *rc;
-    if (rc.get_tag() == OBJECT) {
-        *out_c = to_primitive_value(vm, rc, 2);
-        if (vm.throw_pending) return false;
+    if (prim.is_bigint()) {
+        *out = prim;
+        return true;
     }
+    double num = vm_to_number(vm, &prim);
+    if (vm.throw_pending) return false;
+    out.set_number(num);
     return true;
 }
 

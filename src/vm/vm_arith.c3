@@ -76,6 +76,7 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 // () => 1n}`.
                 TVal prim_b = to_primitive_value(vm, rb, 2);
                 if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                if (ds.needs_restart) return (TVal){};
                 if (prim_b.is_bigint()) {
                     if (vm_bigint_unary(vm, Opcode.UNM, ra, &prim_b) == BigIntOpResult.THREW) {
                         if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
@@ -99,6 +100,26 @@ fn TVal? dispatch_unary(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 if (vm_bigint_unary(vm, Opcode.BNOT, ra, rb) == BigIntOpResult.THREW) {
                     if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
                 }
+                return (TVal){};
+            }
+            if (rb.get_tag() == OBJECT) {
+                // ES2020 §12.5.9 BitwiseNOT: ToNumeric(operand) — ToPrimitive
+                // (hint number) FIRST, then pass a BigInt result through to
+                // BigInt::bitwiseNOT instead of ToNumber (which would throw
+                // on BigInt). Handles `~Object(1n)` / `~{[Symbol.toPrimitive]:
+                // () => 1n}`.
+                TVal bnot_prim_b = to_primitive_value(vm, rb, 2);
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                if (ds.needs_restart) return (TVal){};
+                if (bnot_prim_b.is_bigint()) {
+                    if (vm_bigint_unary(vm, Opcode.BNOT, ra, &bnot_prim_b) == BigIntOpResult.THREW) {
+                        if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                    }
+                    return (TVal){};
+                }
+                int bnot_obj_b = toint32(vm_to_number(vm, &bnot_prim_b));
+                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) return vm_uncaught_error(vm, &vm.throw_value);
+                ra.set_fastint((long)(~bnot_obj_b));
                 return (TVal){};
             }
             int bnot_b = toint32(vm_to_number(vm,rb));
