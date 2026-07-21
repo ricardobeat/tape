@@ -1290,28 +1290,39 @@ fn void CompilerContext.skip_function_body(&self) {
     // closing a '${' does not prematurely end the function-body scan.
     uint brace_depth = 0;
     uint template_depth = 0; // open template substitution levels
+    uint template_expr_brace_depth = 0;
     for (;;) {
         Token? tok_opt = self.lexer.next_token();
         if (catch _err = tok_opt) return;
         TokenType tt = tok_opt.type;
         if (tt == TokenType.EOF_TOKEN) return;
         if (tt == TokenType.LBRACE) {
-            brace_depth++;
+            if (template_depth > 0) {
+                template_expr_brace_depth++;
+            } else {
+                brace_depth++;
+            }
         } else if (tt == TokenType.TEMPLATE_HEAD) {
             // Entering a template substitution: the scanner consumed `...${
             // and the next tokens are the substitution expression.
             template_depth++;
         } else if (tt == TokenType.RBRACE) {
             if (template_depth > 0) {
+                if (template_expr_brace_depth > 0) {
+                    template_expr_brace_depth--;
+                    continue;
+                }
                 // This RBRACE closes a template substitution, not a JS block.
                 // Consume the following template part (middle or tail).
                 Token? part_opt = self.lexer.scan_template_after_expr();
                 if (catch _err2 = part_opt) return;
                 if (part_opt.type == TokenType.TEMPLATE_MIDDLE) {
                     // Another substitution follows; template_depth stays the same.
+                    template_expr_brace_depth = 0;
                 } else {
                     // TEMPLATE_TAIL: this template literal is done.
                     template_depth--;
+                    template_expr_brace_depth = 0;
                 }
             } else {
                 brace_depth--;
@@ -1465,6 +1476,7 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global, bool checks_only = f
     // decremented on TEMPLATE_TAIL.  A RBRACE when template_depth > 0 closes
     // a template substitution and must not be treated as a JS block boundary.
     uint template_depth = 0;
+    uint template_expr_brace_depth = 0;
     // Byte offset of the `function` keyword when preceded by `async` at
     // brace_depth 0. The async-detection branch below pushes `function`
     // back so it's re-scanned on the *next* loop iteration — but pushback
@@ -1493,6 +1505,10 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global, bool checks_only = f
         if (tt == TokenType.EOF_TOKEN) break;
 
         if (tt == TokenType.LBRACE) {
+            if (template_depth > 0) {
+                template_expr_brace_depth++;
+                continue;
+            }
             brace_depth++;
             continue;
         }
@@ -1505,14 +1521,20 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global, bool checks_only = f
         }
         if (tt == TokenType.RBRACE) {
             if (template_depth > 0) {
+                if (template_expr_brace_depth > 0) {
+                    template_expr_brace_depth--;
+                    continue;
+                }
                 // This RBRACE closes a template substitution, not a JS block.
                 Token? part_opt = self.lexer.scan_template_after_expr();
                 if (catch _err2 = part_opt) break;
                 if (part_opt.type == TokenType.TEMPLATE_MIDDLE) {
                     // Another substitution follows; template_depth stays the same.
+                    template_expr_brace_depth = 0;
                 } else {
                     // TEMPLATE_TAIL: this template literal is complete.
                     template_depth--;
+                    template_expr_brace_depth = 0;
                 }
                 continue;
             }
