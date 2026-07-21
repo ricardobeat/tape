@@ -6,11 +6,60 @@ import duktape::bytecode;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
+import duktape::hbigint;
+import duktape::dtoa_bindings;
 import std::io;
+import std::math;
 
 // ============================================================================
 // Class parsing (ES6)
 // ============================================================================
+
+/// Lazily initialise a hidden field-init context (__field_init__ /
+/// __static_init__): a fresh CompilerContext sharing the lexer and heap,
+/// wired to see the class's private-name scope, with initializers forbidden
+/// from using `arguments` or `super()` (ES2022 §15.7.10). Public and private
+/// field initializers share one context per class (per static-ness) so
+/// initialization order matches source order.
+fn void CompilerContext.ensure_field_init_ctx(&self, CompilerContext* target_ctx, bool is_static) {
+    target_ctx.init(self.lexer, self.heap);
+    target_ctx.lexer.set_strict(true);
+    target_ctx.in_class_body = self.in_class_body;
+    target_ctx.has_super_binding = self.has_super_binding;
+    target_ctx.super_is_home_object = self.super_is_home_object;
+    target_ctx.super_is_static_method = is_static;
+    target_ctx.is_constructable = false;  // super() forbidden in initializers
+    target_ctx.forbid_arguments = true;
+    target_ctx.adopt_private_names(self);
+    target_ctx.private_scope_start = self.private_scope_start;
+    target_ctx.private_scope_depth = self.private_scope_depth;
+    target_ctx.emit_simple(Opcode.PUSH_LEX);
+}
+
+/// Format a numeric literal's canonical property-key text (ES2015 §7.1.12.1
+/// ToString applied to the NumericValue) into `buf`. Numeric literal tokens
+/// are always finite. Used for field-name inference on numeric keys
+/// (`class C { 0x10 = fn }` → fn.name "16").
+fn char[] format_field_number_key(double val, char[] buf) {
+    if (val == 0.0) {
+        if (buf.len > 0) { buf[0] = '0'; return buf[:1]; }
+        return buf[:0];
+    }
+    char[64] local;
+    usz n = 0;
+    if (val == math::trunc(val) && val > -1e21 && val < 1e21) {
+        char[] printed = io::bprintf(&local, "%.0f", val) ?? local[..0];
+        n = printed.len;
+    } else {
+        char[dtoa_bindings::DTOA_FORMAT_TMP_SIZE] tmp;
+        int len = dtoa_bindings::duktape_js_dtoa(&local, val, 10, 0,
+            dtoa_bindings::JS_DTOA_FORMAT_FREE, &tmp);
+        n = len > 0 ? (usz)len : 0;
+    }
+    if (n == 0 || n > buf.len) return buf[..0];
+    for (usz i = 0; i < n; i++) buf[i] = local[i];
+    return buf[..n];
+}
 
 /// Create a default constructor CompiledFunction without using the lexer.
 /// has_super: if true, creates `constructor(...args) { super(...args); }`
@@ -362,6 +411,9 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     // Track methods found in the class body
     ClassMethod[MAX_CLASS_METHODS] methods;
     ushort method_count = 0;
+    // Per-class-body counter for computed public-field-key hidden slots
+    // (P7) — combined with the class id to build unique binding names.
+    uint computed_field_key_count = 0;
 
     // Instance field initializers compile into one hidden __field_init__
     // function, in source order (plan 054 §2d). Created lazily on the first
@@ -432,23 +484,27 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             bool* target_has_init = is_static ? &has_static_init : &has_field_init;
             if (!*target_has_init) {
                 *target_has_init = true;
-                target_ctx.init(self.lexer, self.heap);
-                target_ctx.lexer.set_strict(true);
-                target_ctx.in_class_body = self.in_class_body;
-                target_ctx.has_super_binding = self.has_super_binding;
-                target_ctx.super_is_home_object = self.super_is_home_object;
-                target_ctx.super_is_static_method = is_static;
-                target_ctx.is_constructable = false;  // super() forbidden in initializers
-                target_ctx.forbid_arguments = true;
-                target_ctx.adopt_private_names(self);
-                target_ctx.private_scope_start = self.private_scope_start;
-                target_ctx.private_scope_depth = self.private_scope_depth;
-                target_ctx.emit_simple(Opcode.PUSH_LEX);
+                self.ensure_field_init_ctx(target_ctx, is_static);
             }
 
             ushort init_reg;
             if (self.match(TokenType.ASSIGN)) {
+                // ES2022 §15.7.10 step 7 / DefineField step 7: an anonymous
+                // function definition initializer gets SetFunctionName with
+                // the private name — "#field" (hash included).
+                target_ctx.has_inferred_name = true;
+                if (priv_name.len + 1 < 128) {
+                    target_ctx.inferred_name_buf[0] = '#';
+                    for (usz i = 0; i < priv_name.len; i++) {
+                        target_ctx.inferred_name_buf[i + 1] = priv_name[i];
+                    }
+                    target_ctx.inferred_name_len = (ushort)(priv_name.len + 1);
+                } else {
+                    target_ctx.inferred_name_len = 0;
+                }
                 init_reg = target_ctx.assignment_expr()!;
+                target_ctx.has_inferred_name = false;
+                target_ctx.inferred_name_len = 0;
             } else {
                 init_reg = target_ctx.alloc_reg();
                 target_ctx.emit_abc(Opcode.LDUNDEF, (uint)init_reg, 0, 0);
@@ -519,6 +575,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
 
         // Check for computed key [expr]
         bool has_computed_key = false;
+        // True when the name came from a computed string-literal key
+        // (`['constructor']`) collapsed to a fixed name — PropName of a
+        // ComputedPropertyName is the empty string, so the field-name early
+        // errors (constructor/prototype) must NOT fire for it (ES2022
+        // §15.7.1); the runtime CreateDataPropertyOrThrow still applies.
+        bool name_from_computed_string = false;
         uint computed_key_inner_idx = 0xFFFFFFFF;
         // When the enclosing context is a generator/async, compile the key
         // expression inline in the enclosing function so yield/await interact
@@ -527,6 +589,8 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
 
         if (self.check(TokenType.LBRACKET)) {
             self.advance()!;  // consume `[`
+            io::eprintf("DEBUG: bracket branch entered, next tok type=%d, line=%d col=%d\n", (int)self.peek_type(), (int)self.lexer.line, (int)self.lexer.col);
+            io::eprintf("DEBUG: is_generator=%d is_async=%d\n", (int)self.is_generator, (int)self.is_async);
             // ES2015 §14.5.13 step 1: a computed key whose *literal string value* is
             // "prototype" combined with `static` is an early SyntaxError (covered by
             // §14.5.1's "static method named prototype" rule — test262
@@ -534,13 +598,41 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             // at compile time so we can reject it cleanly instead of waiting for a
             // runtime TypeError out of DefinePropertyOrThrow.
             if (self.check(TokenType.STRING)) {
-                Token str_tok = self.advance()!;
-                self.expect(TokenType.RBRACKET)!;
-                has_computed_key = false;
-                // Reuse the IDENTIFIER / string / static-prototype early-error check
-                // below by treating the string as a fixed-name method token.
-                method_name = str_tok;
-                // Fall through to the static-prototype check below.
+                // The STRING shortcut only applies when the next token is `]`
+                // — i.e. `["foo"]` is genuinely a fixed-name key. Anything
+                // else (`["foo" + "bar"]`, `["foo", "bar"]`) is a real
+                // computed-key expression, not a literal collapsed to a
+                // fixed name. Without this guard `["s" + "tatic"]` would
+                // silently treat `"s"` as the literal name and the `+` as a
+                // follow-up syntax error.
+                Token? look_after_str = self.lexer.peek();
+                bool is_collapsed_literal = false;
+                if (try nxt = look_after_str) {
+                    is_collapsed_literal = nxt.type == TokenType.RBRACKET;
+                }
+                if (is_collapsed_literal) {
+                    Token str_tok = self.advance()!;
+                    self.expect(TokenType.RBRACKET)!;
+                    has_computed_key = false;
+                    name_from_computed_string = true;
+                    // Reuse the IDENTIFIER / string / static-prototype early-error check
+                    // below by treating the string as a fixed-name method token.
+                    method_name = str_tok;
+                    // Fall through to the static-prototype check below.
+                } else {
+                    // Generic computed key (variable, expression, etc.).
+                    has_computed_key = true;
+                    if (self.is_generator || self.is_async) {
+                        computed_key_reg = self.assignment_expr()!;
+                        self.expect(TokenType.RBRACKET)!;
+                        computed_key_inner_idx = 0xFFFFFFFE;  // sentinel: inline
+                    } else {
+                        CompiledFunction* key_func = self.compile_key_expr()!;
+                        self.expect(TokenType.RBRACKET)!;
+                        computed_key_inner_idx = self.add_inner_func(key_func);
+                    }
+                    method_name = lexer::make_token(TokenType.IDENTIFIER, 0, 0);
+                }
             } else {
                 // Generic computed key (variable, expression, etc.).
                 has_computed_key = true;
@@ -581,8 +673,18 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                     && method_name.str_value[0] == 's'
                     && method_name.str_value[1] == 'e'
                     && method_name.str_value[2] == 't')) {
-                // Check if next token is a property key (not `:` or `(`)
-                if (!self.check(TokenType.COLON) && !self.check(TokenType.LPAREN)) {
+                // Accessor only when the NEXT token can start a property
+                // name; otherwise `get`/`set` is itself the member name —
+                // `get() {}` (method), `get = 5` / `get;` / `get}` (P7
+                // fields), `get: 1` (not a class element; errors later).
+                bool next_starts_key = self.check(TokenType.IDENTIFIER)
+                    || self.check(TokenType.STRING)
+                    || self.check(TokenType.NUMBER)
+                    || self.check(TokenType.BIGINT)
+                    || self.check(TokenType.LBRACKET)
+                    || self.check(TokenType.HASH_IDENT)
+                    || lexer::keyword_to_string(self.peek_type()).len > 0;
+                if (next_starts_key) {
                     // This is a getter/setter declaration
                     is_getter = (method_name.str_value[0] == 'g');
                     is_setter = !is_getter;
@@ -687,7 +789,254 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             method_name_is_bigint = true;
             method_name_bigint_src = method_name.str_value;
         } else {
-            return COMPILE_ERROR~;
+            // After all name-parse branches, the only remaining class-element
+            // shape that consumes no further token here is a public FIELD
+            // (`name [= expr];`) — `class { x = 1 }` / `class { x; }` /
+            // `class { [k] = v }` (computed-key branch already set method_name
+            // to a sentinel and advanced past `]`). Field syntax is the
+            // universal fallback for valid name forms, so anything else
+            // (e.g. `{` as the first class-body token, or stray punctuation)
+            // is a SyntaxError. Public field branch (P7, plan 054 §7) fires
+            // here for:
+            //   - IDENTIFIER/keyword (`class { x = 1 }`)            — lexer on `=`/`;`
+            //   - computed key      (`class { [x+y] = v }`)        — lexer on `=`
+            //   - STRING            (`class { "x" = 1 }`)         — lexer on `=`
+            //   - NUMBER            (`class { 1 = 1 }`)           — lexer on `=`
+            //   - BIGINT            (`class { 1n = 1 }`)          — lexer on `=`
+            // and is gated by the next token NOT being `(` (a method).
+            // The HASH_IDENT case for public fields is N/A — `#x` is a
+            // private field, handled at the top of the class-body loop.
+            // Reject only if the FIRST class-body token was invalid (e.g. `(`,
+            // `,`, EOF).
+            if (self.check(TokenType.LPAREN) || self.check(TokenType.EOF_TOKEN)
+                || self.is_at_end()) {
+                return COMPILE_ERROR~;
+            }
+            // Continue to the field branch below.
+        }
+
+        // Public field branch (P7, plan 054 §7). Triggered when the element
+        // has a name (literal or computed-key, public or private-name) and
+        // is NOT followed by `(` (i.e. is not a method) and NOT a
+        // getter/setter. Identical shape for instance + static fields; the
+        // only knob is which `target_ctx` the install goes into and which
+        // `target` (proto vs ctor) the install writes to.
+        bool is_public_field = !is_constructor
+            && !is_getter && !is_setter
+            && !is_generator_method && !is_async_method
+            && !self.check(TokenType.LPAREN);
+        if (is_public_field) {
+            // PropName early errors (ES2022 §15.7.1):
+            //  - FieldDefinition: PropName == "constructor"  → SyntaxError
+            //  - staticFieldDefinition: PropName == "prototype" || "constructor"
+            //  - ComputedPropertyName: NO early error (PropName is "")
+            // The literal-string form of a computed key (`['constructor']`)
+            // is NOT a ComputedPropertyName at this point — its PropName is
+            // the string value, so the rule applies and it MUST throw.
+            // `name_from_computed_string` captures that exception.
+            char[] field_propname = {};
+            if (method_name_is_number) {
+                char[64] b;
+                field_propname = format_field_number_key(method_name_num_value, &b);
+            } else if (method_name_is_bigint) {
+                int128? parsed = hbigint::parse_bigint_literal(method_name_bigint_src);
+                if (catch p_err = parsed) return COMPILE_ERROR~;
+                char[48] b;
+                field_propname = hbigint::int128_to_radix(parsed, 10, &b);
+            } else if (method_name.type == TokenType.STRING) {
+                field_propname = method_name.str_value;
+            } else {
+                field_propname = method_name.str_value;
+            }
+            if (!has_computed_key) {
+                if (str_eq(field_propname, "constructor")) return COMPILE_ERROR~;
+                if (is_static && str_eq(field_propname, "prototype")) return COMPILE_ERROR~;
+            }
+
+            CompilerContext* target_ctx = is_static ? &static_init_ctx : &field_init_ctx;
+            bool* target_has_init = is_static ? &has_static_init : &has_field_init;
+            if (!*target_has_init) {
+                *target_has_init = true;
+                self.ensure_field_init_ctx(target_ctx, is_static);
+            }
+
+            // For a computed-key public field, the key expression is
+            // evaluated ONCE at class-definition time, in source order
+            // interleaved with method-key evaluation. Compile the key
+            // expression in this (class-enclosing) context right now so its
+            // PUTLEX below runs in the same order as ClassElementEvaluation
+            // (§15.7.15 step 6.a.i). Allocating a hidden lexical slot
+            // ("#priv:<id>:fkey<N>") keeps the value alive past the install
+            // loop and reachable from __field_init__ / __static_init__.
+            char[] fkey_slot = "";
+            ushort fkey_reg = 0xFFFF;
+            if (has_computed_key) {
+                if (computed_field_key_count >= self.private_class_id[self.private_scope_depth - 1]
+                    && self.private_scope_depth > 0) {
+                    // Unused capacity guard; falls back to a class-id-derived
+                    // unique name (the user can't have more than 64 class
+                    // bodies nested in this scope anyway).
+                }
+                uint class_id_f = self.private_scope_depth > 0
+                    ? self.private_class_id[self.private_scope_depth - 1]
+                    : 0;
+                char[96] buf;
+                char[16] digits;
+                char[] prefix = "#priv:";
+                usz pos = 0;
+                for (usz i = 0; i < prefix.len && pos < buf.len; i++) buf[pos++] = prefix[i];
+                usz dcnt = 0;
+                do {
+                    digits[dcnt++] = (char)('0' + class_id_f % 10);
+                    class_id_f /= 10;
+                } while (class_id_f > 0);
+                while (dcnt > 0 && pos < buf.len) buf[pos++] = digits[--dcnt];
+                char[] suf = ":fkey";
+                for (usz i = 0; i < suf.len && pos < buf.len; i++) buf[pos++] = suf[i];
+                usz fk_cnt = computed_field_key_count;
+                usz dcnt2 = 0;
+                do {
+                    digits[dcnt2++] = (char)('0' + fk_cnt % 10);
+                    fk_cnt /= 10;
+                } while (fk_cnt > 0);
+                while (dcnt2 > 0 && pos < buf.len) buf[pos++] = digits[--dcnt2];
+                char[] fkey_name = self.intern_slot_name(buf[:pos]);
+                self.declare_priv_slot(fkey_name);
+                fkey_slot = fkey_name;
+
+                if (computed_key_inner_idx == 0xFFFFFFFE) {
+                    // Inline key (enclosing is generator/async): re-emit into
+                    // the class-enclosing context by simply copying the
+                    // already-computed value into a fresh register.
+                    fkey_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.LDREG, (uint)fkey_reg, (uint)computed_key_reg, 0);
+                    self.free_reg(computed_key_reg);
+                } else {
+                    // The key expression was already added to
+                    // self.inner_funcs[computed_key_inner_idx] when the
+                    // computed-key bracket was parsed (line 614 /
+                    // accessor path line 654). CLOSURE + CALL + TOPROPKEY
+                    // (in-place ToPropertyKey coercion — must run at class
+                    // definition time per ES2022 §15.7.15 step 6.a.i so an
+                    // object-key that throws on toString throws NOW, not at
+                    // per-instance init time).
+                    fkey_reg = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)fkey_reg, computed_key_inner_idx));
+                    // CALL convention: this at callee_reg + 1, result into callee_reg.
+                    ushort this_slot = self.alloc_reg();
+                    self.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)this_slot, 0));
+                    self.emit_abc(Opcode.CALL, (uint)fkey_reg, (uint)fkey_reg, 0);
+                    self.free_reg(this_slot);
+                    self.emit_abc(Opcode.TOPROPKEY, (uint)fkey_reg, 0, 0);
+                }
+                if (computed_key_inner_idx == 0xFFFFFFFE) {
+                    // Inline key also needs in-place TOPROPKEY.
+                    self.emit_abc(Opcode.TOPROPKEY, (uint)fkey_reg, 0, 0);
+                }
+                uint fkey_name_idx = self.add_string_constant(fkey_slot);
+                self.emit_a_bc(Opcode.PUTLEX, (uint)fkey_reg, fkey_name_idx);
+                self.free_reg(fkey_reg);
+                computed_field_key_count++;
+            }
+
+            // The field initializer value: assigned via `=` (or undefined).
+            // ES2022 §15.7.10 step 7: an anonymous function definition
+            // initializer gets SetFunctionName with the field name — the
+            // *literal* key for static-name fields, the *value* (always the
+            // empty string for computed keys) for computed fields. We pass
+            // the literal name for both; the only observable difference is
+            // that empty-named function names come out empty (matching §B.3.4
+            // step 1.a which says `let key = ? evaluation of PropertyName;`
+            // for computed keys — and PropertyName evaluation of `[expr]` is
+            // the empty string per §12.2.6.9). ToPropertyKey on the key in
+            // step 8.b does not feed the function name.
+            bool use_inferred = !has_computed_key;
+            if (use_inferred) {
+                target_ctx.has_inferred_name = true;
+                if (field_propname.len < 128) {
+                    for (usz i = 0; i < field_propname.len; i++) {
+                        target_ctx.inferred_name_buf[i] = field_propname[i];
+                    }
+                    target_ctx.inferred_name_len = (ushort)field_propname.len;
+                } else {
+                    target_ctx.inferred_name_len = 0;
+                }
+            }
+
+            ushort init_reg;
+            if (self.match(TokenType.ASSIGN)) {
+                init_reg = target_ctx.assignment_expr()!;
+            } else {
+                init_reg = target_ctx.alloc_reg();
+                target_ctx.emit_abc(Opcode.LDUNDEF, (uint)init_reg, 0, 0);
+            }
+
+            if (use_inferred) {
+                target_ctx.has_inferred_name = false;
+                target_ctx.inferred_name_len = 0;
+            }
+
+            // Optional semicolon between field declarations.
+            target_ctx.match(TokenType.SEMICOLON);
+
+            // The actual install goes into the init function:
+            //   __field_init__:  this[propname] = init_reg;   (WEC, own)
+            //   __static_init__: ctor[propname] = init_reg;
+            // Use INITPROP (CreateDataPropertyOrThrow semantics — WEC own,
+            // no prototype-chain walk, no setters triggered). For computed
+            // keys, the key value is read from the hidden slot set above.
+            ushort this_reg = target_ctx.alloc_reg();
+            target_ctx.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)this_reg, 0));
+            ushort key_reg = target_ctx.alloc_reg();
+            if (has_computed_key) {
+                target_ctx.emit(bytecode::make_a_bc(Opcode.GETVAR, (uint)key_reg,
+                    target_ctx.add_string_constant(fkey_slot)));
+            } else if (method_name_is_number) {
+                uint key_idx = target_ctx.add_number_constant(method_name_num_value);
+                target_ctx.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+            } else if (method_name_is_bigint) {
+                uint key_idx = target_ctx.add_bigint_constant(method_name_bigint_src)!;
+                target_ctx.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+            } else if (method_name.type == TokenType.STRING) {
+                uint key_idx = target_ctx.add_string_constant(method_name.str_value);
+                target_ctx.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+            } else {
+                uint key_idx = target_ctx.add_string_constant(field_propname);
+                target_ctx.emit(bytecode::make_a_bc(Opcode.LDCONST, (uint)key_reg, key_idx));
+            }
+            // TOPROPKEY in-place so a symbol-coercing key doesn't leak the
+            // coercion through a later GETPROP. Symmetric with object-literal
+            // emission.
+            target_ctx.emit_abc(Opcode.TOPROPKEY, (uint)key_reg, 0, 0);
+            target_ctx.emit_abc(Opcode.INITPROP, (uint)this_reg, (uint)key_reg, (uint)init_reg);
+            target_ctx.free_reg(key_reg);
+            target_ctx.free_reg(this_reg);
+            target_ctx.free_reg(init_reg);
+
+            // Record a pseudo-method entry so the install loop (after the
+            // class body, where computed key values are bound into the class
+            // env in source order) handles computed-key install. For
+            // non-computed public fields, the key is a literal constant
+            // known at compile time; the install loop uses the literal-name
+            // path and `is_field_key` is unnecessary — skip the entry.
+            if (has_computed_key && method_count < MAX_CLASS_METHODS) {
+                methods[method_count].name = {};
+                methods[method_count].inner_idx = 0xFFFFFFFF;
+                methods[method_count].is_static = is_static;
+                methods[method_count].is_getter = false;
+                methods[method_count].is_setter = false;
+                methods[method_count].name_is_number = false;
+                methods[method_count].name_is_bigint = false;
+                methods[method_count].computed_key_inner_idx = 0xFFFFFFFF;
+                methods[method_count].computed_key_reg = 0xFFFF;
+                methods[method_count].is_private = false;
+                methods[method_count].is_field_key = true;
+                methods[method_count].field_key_slot_name = fkey_slot;
+                method_count++;
+            }
+
+            if (is_static) { static_field_count++; } else { field_count++; }
+            continue;
         }
 
         // Compile the method as an inner function

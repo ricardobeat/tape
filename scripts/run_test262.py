@@ -169,8 +169,7 @@ UNSUPPORTED_PATTERN = re.compile(
     # operator (P6), public fields (P7), and static blocks — note
     # class-fields-private-in must stay listed explicitly now that the
     # broader class-fields-private pattern is gone)
-    r"class-fields-private-in|class-fields-public|"
-    r"class-static-fields-public|"
+    r"class-fields-private-in|"
     r"class-static-block|"
     # Other unimplemented ES features
     r"object-rest|logical-assignment|numeric-separator-literal|align-detached-buffer-semantics-with-web-reality"
