@@ -3504,6 +3504,16 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     arrow_ctx.emit_destruct_bindings(arrow_destruct_binds[..], arrow_destruct_count,
                                      arrow_destruct_group_regs[..], arrow_destruct_binding_regs[..]);
 
+    // Per ES2015 §9.2.10 step 27: when hasParameterExpressions is true,
+    // a separate VariableEnvironment is needed for the function body so
+    // that closures created by default parameter expressions do not have
+    // visibility of var declarations in the function body.
+    // PUSH_VAR creates a new var_env (and lex_env) child of the current
+    // var_env, isolating body vars from the parameter scope.
+    if (has_func_lex) {
+        arrow_ctx.emit_simple(Opcode.PUSH_VAR);
+    }
+
     // Determine if body is block or expression. Capture `body_end_pos` right
     // after the last body token (before any trailing whitespace or comment) so
     // Function.prototype.toString returns the exact source span.
@@ -3540,6 +3550,11 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
         ushort expr_reg = arrow_ctx.assignment_expr()!;
         arrow_ctx.emit_a_bc(Opcode.RET, (uint)expr_reg, 0);
         body_end_pos = arrow_ctx.lexer.pos;
+    }
+
+    // Pop the body's variable scope (undo PUSH_VAR)
+    if (has_func_lex) {
+        arrow_ctx.emit_simple(Opcode.POP_VAR);
     }
 
     // Pop the function-level lexical scope
