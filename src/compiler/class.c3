@@ -182,6 +182,14 @@ fn void? CompilerContext.class_declaration(&self, char[]* out_name = null, bool 
                (name_tt == TokenType.YIELD && !self.is_generator)) {
         class_name = self.advance()!.str_value;
     } else if (allow_anonymous && (name_tt == TokenType.EXTENDS || name_tt == TokenType.LBRACE)) {
+        // ES2024 §16.2.3.7: `export default class { ... }` — the class's
+        // [[FunctionName]] is the literal string "default" (visible via
+        // `this.name` in static field initializers — see
+        // test262 class-name-static-initializer-default-export). The
+        // OUTER binding uses an internal name ("*default*") so the
+        // declared-export machinery can identify the symbol; the function
+        // object's `.name` is separately overridden to "default" in
+        // parse_class_tail_with_name via the is_default_export flag.
         class_name = "*default*";
     } else {
         return COMPILE_ERROR~;
@@ -225,7 +233,13 @@ fn void? CompilerContext.class_declaration(&self, char[]* out_name = null, bool 
     // emits the PUTLEX_C (initializing the class-name binding) and the
     // matching POP_LEX BEFORE the static initializer runs — required so
     // static field initializers can see the class name (§15.7.14).
-    ushort ctor_reg = self.parse_class_tail_with_name(class_name, class_decl_src_start, false, class_reg, class_name_idx)!;
+    // Anonymous default-export: `export default class { ... }` — the
+    // constructor's visible `.name` must be the literal "default"
+    // (ES2024 §16.2.3.7), distinct from the internal binding name
+    // "*default*" used by the declared-export machinery. A named
+    // `export default class Foo {}` keeps `.name = "Foo"`.
+    bool is_default_export = allow_anonymous && str_eq(class_name, "*default*");
+    ushort ctor_reg = self.parse_class_tail_with_name(class_name, class_decl_src_start, false, class_reg, class_name_idx, is_default_export)!;
 
     // Store the constructor into the OUTER let binding so `Foo` resolves to
     // the constructor from outside the class declaration as well.
@@ -316,7 +330,12 @@ fn ushort? CompilerContext.class_expression(&self) {
 /// run (so e.g. `(Object.preventExtensions(C), "Test262")` inside a static
 /// initializer can refer to `C`).  When zero, the caller is responsible for
 /// the PUTLEX_C/POP_LEX — pass through to the previous single-mode behaviour.
-fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, uint class_src_start = 0xFFFFFFFF, bool is_expr = false, ushort class_name_reg = MAX_REGISTERS, uint class_name_str_idx = 0) {
+///
+/// `is_default_export`: when true, the class is the anonymous body of
+/// `export default class { ... }`. The runtime-visible `.name` must be the
+/// literal string "default" (ES2024 §16.2.3.7), distinct from the binding
+/// name "*default*" the compiler uses for the declared-export machinery.
+fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, uint class_src_start = 0xFFFFFFFF, bool is_expr = false, ushort class_name_reg = MAX_REGISTERS, uint class_name_str_idx = 0, bool is_default_export = false) {
     // Save state for restoration after class body
     bool saved_in_class_body = self.in_class_body;
     bool saved_has_super = self.has_super_binding;
@@ -340,6 +359,11 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     char[] static_super_name = "__static_super__";
     ushort static_super_reg = self.declare_var(static_super_name, LET);
     uint static_super_name_idx = self.add_string_constant(static_super_name);
+
+    // For default-exported anonymous classes, the constructor's visible
+    // `.name` is the literal "default" (ES2024 §16.2.3.7); the binding
+    // name "*default*" is a compiler-private symbol.
+    char[] ctor_runtime_name = is_default_export ? "default" : class_name;
 
     // Parse optional extends clause
     ushort base_reg = MAX_REGISTERS;
@@ -1092,10 +1116,12 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                 method_name_len = priv_prefix.len + priv_name_len;
             }
         } else if (is_constructor) {
-            // Constructor's name = className (empty for anonymous class)
-            if (class_name.len < 128 && !class_has_static_name) {
-                for (usz i = 0; i < class_name.len; i++) method_name_buf[i] = class_name[i];
-                method_name_len = class_name.len;
+            // Constructor's name = the runtime-visible className (not the
+            // internal "*default*" binding name for default-exported
+            // classes). Empty for an anonymous class expression.
+            if (ctor_runtime_name.len < 128 && !class_has_static_name) {
+                for (usz i = 0; i < ctor_runtime_name.len; i++) method_name_buf[i] = ctor_runtime_name[i];
+                method_name_len = ctor_runtime_name.len;
             }
         } else if (has_computed_key) {
             // Leave name empty — the actual key is computed at class evaluation time.
@@ -1199,7 +1225,10 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
     // `name` method, it defines an own "name" property on the constructor
     // that overrides the auto-set one. Suppress the inferred name so the
     // static method installation can succeed.
-    char[] ctor_class_name = class_name;
+    // Default constructor (no explicit one in the class body) inherits the
+    // runtime-visible className as `.name` (not the internal "*default*"
+    // binding name for default-exported classes).
+    char[] ctor_class_name = ctor_runtime_name;
     if (class_has_static_name) ctor_class_name = {};
     if (ctor_inner_idx == 0xFFFFFFFF) {
         heap::Heap* hp = (heap::Heap*)self.heap;

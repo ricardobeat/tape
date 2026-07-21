@@ -221,6 +221,13 @@ fn bool initprop_define(Vm* vm, HObject* hobj, TVal* key_val, TVal* val, bool is
         }
         // non-configurable, object-literal: do nothing (silent)
     } else {
+        // CreateDataPropertyOrThrow (ES2022 §7.3.4): if O.[[Extensible]] is
+        // false (e.g. `Object.freeze(this)` inside a sibling field
+        // initializer), throw TypeError. The object-literal path silently
+        // drops (matches the legacy loose behavior).
+        if (is_class_field && !hobj.is_extensible()) {
+            return false;
+        }
         hobj.put_prop(key, *val, hobject::PROP_FLAGS_WEC);
     }
     return true;
