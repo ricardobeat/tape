@@ -3231,10 +3231,43 @@ fn TVal? Vm.run(Vm* vm) {
             if ((callee_act.flags & ACT_FLAG_SUPER_CTOR) != 0
                     && vm.activation_count > 0
                     && callee_result != null && callee_result.is_object()) {
+                // §8.1.1.3.1 BindThisValue step 3, escaped-arrow case: if the
+                // caller's `this_binding` already carries the "super was called"
+                // flag (stamped on the derived ctor's this by the first super()
+                // and re-resolved via captured_this for arrows), the derived
+                // ctor's this was already initialised — re-binding throws
+                // ReferenceError. Without this, the live-frame walk returns
+                // false when the derived ctor's frame is gone.
+                CompiledFunction* super_caller_cf = (CompiledFunction*)ds.act.func;
+                if (super_caller_cf != null && super_caller_cf.is_arrow()
+                        && ds.act.this_binding.is_object()
+                        && ds.act.this_binding.get_heapptr() != null) {
+                    HObject* caller_this_h = (HObject*)ds.act.this_binding.get_heapptr();
+                    HString* caller_flag_key = builtins::builtin_intern_string(vm.heap, "@@__derived_super_called__");
+                    TVal caller_fv = caller_this_h.get_prop(caller_flag_key) ?? (TVal){};
+                    if (!caller_fv.is_undefined() && caller_fv.get_boolean()) {
+                        super_already_bound = true;
+                    }
+                }
                 // The result of super() is in callee_result (already written
                 // above). The immediate caller may be an arrow or a method the
                 // arrow was invoked through — walk up to the derived ctor.
-                super_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result, &super_bound_act);
+                if (!super_already_bound) {
+                    super_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result, &super_bound_act);
+                }
+                // Stamp a "super called" flag on the newly-bound instance
+                // (the derived ctor's `this`) so that an escaped arrow's
+                // subsequent super() can detect the already-initialised state
+                // even when the derived ctor's frame is no longer on the call
+                // stack (per §8.1.1.3.1 BindThisValue step 3).
+                if (super_bound_act != null
+                        && super_bound_act.this_binding.is_object()
+                        && super_bound_act.this_binding.get_heapptr() != null) {
+                    HString* super_called_key = builtins::builtin_intern_string(vm.heap, "@@__derived_super_called__");
+                    TVal true_tv; true_tv.set_boolean(true);
+                    HObject* this_hobj = (HObject*)super_bound_act.this_binding.get_heapptr();
+                    this_hobj.put_prop(super_called_key, true_tv, hobject::PROP_FLAGS_NNC);
+                }
             }
 
             // ES2015 §9.2.2 step 13.c: now in the caller's context, throw TypeError.
@@ -3364,7 +3397,37 @@ fn TVal? Vm.run(Vm* vm) {
                     && vm.activation_count > 0
                     && callee_result != null && callee_result.is_object()) {
                 Activation* su_bound_act = null;
-                bool su_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result, &su_bound_act);
+                bool su_already_bound = false;
+                // §8.1.1.3.1 BindThisValue step 3, escaped-arrow case: see RET
+                // handler. Without this, the live-frame walk returns false
+                // when the derived ctor's frame is gone.
+                CompiledFunction* su_caller_cf = (CompiledFunction*)ds.act.func;
+                if (su_caller_cf != null && su_caller_cf.is_arrow()
+                        && ds.act.this_binding.is_object()
+                        && ds.act.this_binding.get_heapptr() != null) {
+                    HObject* su_caller_h = (HObject*)ds.act.this_binding.get_heapptr();
+                    HString* su_flag_key = builtins::builtin_intern_string(vm.heap, "@@__derived_super_called__");
+                    TVal su_fv = su_caller_h.get_prop(su_flag_key) ?? (TVal){};
+                    if (!su_fv.is_undefined() && su_fv.get_boolean()) {
+                        su_already_bound = true;
+                    }
+                }
+                if (!su_already_bound) {
+                    su_already_bound = super_init_this_chain(vm, &vm.activations[vm.activation_count - 1], callee_result, &su_bound_act);
+                }
+                // Stamp a "super called" flag on the newly-bound instance
+                // (the derived ctor's `this`) so that an escaped arrow's
+                // subsequent super() can detect the already-initialised state
+                // even when the derived ctor's frame is no longer on the call
+                // stack (per §8.1.1.3.1 BindThisValue step 3).
+                if (su_bound_act != null
+                        && su_bound_act.this_binding.is_object()
+                        && su_bound_act.this_binding.get_heapptr() != null) {
+                    HString* super_called_key = builtins::builtin_intern_string(vm.heap, "@@__derived_super_called__");
+                    TVal true_tv; true_tv.set_boolean(true);
+                    HObject* this_hobj = (HObject*)su_bound_act.this_binding.get_heapptr();
+                    this_hobj.put_prop(super_called_key, true_tv, hobject::PROP_FLAGS_NNC);
+                }
                 // §8.1.1.3.1 BindThisValue step 3: a second super() call — the
                 // superclass constructor already ran (side effects above), but
                 // binding its result to `this` again is a ReferenceError.
