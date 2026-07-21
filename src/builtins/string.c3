@@ -1086,7 +1086,15 @@ fn void builtin_string_proto_toLocaleUpperCase(BuiltinContext* ctx) {
 }
 
 /// String.prototype.localeCompare(that) — ES5 §15.5.4.12
+/// String.prototype.localeCompare(that) — ES5 §15.5.4.12
+///
 /// Returns <0, 0, or >0 based on lexicographic comparison.
+/// Per ES2018 §12.3.3.2, must treat Strings that are canonically
+/// equivalent under Unicode NFC as identical (return 0). For example,
+/// "o\u0308" (o + combining diaeresis) and "ö" (precomposed ö) must
+/// compare equal even though their UTF-8 byte sequences differ. We
+/// NFC-normalize both operands via libunicode (QuickJS's vendored
+/// normalization tables) before the byte-level compare.
 fn void builtin_string_proto_localeCompare(BuiltinContext* ctx) {
     HString* s_hstr = string_proto_get_this(ctx);
     if (s_hstr == null) {
@@ -1104,19 +1112,137 @@ fn void builtin_string_proto_localeCompare(BuiltinContext* ctx) {
         ctx.result.set_undefined();
         return;
     }
+
+    // NFC normalize both operands (canonical equivalence) — bytes differ
+    // but codepoints are equivalent after normalization. Short-circuit
+    // byte-equal strings: most compare() calls (localeSort, Intl.Collator
+    // fast path, etc.) are on pre-normalized ASCII.
+    if (s_hstr == that_hstr ||
+            (s_hstr.blen == that_hstr.blen &&
+             mem::equals(s_hstr.get_cstr(), that_hstr.get_cstr(), (usz)s_hstr.blen))) {
+        ctx.result.set_number(0.0);
+        return;
+    }
+
     char* a = s_hstr.get_cstr();
     uint a_len = s_hstr.blen;
     char* b = that_hstr.get_cstr();
     uint b_len = that_hstr.blen;
-    usz min_len = a_len < b_len ? (usz)a_len : (usz)b_len;
-    for (usz i = 0; i < min_len; i++) {
-        int diff = (int)a[i] - (int)b[i];
-        if (diff != 0) {
-            ctx.result.set_number((double)diff);
+
+    // Decode both strings to UTF-32 codepoints
+    uint[4096] a_cp_buf;
+    uint[4096] b_cp_buf;
+    uint* a_src = &a_cp_buf[0];
+    uint* b_src = &b_cp_buf[0];
+    int a_cap = 4096;
+    int b_cap = 4096;
+    bool a_heap = false;
+    bool b_heap = false;
+
+    // First pass: estimate codepoint count and decide on storage.
+    int a_n = (int)utf8_codepoint_count(a, a_len);
+    int b_n = (int)utf8_codepoint_count(b, b_len);
+    if (a_n > 4096) {
+        a_src = (uint*)alloc::malloc_try(mem, (sz)(a_n * 4)) ?? null;
+        if (a_src == null) { a_src = &a_cp_buf[0]; a_n = 4096; } else { a_heap = true; a_cap = a_n; }
+    }
+    if (b_n > 4096) {
+        b_src = (uint*)alloc::malloc_try(mem, (sz)(b_n * 4)) ?? null;
+        if (b_src == null) { b_src = &b_cp_buf[0]; b_n = 4096; } else { b_heap = true; b_cap = b_n; }
+    }
+    a_n = utf8_decode(a_src, a_cap, a, (uint)a_len);
+    b_n = utf8_decode(b_src, b_cap, b, (uint)b_len);
+
+    // NFC normalize both
+    int a_norm_len = 0;
+    int b_norm_len = 0;
+    uint* a_norm = unicode_bindings::unicode_normalize_simple(a_src, a_n, unicode_bindings::UNICODE_NFC, &a_norm_len);
+    uint* b_norm = unicode_bindings::unicode_normalize_simple(b_src, b_n, unicode_bindings::UNICODE_NFC, &b_norm_len);
+    defer {
+        if (a_heap) mem::free(a_src);
+        if (b_heap) mem::free(b_src);
+        if (a_norm != null) mem::free(a_norm);
+        if (b_norm != null) mem::free(b_norm);
+    }
+
+    // If normalization failed, fall back to byte compare.
+    if (a_norm == null || b_norm == null) {
+        usz min_len = a_len < b_len ? (usz)a_len : (usz)b_len;
+        for (usz i = 0; i < min_len; i++) {
+            int diff = (int)(char)a[i] - (int)(char)b[i];
+            if (diff != 0) {
+                ctx.result.set_number((double)diff);
+                return;
+            }
+        }
+        ctx.result.set_number((double)((int)a_len - (int)b_len));
+        return;
+    }
+
+    // Compare normalized codepoint arrays
+    int min_n = a_norm_len < b_norm_len ? a_norm_len : b_norm_len;
+    for (int i = 0; i < min_n; i++) {
+        if (a_norm[i] != b_norm[i]) {
+            ctx.result.set_number((double)((int)a_norm[i] - (int)b_norm[i]));
             return;
         }
     }
-    ctx.result.set_number((double)((int)a_len - (int)b_len));
+    ctx.result.set_number((double)(a_norm_len - b_norm_len));
+}
+
+/// Decode a UTF-8 byte sequence into uint32_t codepoints. Returns the
+/// number of codepoints decoded. Invalid sequences are replaced with
+/// U+FFFD (replacement character). `out` must have capacity >= byte count.
+fn int utf8_decode(uint* out, int out_cap, char* s, uint len) {
+    int n = 0;
+    uint i = 0;
+    while (i < len && n < out_cap) {
+        char c = s[i];
+        uint cp;
+        if ((c & 0x80) == 0) {
+            cp = (uint)c;
+            i += 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            if (i + 1 >= len) { cp = 0xFFFD; i = len; }
+            else {
+                cp = ((uint)(c & 0x1F) << 6) | (uint)(s[i+1] & 0x3F);
+                i += 2;
+            }
+        } else if ((c & 0xF0) == 0xE0) {
+            if (i + 2 >= len) { cp = 0xFFFD; i = len; }
+            else {
+                cp = ((uint)(c & 0x0F) << 12) |
+                     ((uint)(s[i+1] & 0x3F) << 6) |
+                     (uint)(s[i+2] & 0x3F);
+                i += 3;
+            }
+        } else if ((c & 0xF8) == 0xF0) {
+            if (i + 3 >= len) { cp = 0xFFFD; i = len; }
+            else {
+                cp = ((uint)(c & 0x07) << 18) |
+                     ((uint)(s[i+1] & 0x3F) << 12) |
+                     ((uint)(s[i+2] & 0x3F) << 6) |
+                     (uint)(s[i+3] & 0x3F);
+                i += 4;
+            }
+        } else {
+            cp = 0xFFFD;
+            i += 1;
+        }
+        out[n++] = cp;
+    }
+    return n;
+}
+
+/// Estimate the number of UTF-32 codepoints in a UTF-8 byte sequence.
+/// Overestimates for multi-byte sequences (1 byte → 1 cp minimum).
+fn uint utf8_codepoint_count(char* s, uint len) {
+    uint n = 0;
+    for (uint i = 0; i < len; i++) {
+        char c = s[i];
+        if ((c & 0xC0) != 0x80) n++;  // not a continuation byte
+    }
+    return n;
 }
 
 /// String.prototype.trim() — ES5 §15.5.4.20
