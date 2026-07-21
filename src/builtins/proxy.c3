@@ -853,24 +853,50 @@ fn bool array_set_length_desc(void* vm, Heap* heap, HObject* obj, ProxyDesc* des
     }
 
     // Apply the new length value, deleting elements and checking configurable.
+    // Step 3.l walks every index from old_len-1 down to new_len, but [[Delete]]
+    // on an absent index is a silent no-op, so the only observable indices are
+    // the object's own array-index keys — walking every integer down from
+    // old_len (which can be close to 2^32) hangs for hours on sparse arrays
+    // with huge indices. Instead: find the highest own array-index key in
+    // [arr_new_len, old_len) that is non-configurable (that's exactly the
+    // index step 3.l would first refuse to delete, since it walks downward),
+    // then delete every configurable own array-index key above that floor.
     bool threw_type_error = false;
     if (arr_has_new_len && arr_new_len < old_len) {
-        // Step 3.l: iterate down from old_len-1, deleting configurable elements.
-        // Stop (and throw TypeError) if a non-configurable element is found.
-        uint di = old_len;
-        while (di > arr_new_len) {
-            di--;
-            HString* idx_key = heap.int_to_hstring((long)di);
-            if (idx_key != null) {
-                int elem_idx = obj.find_prop_idx(idx_key);
-                if (elem_idx >= 0 && !obj.get_prop_flags((uint)elem_idx).configurable) {
-                    // Non-configurable element — stop here, set length to di+1.
-                    arr_new_len = di + 1;
-                    threw_type_error = true;
-                    break;
+        uint delete_floor = arr_new_len;
+        ushort pc = obj.prop_count;
+        for (ushort pi = 0; pi < pc; pi++) {
+            void* pk = obj.prop_key_at((uint)pi);
+            if (pk != null) {
+                HString* pks = (HString*)pk;
+                if (pks.is_arridx()) {
+                    uint ai = pks.array_index();
+                    if (ai >= arr_new_len && ai < old_len && ai + 1 > delete_floor
+                        && !obj.get_prop_flags((uint)pi).configurable) {
+                        delete_floor = ai + 1;
+                    }
                 }
-                // delete_prop() also clears the dense-array slot (if any).
-                obj.delete_prop(idx_key);
+            }
+        }
+        if (delete_floor > arr_new_len) {
+            arr_new_len = delete_floor;
+            threw_type_error = true;
+        }
+        // Walk backward so delete_prop's slot-compaction never invalidates
+        // an index we haven't visited yet.
+        pc = obj.prop_count;
+        ushort pi = pc;
+        while (pi > 0) {
+            pi--;
+            void* pk = obj.prop_key_at((uint)pi);
+            if (pk != null) {
+                HString* pks = (HString*)pk;
+                if (pks.is_arridx()) {
+                    uint ai = pks.array_index();
+                    if (ai >= arr_new_len && ai < old_len) {
+                        obj.delete_prop(pk);
+                    }
+                }
             }
         }
     }
