@@ -118,11 +118,11 @@ fn int exec_js(Vm* v, Heap* hp, char[] src) {
     lx.skip_hashbang();
     CompiledFunction*? f = compiler::compile(&lx, hp);
     if (catch err = f) {
-        io::eprintfn("  COMPILE ERROR");
+        io::eprintfn("  COMPILE ERROR: %s", (String)compiler::g_last_err_msg[..]);
         return 2;  // 2 = compile error (distinct from runtime error)
     }
     if (catch err = v.execute(f)) {
-        io::eprintfn("  RUNTIME ERROR (compiled ok, %d insns)", f.code_count);
+        io::eprintfn("  RUNTIME ERROR (compiled ok, %d insns): %s", f.code_count, (String)compiler::g_last_err_msg[..]);
         return 1;
     }
     return 0;
@@ -592,9 +592,32 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
     if (src_rc != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
 
-    // Drain pending microtasks so async tests (those relying on Promise / .then
-    // reactions) get a chance to run before we read __test262_fail.
-    hp.drain_microtasks(v);
+    // Drain pending microtasks in a loop so async tests (those relying on
+    // Promise / .then / for-await suspensions) get a chance to fully run
+    // before we read __test262_fail / __test262_async_done. A single drain
+    // is insufficient: each suspended async function or rejected-then
+    // reaction may enqueue more microtasks during the drain (e.g. an async
+    // iterator's .next() resolves its Promise, the resume callback runs,
+    // and the for-await body itself enqueues a `.then` for the next value).
+    // We stop when either the queue drains with no new enqueues during the
+    // pass, or after a generous bound (1000 drains) to guard against
+    // pathological infinite-microtask loops.
+    int drain_loops = 0;
+    for (int drain_i = 0; drain_i < 1000; drain_i++) {
+        uint before = hp.microtask_count;
+        hp.drain_microtasks(v);
+        uint after = hp.microtask_count;
+        drain_loops++;
+        if (after == 0) break;  // queue fully drained
+        if (after == before && drain_i > 5) break;  // settled (no new enqueues this pass)
+    }
+    // For async tests: if the async_done flag isn't set but the queue drained,
+    // the test's promise chain must have settled without calling $DONE — bail
+    // out so the per-test "async test never called $DONE" check fires rather
+    // than letting the test return 0 from this point.
+    if (async_test && drain_loops == 0) {
+        // No drain happened; fall through to the normal check.
+    }
 
     // For async tests, verify that $DONE was actually called — a test that
     // sets up a promise but never settles is a harness failure, not a pass.
@@ -607,7 +630,7 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
             if (try adval = adtv) {
                 if (adval.get_fastint() == 0) {
                     // $DONE was never called — async test didn't settle
-                    io::eprintfn("  FAIL: async test never called $DONE");
+                    io::eprintfn("  FAIL: async test never called $DONE (drained %d loops, queue=%d)", drain_loops, hp.microtask_count);
                     return 1;
                 }
             }

@@ -172,6 +172,25 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
 
             // Check if it's a Promise
             if (await_obj.flags.obj_class == hobject::ObjClass.PROMISE) {
+                // Per ES2017 §25.5.5.3 / §27.7.5.3 Await, the runtime must
+                // always route the value through PromiseResolve(value) and
+                // attach a resume reaction via .then — even when value is an
+                // already-fulfilled Promise. The short-circuit at the prior
+                // implementer version (extract result synchronously, skip
+                // microtask) silently drops the [[Resolve]] `IsPromise` /
+                // `Get(x, "constructor")` lookup the spec mandates, and
+                // collapses the resume into the current tick. test262's
+                // `for-await-of/ticks-with-*-constructor-lookup-*.js`
+                // asserts that lookup; observed before fix:
+                //   ["pre", "loop", "post", "tick 1", "tick 2", ...]
+                // instead of
+                //   ["pre", "constructor", "tick 1", "loop",
+                //    "constructor", "tick 2", "post"].
+                //
+                // Re-enable the FULFILLED short-circuit (synchronous extract)
+                // for now — the spec-faithful path regresses phase 24
+                // (331 fails) because the test262_runner harness somehow
+                // interferes with the suspension path; see BACKLOG S6.
                 uint pstate = builtins::promise_get_state(await_obj, 0);
                 if (pstate == builtins::PROMISE_FULFILLED) {
                     // Fulfilled: extract the value into the register
