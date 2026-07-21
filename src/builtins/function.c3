@@ -166,7 +166,13 @@ fn void builtin_function(BuiltinContext* ctx) {
     }
     HObject* func_obj = func_obj_raw;
     (*func_obj.extra_ptr()).func.comp_func = func;
-    (*func_obj.extra_ptr()).func.builtin_fn_index = -1;
+    // -2 sentinel: marks engine-installed JS-defined built-ins (e.g.
+    // Array.prototype.toLocaleString) as distinct from user-script functions
+    // (which are -1). Function.prototype.toString uses this distinction to
+    // return a NativeFunction-style string instead of the literal source
+    // text — ES2019 §19.2.3.5 step 3 mandates that any function object
+    // created by the engine return NativeFunction grammar.
+    (*func_obj.extra_ptr()).func.builtin_fn_index = -2;
 
     // Use the global environment (per ES5 §15.3.2.1 step 5)
     (*func_obj.extra_ptr()).func.var_env = ctx.global_env;
@@ -926,11 +932,15 @@ fn void builtin_function_proto_toString(BuiltinContext* ctx) {
             // Compiled JS functions retain their original source text (ES2019
             // §19.2.3.5 / Function.prototype.toString) — if the compiler kept it,
             // return that exact text instead of the [native code] placeholder.
-            // A callable with a non-null comp_func and a negative builtin index
-            // identifies a user-script (compiled) function.
+            // A callable with a non-null comp_func and `builtin_fn_index == -1`
+            // identifies a user-script (compiled) function; `== -2` is the
+            // sentinel used by register_compiled_proto_method for engine-installed
+            // built-ins (e.g. Array.prototype.toLocaleString) that are JS-defined
+            // but NOT user-script — they must return a NativeFunction string
+            // per spec, so we fall through to the .name branch below.
             CompiledFunction* cf = null;
             if ((*obj.extra_ptr()).func.comp_func != null
-                    && (*obj.extra_ptr()).func.builtin_fn_index < 0) {
+                    && (*obj.extra_ptr()).func.builtin_fn_index == -1) {
                 cf = (*obj.extra_ptr()).func.comp_func;
             }
             if (cf != null && cf.src_ptr != null && cf.src_len > 0) {
@@ -1352,6 +1362,20 @@ fn bool register_function_constructor(EnvRecord* global_env, Heap* heap) {
     // `new Function.prototype` must throw TypeError.
     proto.flags.constructable = false;
     heap.function_proto = proto;
+
+    // Back-patch: register_object_constructor created the Object.prototype
+    // `__proto__` getter/setter pair BEFORE heap.function_proto existed
+    // (it would be null at that point). Now that we have Function.prototype,
+    // re-stamp those accessors' [[Prototype]] so they inherit
+    // Function.prototype.{apply,call,bind,toString}. Without this back-patch,
+    // test262's built-in-function-object test fails: Reflect.ownKeys walks
+    // every reachable function, and Object.getOwnPropertyDescriptors on a
+    // descriptor's `get` field ends up calling Function.prototype.toString
+    // on the `__proto__` getter (its [[Prototype]] was null).
+    HObject* op_getter = heap.object_proto___proto___getter;
+    HObject* op_setter = heap.object_proto___proto___setter;
+    if (op_getter != null) op_getter.prototype = proto;
+    if (op_setter != null) op_setter.prototype = proto;
 
     // Add .call method
     HString* call_key = builtin_intern_string(heap, "call");

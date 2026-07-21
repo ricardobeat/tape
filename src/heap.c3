@@ -227,6 +227,17 @@ struct Heap {
     HObject* uri_err_proto;
     HObject* aggregate_err_proto;
 
+    // Object.prototype.__proto__ getter/setter — set by register_object_constructor
+    // (which runs BEFORE Function.prototype exists) and back-patched by
+    // register_function_constructor once `function_proto` is allocated. The
+    // back-patch re-stamps the accessor's [[Prototype]] so the `get __proto__`
+    // function can resolve Function.prototype.{apply,call,bind,toString} —
+    // without it, test262's built-in-function-object test crashes when
+    // `Reflect.ownKeys` walks Object.getOwnPropertyDescriptors(Object).get
+    // and calls Function.prototype.toString on a null-prototype function.
+    HObject* object_proto___proto___getter;
+    HObject* object_proto___proto___setter;
+
     // Built-in constructor prototypes
     HObject* object_proto;
     HObject* bool_proto;
@@ -1162,6 +1173,8 @@ fn void Heap.reset(&self) {
     self.uri_err_proto    = null;
     self.aggregate_err_proto = null;
     self.object_proto     = null;
+    self.object_proto___proto___getter = null;
+    self.object_proto___proto___setter = null;
     self.bool_proto       = null;
     self.string_proto     = null;
     self.number_proto     = null;

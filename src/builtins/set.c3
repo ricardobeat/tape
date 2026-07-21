@@ -393,6 +393,7 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
     if (catch err = ctor_raw) return false;
     HObject* ctor = ctor_raw;
+    ctor.prototype = heap.function_proto;
     (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.SET.ordinal;
 
     // Set .constructor on Set.prototype
