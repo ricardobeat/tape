@@ -1556,6 +1556,24 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global, bool checks_only = f
             }
         }
 
+        // An arrow function's block body is its own VarDeclaredNames scope —
+        // skip it whole so its `var`s never hoist into this scope (arrows
+        // with expression bodies contain no statement-level `var`s and any
+        // nested function/class braces they carry are handled by their own
+        // skip cases). Without this, `(() => { var q; })()` leaks `q` into
+        // the enclosing function's scope.
+        if (tt == TokenType.ARROW) {
+            Token? arrow_body = self.lexer.next_token();
+            if (catch _err_ab = arrow_body) continue;
+            if (arrow_body.type == TokenType.LBRACE) {
+                self.skip_braced_block();
+            } else {
+                Token ab_tok = arrow_body;
+                self.lexer.pushback(ab_tok);
+            }
+            continue;
+        }
+
         if (tt == TokenType.CLASS) {
             // A class body is its own VarDeclaredNames scope — skip it whole
             // so a method/field-initializer's `var` locals never leak into
@@ -1919,6 +1937,21 @@ fn void? CompilerContext.hoist_global_fn_decls(&self, bool checks_only = false) 
             if (brace_depth == 0) {
                 prev_toplevel = TokenType.RBRACE;
                 has_prev = true;
+            }
+            continue;
+        }
+
+        // An arrow function's block body is its own scope — skip it whole so
+        // a `function` declaration inside it is never hoisted to global (same
+        // boundary rule as hoist_decls; see the ARROW case there).
+        if (tt == TokenType.ARROW) {
+            Token? g_arrow_body = self.lexer.next_token();
+            if (catch _err_gab = g_arrow_body) continue;
+            if (g_arrow_body.type == TokenType.LBRACE) {
+                self.skip_braced_block();
+            } else {
+                Token gab_tok = g_arrow_body;
+                self.lexer.pushback(gab_tok);
             }
             continue;
         }
@@ -3251,6 +3284,16 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     arrow_ctx.eval_mode = self.eval_mode;
     arrow_ctx.eval_direct_in_function = self.eval_direct_in_function;
 
+    // The arrow's own function scope. Arrows have no call-time var_env of
+    // their own (they run in the captured lexical environment), so without
+    // this env every param/body DECLVAR would land in the ENCLOSING scope
+    // at runtime — `(() => { var q = 1; })()` must not create `q` outside.
+    // Mirrors compile_arrow_inner's unconditional PUSH_VAR. When parameter
+    // expressions exist, this env holds only the params and two further
+    // scopes stack on top (PUSH_LEX for TDZ'd defaults, PUSH_VAR for the
+    // §9.2.10-step-27 body isolation).
+    arrow_ctx.emit_simple(Opcode.PUSH_VAR);
+
     // Parse parameter list from source (including defaults and rest)
     // Note: lexer is already past '(' when called from parse_arrow_function_reparse
     ushort arg_count = 0;
@@ -3561,6 +3604,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     if (has_func_lex) {
         arrow_ctx.emit_simple(Opcode.POP_LEX);
     }
+
+    // Pop the arrow's own function scope (the unconditional PUSH_VAR
+    // emitted before the parameter list).
+    arrow_ctx.emit_simple(Opcode.POP_VAR);
 
     // Set rest and formal counts before finish()
     arrow_ctx.num_args = arg_count;
