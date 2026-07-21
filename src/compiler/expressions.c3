@@ -1250,6 +1250,23 @@ fn ushort? CompilerContext.postfix_expr(&self) {
     return operand;
 }
 
+/// After the ')' of a grouping expression: decide whether a pending
+/// member-call receiver survives the parens. A plain member access keeps
+/// its Reference through parens (`(o.m)()` calls with this=o, ES2015
+/// §12.2.10.5), but an optional chain evaluates to a VALUE (ES2020
+/// OptionalExpression), so `(o?.m)()` must call with this=undefined.
+/// The receiver is also dropped when nothing call-like follows — the
+/// parenthesized value is consumed as plain data.
+fn void CompilerContext.drop_paren_receiver_unless_ref(&self) {
+    TokenType next_tt = self.peek_type();
+    bool call_follows = next_tt == TokenType.LPAREN || next_tt == TokenType.OPT_CHAIN;
+    if ((!call_follows || self.last_was_optional_chain)
+        && self.call_prop_obj_reg != MAX_REGISTERS) {
+        self.free_reg(self.call_prop_obj_reg);
+        self.call_prop_obj_reg = MAX_REGISTERS;
+    }
+}
+
 /// Parse call expressions: f(), f(a,b), obj.method(), obj[expr](), tag`...`.
 fn ushort? CompilerContext.call_expr(&self) {
     self.last_was_optional_chain = false;
@@ -2671,13 +2688,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
                 self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
-                TokenType next_tt = self.peek_type();
-                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
-                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
-                        self.free_reg(self.call_prop_obj_reg);
-                        self.call_prop_obj_reg = MAX_REGISTERS;
-                    }
-                }
+                self.drop_paren_receiver_unless_ref();
                 self.inside_parens = saved_inside_parens;
                 // A parenthesized identifier is not an IdentifierRef for
                 // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
@@ -2797,13 +2808,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
                 self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
-                TokenType next_tt = self.peek_type();
-                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
-                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
-                        self.free_reg(self.call_prop_obj_reg);
-                        self.call_prop_obj_reg = MAX_REGISTERS;
-                    }
-                }
+                self.drop_paren_receiver_unless_ref();
                 self.inside_parens = saved_inside_parens;
                 // A parenthesized identifier is not an IdentifierRef for
                 // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
@@ -2852,13 +2857,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
                 self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
-                TokenType next_tt = self.peek_type();
-                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
-                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
-                        self.free_reg(self.call_prop_obj_reg);
-                        self.call_prop_obj_reg = MAX_REGISTERS;
-                    }
-                }
+                self.drop_paren_receiver_unless_ref();
                 self.inside_parens = saved_inside_parens;
                 // A parenthesized identifier is not an IdentifierRef for
                 // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
@@ -2878,13 +2877,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // §12.3.4.1 step 3: IsIdentifierRef must hold syntactically).
                 self.callee_is_eval = false;
                 self.expect(TokenType.RPAREN)!;
-                TokenType next_tt = self.peek_type();
-                if (next_tt != TokenType.LPAREN && next_tt != TokenType.OPT_CHAIN) {
-                    if (self.call_prop_obj_reg != MAX_REGISTERS) {
-                        self.free_reg(self.call_prop_obj_reg);
-                        self.call_prop_obj_reg = MAX_REGISTERS;
-                    }
-                }
+                self.drop_paren_receiver_unless_ref();
                 self.inside_parens = saved_inside_parens;
                 // A parenthesized identifier is not an IdentifierRef for
                 // NamedEvaluation purposes (ES2015 §12.15.4 step 1.c uses
