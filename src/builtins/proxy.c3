@@ -38,6 +38,10 @@ const char[] PROXY_REVOKE_SLOT = "\xFFproxyRevokeSlot";
 // ============================================================================
 
 fn void proxy_throw_type(Heap* heap, char[] msg) {
+    proxy_throw_error(heap, heap.type_err_proto, msg);
+}
+
+fn void proxy_throw_error(Heap* heap, HObject* proto, char[] msg) {
     heap.has_error = true;
     HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
     if (catch e = err_raw) {
@@ -46,7 +50,7 @@ fn void proxy_throw_type(Heap* heap, char[] msg) {
         return;
     }
     HObject* err = err_raw;
-    err.prototype = heap.type_err_proto;
+    err.prototype = proto;
     HString* msg_str = builtin_intern_string(heap, msg);
     if (msg_str != null) {
         TVal msg_val; msg_val.set_string(msg_str);
@@ -373,6 +377,14 @@ fn bool js_set_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, T
             *res = true;
             return true;
         }
+    }
+    // ArraySetLength exotic receiver (ES2024 §10.4.2.1 [[DefineOwnProperty]]):
+    // CreateDataProperty(Receiver, "length", {value}) on an Array must run
+    // the full ArraySetLength algorithm, not a plain put_prop.
+    if (recv_obj.get_class() == hobject::ObjClass.ARRAY && key.equals("length")) {
+        ProxyDesc nd = {};
+        nd.has_value = true; nd.value = val;
+        return array_set_length_desc(vm, heap, recv_obj, &nd, res);
     }
     ProxyDesc existing;
     ordinary_own_desc(heap, recv_obj, key, &existing);
@@ -736,10 +748,178 @@ fn bool proxy_desc_compatible(bool extensible, ProxyDesc* desc, ProxyDesc* curre
 }
 
 // ============================================================================
+// ArraySetLength (ES2024 §10.4.2.4), shared by every [[DefineOwnProperty]]
+// entry point that can target an Array's "length" (Object.defineProperty,
+// Object.defineProperties, Reflect.defineProperty, and ordinary_define_own's
+// own callers via the proxy [[DefineOwnProperty]] trap fallback).
+// ============================================================================
+
+/// Applies ArraySetLength for a "length" descriptor on Array `obj`. Follows
+/// the proxy.c3 MOP convention: returns false when heap.has_error was set
+/// (caller must propagate the pending TypeError/RangeError), true otherwise
+/// with *res reporting success/failure of the definition itself. Mirrors
+/// ValidateAndApplyPropertyDescriptor's handling of the exotic "length"
+/// property: steps 3-4 coerce Desc.[[Value]] via ToUint32 AND ToNumber (two
+/// observable ToPrimitive("number") calls) before any other descriptor-field
+/// validation runs, then writable/configurable/enumerable/accessor fields
+/// are validated, then the length is applied (truncating and deleting
+/// configurable elements, stopping at the first non-configurable one), and
+/// finally writable:false is applied last so that element deletion can
+/// still adjust length along the way.
+fn bool array_set_length_desc(void* vm, Heap* heap, HObject* obj, ProxyDesc* desc, bool* res) {
+    *res = false;
+    uint old_len = array_get_length(obj, heap);
+    HString* len_key_intern = builtin_intern_string(heap, "length");
+
+    uint arr_new_len = old_len;
+    bool arr_has_new_len = false;
+    if (desc.has_value) {
+        TVal new_len_val = desc.value;
+        // Step 3: ToUint32 — ToPrimitive("number") + ToNumber, then uint32 cast.
+        // builtin_to_number_vm's throw paths write through ctx.result, so it
+        // must point at real storage even though this scratch value is unused.
+        TVal conv_scratch;
+        BuiltinContext conv_ctx;
+        conv_ctx.vm = vm;
+        conv_ctx.heap = heap;
+        conv_ctx.result = &conv_scratch;
+        conv_ctx.should_throw = false;
+        double num1 = builtin_to_number_vm(&conv_ctx, &new_len_val);
+        if (conv_ctx.should_throw) {
+            heap.has_error = true;
+            heap.tval_copy_ref(&heap.error_value, &conv_ctx.throw_value);
+            return false;
+        }
+        uint new_len_uint = to_uint32(num1);
+        // Step 4: ToNumber — ToPrimitive("number") a second time. The second
+        // valueOf call is observable and can mutate the length descriptor.
+        double num2 = builtin_to_number_vm(&conv_ctx, &new_len_val);
+        if (conv_ctx.should_throw) {
+            heap.has_error = true;
+            heap.tval_copy_ref(&heap.error_value, &conv_ctx.throw_value);
+            return false;
+        }
+        // Step 5: newLen ≠ numberLen → RangeError. This single comparison
+        // catches NaN, ±Infinity, negative, > 2^32-1, and non-integer
+        // because to_uint32 only yields values in [0, 2^32-1].
+        if ((double)new_len_uint != num2) {
+            proxy_throw_error(heap, heap.range_err_proto, "Invalid array length");
+            return false;
+        }
+        arr_new_len = new_len_uint;
+        arr_has_new_len = true;
+    }
+
+    // Refresh len_is_writable AFTER coercions, since a side effect during
+    // ToNumber/ToUint32 calls may have changed the writable flag.
+    bool len_is_writable = true;
+    if (obj.flags.exotic_array) {
+        len_is_writable = obj.flags.array_len_writable;
+    }
+    if (len_key_intern != null) {
+        int len_prop_idx = obj.find_prop_idx(len_key_intern);
+        if (len_prop_idx >= 0) {
+            len_is_writable = obj.get_prop_flags((uint)len_prop_idx).writable;
+        }
+    }
+
+    // Reject accessor descriptor on length (length is always a data property).
+    // Like every other ValidateAndApplyPropertyDescriptor rejection, this is a
+    // `false` result, not a thrown error — Object.defineProperty is the only
+    // caller that converts a false [[DefineOwnProperty]] result into a thrown
+    // TypeError; Reflect.defineProperty surfaces the plain `false`.
+    if (desc.is_accessor_desc()) {
+        return true;
+    }
+
+    // Reject configurable:true (length is always non-configurable).
+    if (desc.has_configurable && desc.configurable) {
+        return true;
+    }
+
+    // Reject enumerable:true (length is always non-enumerable).
+    if (desc.has_enumerable && desc.enumerable) {
+        return true;
+    }
+
+    // ES5 §15.4.5.1 step 3.a.i: reject writable false→true on non-writable length.
+    if (desc.has_writable && desc.writable && !len_is_writable) {
+        return true;
+    }
+
+    // ES5 §15.4.5.1 step 3.f.i: if non-writable, reject value changes.
+    if (arr_has_new_len && !len_is_writable && arr_new_len != old_len) {
+        return true;
+    }
+
+    // Apply the new length value, deleting elements and checking configurable.
+    bool threw_type_error = false;
+    if (arr_has_new_len && arr_new_len < old_len) {
+        // Step 3.l: iterate down from old_len-1, deleting configurable elements.
+        // Stop (and throw TypeError) if a non-configurable element is found.
+        uint di = old_len;
+        while (di > arr_new_len) {
+            di--;
+            HString* idx_key = heap.int_to_hstring((long)di);
+            if (idx_key != null) {
+                int elem_idx = obj.find_prop_idx(idx_key);
+                if (elem_idx >= 0 && !obj.get_prop_flags((uint)elem_idx).configurable) {
+                    // Non-configurable element — stop here, set length to di+1.
+                    arr_new_len = di + 1;
+                    threw_type_error = true;
+                    break;
+                }
+                // delete_prop() also clears the dense-array slot (if any).
+                obj.delete_prop(idx_key);
+            }
+        }
+    }
+    array_set_length(obj, arr_new_len, heap);
+
+    // ES5 §15.4.5.1 step 3.i.ii/3.j: apply writable:false AFTER truncation.
+    // (The spec says to set writable last so that the length can be modified
+    // during element deletion even when the descriptor requests non-writable.)
+    if (desc.has_writable && !desc.writable) {
+        // ARRAY exotic: also update the array_len_writable flag so the
+        // pop/shift/push/etc. length-write check works when no named
+        // "length" property exists in the prop table (e.g. arrays from
+        // new Array(n)). For arrays that DO have a prop-table "length"
+        // entry (e.g. array literals), update its flags too so legacy
+        // and synthesised readers stay in sync.
+        if (obj.flags.exotic_array) {
+            obj.flags.array_len_writable = false;
+        }
+        if (len_key_intern != null) {
+            int len_prop_idx2 = obj.find_prop_idx(len_key_intern);
+            if (len_prop_idx2 >= 0) {
+                hobject::PropFlags lf = obj.get_prop_flags((uint)len_prop_idx2);
+                lf.writable = false;
+                obj.set_prop_flags((uint)len_prop_idx2, lf);
+            }
+        }
+    }
+
+    // ES2024 §10.4.2.4 step 20: stopping at a non-configurable element is a
+    // `false` result (like the other validation rejections above), not a
+    // thrown error — Object.defineProperty wraps it into a TypeError.
+    if (threw_type_error) {
+        return true;
+    }
+
+    *res = true;
+    return true;
+}
+
+// ============================================================================
 // Ordinary [[DefineOwnProperty]] (ValidateAndApplyPropertyDescriptor, applied)
 // ============================================================================
 
 fn bool ordinary_define_own(void* vm, Heap* heap, HObject* obj, HString* key, ProxyDesc* desc, bool* res) {
+    // ArraySetLength (ES2024 §10.4.2.4): defining "length" on an Array runs
+    // its own exotic algorithm instead of ValidateAndApplyPropertyDescriptor.
+    if (obj.get_class() == hobject::ObjClass.ARRAY && key.equals("length")) {
+        return array_set_length_desc(vm, heap, obj, desc, res);
+    }
     // Integer-Indexed exotic [[DefineOwnProperty]] (ES2022 §10.4.5.3): canonical
     // numeric index keys bypass ValidateAndApplyPropertyDescriptor entirely.
     if (is_typed_array_class(obj.get_class())) {

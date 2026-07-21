@@ -2193,120 +2193,32 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     }
                 }
 
-                // ARRAY exotic: .length write fast path — update array_length directly
+                // ARRAY exotic: .length write — a plain assignment is Set(A, "length",
+                // v, true) (ES2024 §13.15.2 PutValue, this engine being strict-only),
+                // which OrdinarySet defines as DefineOwnProperty(A, "length", {[[Value]]: v})
+                // when "length" is an own data property (§10.1.9.2 step 4). Route
+                // through the shared ArraySetLength algorithm (proxy.c3) so plain
+                // assignment, Object.defineProperty, and Reflect.defineProperty all
+                // apply the same double ToUint32/ToNumber coercion, writable checks,
+                // and element-deletion semantics. A rejected definition (e.g.
+                // non-writable length) throws TypeError since Throw=true here.
                 if (hobj.get_class() == hobject::ObjClass.ARRAY && rb.is_string() && rb.get_heapptr() == (void*)vm.heap.strs[heap::BuiltinStr.LENGTH]) {
-                    // ES5 §15.4.5.1 step 2 (ArraySetLength): validate the new length value
-                    // before truncating. ToUint32(v) must equal ToNumber(v), and the result
-                    // must be < 2^32. Otherwise throw RangeError.
-                    bool length_valid = true;
-                    uint new_len = 0;
-                    if (rc.is_undefined()) {
-                        // Per ES2024 §10.4.2.1 ArraySetLength: ToUint32(undefined)=0,
-                        // ToNumber(undefined)=NaN, 0 ≠ NaN → throw RangeError.
-                        length_valid = false;
-                        new_len = 0;
-                    } else if (rc.is_fastint()) {
-                        long v = rc.get_fastint();
-                        if (v < 0L || v > 0xFFFFFFFFL) {
-                            length_valid = false;
-                        } else {
-                            new_len = (uint)v;
-                        }
-                    } else if (rc.is_number()) {
-                        double raw = rc.get_number();
-                        // NaN, ±Infinity, or non-integer, or negative, or > 2^32-1
-                        if (raw != raw || raw < 0.0 || raw > 4294967295.0 || raw != math::floor(raw)) {
-                            length_valid = false;
-                        } else {
-                            new_len = (uint)raw;
-                        }
-                    } else {
-                        // Non-number primitives or objects: coerce to number per
-                        // ES2024 §10.4.2.1 ArraySetLength step 3 (ToNumber on v),
-                        // then re-validate as uint32. The slow put_prop path uses
-                        // [[DefineOwnProperty]] and never reaches here — and even
-                        // if it did, set_length would still need a number, so we
-                        // do it ourselves with proper valueOf/toString propagation.
-                        TVal conv_src = *rc;
-                        if (conv_src.is_string()) {
-                            HString* s = (HString*)conv_src.get_heapptr();
-                            if (s != null && s.is_symbol()) {
-                                if (!vm_throw_error(vm, vm.heap.type_err_proto,
-                                    "Cannot convert a Symbol value to a number",
-                                    ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return VM_ERROR~;
-                                }
-                                return (TVal){};
-                            }
-                        }
-                        if (conv_src.is_object() && conv_src.get_heapptr() != null) {
-                            TVal prim = vm::to_primitive_value(vm, &conv_src, 2);
-                            if (vm.throw_pending) {
-                                TVal t = vm.throw_value;
-                                vm.throw_pending = false;
-                                if (!vm_throw_value(vm, t, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                                    return vm_uncaught_error(vm, &t);
-                                }
-                                return (TVal){};
-                            }
-                            conv_src = prim;
-                        }
-                        // Coerce to number via the same string_to_double helper
-                        // the cast machinery uses. Boolean primitive: ToNumber
-                        // yields 0/1; null=0; undefined=NaN.
-                        double d;
-                        if (conv_src.is_boolean()) {
-                            d = conv_src.get_boolean() ? 1.0 : 0.0;
-                        } else if (conv_src.is_null()) {
-                            d = 0.0;
-                        } else if (conv_src.is_undefined()) {
-                            d = 0.0 / 0.0;  // NaN — ToUint32(0)≠NaN → RangeError below
-                        } else if (conv_src.is_fastint() || conv_src.is_number()) {
-                            d = conv_src.is_fastint() ? (double)conv_src.get_fastint()
-                                                     : conv_src.get_number();
-                        } else if (conv_src.is_string()) {
-                            d = builtins::string_to_double(&conv_src);
-                        } else {
-                            // Should have been handled above (symbols thrown, objects
-                            // converted). Fall back to NaN to surface a RangeError.
-                            d = 0.0 / 0.0;
-                        }
-                        if (d != d || d < 0.0 || d > 4294967295.0 || d != math::floor(d)) {
-                            length_valid = false;
-                        } else {
-                            new_len = (uint)d;
-                        }
-                    }
-                    if (!length_valid) {
-                        if (!vm_throw_error(vm, vm.heap.range_err_proto, "Invalid array length", ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                            return VM_ERROR~;
+                    builtins::ProxyDesc pd;
+                    pd.has_value = true;
+                    pd.value = *rc;
+                    bool dok;
+                    if (!builtins::array_set_length_desc(vm, vm.heap, hobj, &pd, &dok)) {
+                        TVal t = vm.heap.error_value;
+                        vm.heap.has_error = false;
+                        if (!vm_throw_value(vm, t, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return vm_uncaught_error(vm, &t);
                         }
                         return (TVal){};
                     }
-                    // Per ES2024 §10.4.2.1 ArraySetLength, undefined is coerced via
-                    // ToUint32→0 / ToNumber→NaN, and 0 ≠ NaN → RangeError. Other
-                    // primitive/object fall through to the general coercion path
-                    // below; if it produces an invalid new_len, we already threw
-                    // RangeError, so nothing extra here.
-                    bool length_coerced_ok = length_valid;
-                    if (length_coerced_ok) {
-                        // Check that the length property is writable before modifying it.
-                        // A non-writable array length must silently reject in sloppy mode.
-                        bool len_writable = true;
-                        HString* len_str = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                        if (len_str != null) {
-                            int len_idx = hobj.find_prop_idx(len_str);
-                            if (len_idx >= 0) {
-                                len_writable = hobj.get_prop_flags((uint)len_idx).writable;
-                            }
+                    if (!dok) {
+                        if (!vm_throw_error(vm, vm.heap.type_err_proto, "Cannot assign to read only property 'length'", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                            return VM_ERROR~;
                         }
-                        if (len_writable) {
-                            // Use the array helper so shrinking length deletes stale
-                            // dense slots and named properties.
-                            builtins::array_set_length(hobj, new_len, vm.heap);
-                        }
-                        // Non-writable: sloppy mode silently ignores the write.
-                        // Strict mode would throw, but that is handled by the caller.
                     }
                     return (TVal){};
                 }
