@@ -116,7 +116,8 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                 hobject::ObjClass hobj_cls = hobj.get_class();
                 if ((hobj_cls == hobject::ObjClass.ARRAY || hobj_cls == hobject::ObjClass.ARGUMENTS) && hobj.array_part() != null && (rc.is_fastint() || rc.is_number())) {
                     long idx_long = rc.is_fastint() ? rc.get_fastint() : (long)rc.get_number();
-                    if (idx_long >= 0 && idx_long < (long)hobj.array_size) {
+                    bool is_int_idx = rc.is_fastint() || rc.get_number() == (double)idx_long;
+                    if (is_int_idx && idx_long >= 0 && idx_long < (long)hobj.array_size) {
                         TVal? av = hobj.get_array_idx((uint)idx_long);
                         if (try v = av) {
                             vm.heap.tval_copy_ref(ra, &v);
@@ -2116,7 +2117,8 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     && hobj.array_part() != null
                     && (rb.is_fastint() || rb.is_number())) {
                     long idx_long = rb.is_fastint() ? rb.get_fastint() : (long)rb.get_number();
-                    if (idx_long >= 0 && idx_long < 0xFFFFFFFFL && idx_long < 0x1000000L) {
+                    bool is_int_idx = rb.is_fastint() || rb.get_number() == (double)idx_long;
+                    if (is_int_idx && idx_long >= 0 && idx_long < 0xFFFFFFFFL && idx_long < 0x1000000L) {
                         uint idx = (uint)idx_long;
                         if (hobj.set_array_idx(idx, *rc)) {
                             // Update .length fast: use array_length field directly (ARRAY only)
