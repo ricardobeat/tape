@@ -2078,6 +2078,10 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     conv_ctx.vm = vm;
                     conv_ctx.heap = vm.heap;
                     conv_ctx.should_throw = false;
+                    // ta_write_element's rejection paths (Symbol/BigInt) write
+                    // through ctx.result unconditionally — must not be stack garbage.
+                    TVal conv_scratch; conv_scratch.set_undefined();
+                    conv_ctx.result = &conv_scratch;
                     TVal converted = *rc;
                     // Only run the (possibly side-effecting) conversion when
                     // the index is a plausible integer — non-integer/negative
@@ -2148,6 +2152,10 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             conv_ctx.vm = vm;
                             conv_ctx.heap = vm.heap;
                             conv_ctx.should_throw = false;
+                            // Same as the numeric-key site above: rejection paths
+                            // write through ctx.result unconditionally.
+                            TVal conv_scratch; conv_scratch.set_undefined();
+                            conv_ctx.result = &conv_scratch;
                             TVal converted = *rc;
                             char[8] scratch;
                             builtins::ta_write_element((char*)&scratch, ta_cls, &converted, &conv_ctx);
