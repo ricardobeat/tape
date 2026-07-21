@@ -2406,6 +2406,22 @@ fn bool HObject.es_delete_prop(&self, void* key) {
         // named-table removal.
         return self.delete_prop(key);
     }
+    // String exotic (§10.4.3): char indices [0, char_length) are virtual
+    // non-configurable own properties served via exotic_stringobj (never
+    // materialised in the named table), so [[Delete]] on them must return
+    // false even though find_prop_idx misses.
+    if (key != null && self.flags.exotic_stringobj) {
+        HString* skey = (HString*)key;
+        if (skey.is_arridx()) {
+            TVal prim = (*self.extra_ptr()).prim.primitive_value;
+            if (prim.is_string()) {
+                HString* pstr = (HString*)prim.get_heapptr();
+                if (pstr != null && skey.array_index() < (ulong)pstr.char_length()) {
+                    return false;
+                }
+            }
+        }
+    }
     // ARRAY / ARGUMENTS exotic: numeric indices stored in the dense part are
     // own properties. Clear the dense slot so subsequent hasOwnProperty /
     // length / gopd reflect the deletion per spec [[Delete]].
