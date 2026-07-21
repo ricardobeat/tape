@@ -9,15 +9,15 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 - [ ] **P6** — `#x in obj` private-field presence check (plan 054; suite skipped).
 - [ ] **P7** — Public fields (plan 054; suite skipped).
 - [x] **C8** — Arrow-function lexical `this`/`new.target`: captured at closure creation (`captured_this`/`captured_new_target` in `instantiate_closure`, live re-resolve pre-`super()` via `super_walk_live_this`); verified by behavior battery session 289. Residual arrow gaps tracked in plan 059.
-- [ ] **L1** — Sloppy-mode `var` declaration semantics / auto-vivification of undeclared identifiers into globals.
+- [ ] **L1** — Strict PutValue on a pre-resolved unresolvable reference must throw ReferenceError even if the RHS created the global meanwhile (`identifier-resolution/assign-to-global-undefined.js`: `undeclared = (this.undeclared = 5)` — engine re-resolves at write time and finds it).
 - [ ] **L2** — Direct eval var-hoisting into caller/global scope.
-- [ ] **L3** — Indirect eval var-hoisting into global scope.
+- [x] **L3** — Indirect eval var-hoisting: no failing tests as of s289d full run; reopen only with a concrete repro.
 - [x] **X1** — Array fast-path key truncation fixed (session 289). NOTE: the companion "`(o?.m)()` must call with undefined this" diagnosis was WRONG and its fix was reverted (session 289c) — a non-short-circuited optional chain is a Reference; parens preserve the receiver (test262 `optional-call-preserves-this.js` is authoritative). Don't re-introduce.
-- [ ] **X2** — Arrow reparse path missing body `PUSH_VAR` (param-expression scope separation) + named-funcexpr name binding not shadowable by body `var` (plan 059 §1b/1e).
-- [ ] **E1** — Direct eval cannot compile `super.x`/`super[x]`/`super()`/nested-eval `new.target`; root cause is the three-way split super mechanism (`has_home_object` false for derived-class methods; object-literal `__super__` in an uncaptured PUSH_LEX scope). Fix = HomeObject unification, plan 059 §2-3. Also: `super` in plain fn-expr must be early SyntaxError; arrow compile paths must propagate `eval_mode` flags (plan 059 §1c).
+- [x] **X2** — Arrow reparse body `PUSH_VAR` + named-funcexpr shadowing landed (session 289, plan 059 §1b/1e); `scope-paramsbody-var-*` + `call/scope-var-open` pass.
+- [ ] **E1** — Eval-super residual (plan 059 §2-3): object-literal-method eval-super (`eval-code/direct/super-prop-method.js` FAIL + `super/prop-{dot,expr}-obj-val-from-eval.js` skip-listed — `__super__` lives in an uncaptured PUSH_LEX scope), `eval("super()")` in derived ctors (`is_constructable` hardcoded false in compile_eval), nested-eval `new.target` (eval CFs are `is_global`), and `super` in plain fn-expr must be an early SyntaxError. DONE session 289: arrow `eval_mode` propagation (§1c) and class-method eval-super (caller `has_home_object` propagation, via opencode-jul merge).
 - [ ] **E2** — Escaped-arrow `super()` double-call not detected (live-frame walk in `super_init_this_chain`; needs captured this-state cell, plan 059 §4).
 - [ ] **X4** — Arrow with BLOCK body inside a template substitution inside a function silently truncates the program (everything after the enclosing statement never compiles/runs; no error surfaced). Pre-existing (predates session 289 hoist fixes); likely the swallowed-lexer-error/synthetic-EOF family from session 281. Repro: `print("a"); function f(){ var q = ` + "`${ (() => { var t = 1; })() }`" + `; } print("b");` → prints only "a". Expression-body arrows in substitutions are fine.
-- [ ] **X5** — Named-funcexpr binding invisible through nested closures when a same-named binding exists on the captured lex chain (`function/scope-name-var-close.js`): GETVAR's two-walk model (cap_lex chain first, var_env chain fallback) finds the outer/global binding on walk 1 before the name env (spliced on walk 2's chain) is ever consulted. Works when no same-named outer binding exists (walk 1 misses → fallback finds name env). Structural: the two-walk model can't express the spec chain `call env → name env → captured chain`. Elegant fix: compile-time — register the funcexpr name as a static binding around the body (would delete the whole runtime splice in `resolve_call_lex_env`/`setup_named_function_expr_env` + the ctor duplicate at `vm_calls.c3:2378`); plan 059 env-model work. Repro: `var probe; var f2 = function k(){ probe = () => k; }; var k='out'; f2(); probe()` → 'out', must be f2.
+- [x] **X5** — Named-funcexpr binding through nested closures: fixed incidentally session 289c — `is_named_func_expr` now blocks `can_skip_env`, so every named funcexpr gets a fresh per-call env and the name-env splice chain resolves in walk order (`function/scope-name-var-close.js` passes; all repros verified). The two-walk env model concern stands only as background for plan 059 env work.
 - [ ] **X3** — Writes to an enclosing function's local from a parameter-default expression are lost (both ordinary fns and arrows; reads work; body writes work). Capture scan doesn't cover param-default expressions, so the local stays register-resident and the env copy takes the write. Repro: `function w(){ var p=null; (function(_ = p = 6){})(); return p; }` → null, must be 6. Found session 289 by test/function_context.js; same family as the bare-for-of register-residency fix.
 - [ ] **AsyncFromSync tick ordering** — the 3 `for-await-of/ticks-*` tests: adapter performs wrong number/order of PromiseResolve/constructor lookups vs §27.1.4.2.1 (`vm_control.c3` ~1229-1253). In scope (no async generators needed).
 
@@ -26,44 +26,48 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 - [x] **`arguments` Symbol.iterator** — `[...arguments]`/spread works (verified session 289).
 - [x] **Shared iterator prototype `next`** — shared `%ArrayIteratorPrototype%` (session 284); Map/Set iterators inherit `next` from prototype; per-kind prototypes (String vs Array) are spec-correct.
 - [x] **BigInt wrapper** — `BigInt` global + prototype, `Object(1n)` wrapper, `BigInt64Array`/`BigUint64Array` all landed (plan 056 + sessions 285-288).
-- [ ] **S1** — String regexp-prototype-`*` v/u flag handling.
-- [ ] **S2** — String cstm-`*` on BigInt primitive (BigInt wrapper landed; re-run cluster).
-- [ ] **S3** — String indexOf ToInteger ordering.
-- [ ] **S4** — isWellFormed / toWellFormed ToString.
-- [ ] **S5** — String Symbol.iterator on non-obj-coercible.
-- [ ] **O1** — fn-name inference for accessors, arrow, class, gen.
-- [ ] **O2** — Computed accessor names, ToPropertyKey ordering.
-- [ ] **O3** — Method-def name Symbol + generator proto.
-- [ ] **D1** — Date algorithm gaps (toISOString extreme values, setFullYear arg ToNumber, toJSON abrupt propagation).
-- [ ] **T1** — Tagged template site caching.
-- [ ] **T2** — Frozen template object.
-- [ ] **T3** — Invalid escapes → undefined cooked.
-- [ ] **T4** — Tagged template misc.
+- [x] **S1** — String regexp-prototype-`*` v/u flag handling. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **S2** — String cstm-`*` on BigInt primitive (BigInt wrapper landed; re-run cluster). Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **S3** — String indexOf ToInteger ordering. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **S4** — isWellFormed / toWellFormed ToString. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **S5** — String Symbol.iterator on non-obj-coercible. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **O1** — fn-name inference for accessors, arrow, class, gen. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **O2** — Computed accessor names, ToPropertyKey ordering. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **O3** — Method-def name Symbol + generator proto. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **D1** — Date algorithm gaps (toISOString extreme values, setFullYear arg ToNumber, toJSON abrupt propagation). Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **T1** — Tagged template site caching. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **T2** — Frozen template object. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **T3** — Invalid escapes → undefined cooked. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **T4** — Tagged template misc. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
 - [x] **Y1** — Symbol.prototype cluster (constructor, description, Symbol.toPrimitive, toStringTag, toString). (Session 283, +17 tests: well-known symbol descriptors, Symbol()/Symbol.for() coercion, registry cleanup)
-- [ ] **J2** — JSON.stringify edge cases.
-- [ ] **G1** — Expression generators default-proto / prototype descriptor.
-- [ ] **G2** — statements/generators prototype semantics.
-- [ ] **TA1** — TypedArray Integer-Indexed [[DefineOwnProperty]].
-- [ ] **TA2** — TypedArray Integer-Indexed [[Set]] prototype chain.
-- [ ] **TA3** — TypedArray constructors.
+- [x] **J2** — JSON.stringify edge cases. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **G1** — Expression generators default-proto / prototype descriptor. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **G2** — statements/generators prototype semantics. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **TA1** — TypedArray Integer-Indexed [[DefineOwnProperty]]. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **TA2** — TypedArray Integer-Indexed [[Set]] prototype chain. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
+- [x] **TA3** — TypedArray constructors. Cluster cleared: zero matching failing tests in the s289d full run (34,541/18/0 CE).
 
 ## RegExp
 
-- [ ] **U1** — Unicode property escapes `\p{...}`/`\P{...}` in unicode-mode. libregexp has property-table infra (`libregexp/unicode_wrapper.{h,c}`); wire `\p{}` through lexer/parser and property-name lookup, or confirm `lre_compile` support. QuickJS libunicode (vendored) has full UCD 17.0 tables.
-- [ ] **CharacterClassEscapes** — residual RegExp fails; may share tables with U1.
+- [x] **U1** — `\p{}` wiring landed (B31 libregexp swap); property-escapes tests attempt and pass. Residual: occasional under-load flakiness (see I5) and byte-mode runtime limits (B32) tracked in run_test262.py comments.
+- [x] **CharacterClassEscapes** — no matching failing tests as of s289d.
+- [ ] **R1** — RegExp SIGABRT crash pair: `S15.10.2_A1_T1.js` + `S15.10.2.8_A3_T15.js` abort (exit 134) with NO stack (lldb sees one frame) and no stderr; debug build identical. Big pattern-conformance tests. Next step: ASan build of the plain runner, or bisect the test body. HIGH priority (crash class).
 
 - [ ] **QoI: unshift on huge sparse arrays** — `b.length = 4294967294; b.unshift(x)` runs the naive per-spec O(len) element-move loop (~minutes); smart engines skip holes. Correctness is fine (terminates); found session 289d while auditing stale worktrees. Low priority.
 
 ## Long tail
 
-- [ ] **Z** — Cluster remaining ~250 fails by stderr signature and batch by root cause. Bins: Promise race/any/finally, Object seal/assign/prototype/defineProperty, Set/Array Symbol.species, Number/prototype, Function/length, super, template-literal, block-scope/leave.
+- [x] **Z** — Long-tail clustering complete: every one of the 18 remaining fails (13 unique tests) is mapped to an open backlog item as of s289d.
+- [ ] **S6** — `String.prototype.localeCompare` must treat canonically-equivalent strings as equal (`15.5.4.9_CE.js`): needs Unicode canonical equivalence (NFC/NFD) — vendored QuickJS libunicode has normalization tables; wire a normalize-then-compare path.
+- [ ] **F2** — `Function.prototype.toString` NativeFunction grammar for ALL builtin kinds (`built-in-function-object.js`): accessors obtained via getOwnPropertyDescriptor currently fail the grammar check (agent session 289b fixed nothing here; its diagnosis: getter/setter builtin objects lack proper toString routing).
 
 ## Infrastructure
 
 - [ ] **I2** — `$262.detachArrayBuffer` host hook (unblocks TypedArray callback tests).
-- [ ] **I3** — Reclassify or fix CE:unexpected cases.
+- [x] **I3** — CE:unexpected is 0 as of s286 and maintained through s289d.
 - [ ] **I4** — Two-consecutive-run zero-fail gate once <50 fails; enforce in CI.
-- [ ] **Batch-runner SIGSEGV** — under sustained load; verify batch regressions in isolation (see memory `batch-runner-segv-under-load`).
+- [x] **Batch-runner SIGSEGV** — solved (double-free on vm_create-fail + IC-key UAF, dc0af6d); batches deterministic since.
+- [ ] **I5** — RegExp property-escapes tests flaky under parallel load (pass 3/3 isolated; `Quotation_Mark.js` etc. fail intermittently in full runs under machine load — see s288 aside). Consider serial retry for that directory in the runner.
 
 ## Non-goals (do not reopen)
 
