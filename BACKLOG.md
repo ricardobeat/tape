@@ -8,20 +8,23 @@ Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or
 - [x] **C7b** — Private names visible to direct eval; eval bodies compile fresh contexts without the enclosing private_names scope. (Session 283, +10 tests)
 - [ ] **P6** — `#x in obj` private-field presence check (plan 054; suite skipped).
 - [ ] **P7** — Public fields (plan 054; suite skipped).
-- [ ] **C8** — Arrow-function lexical `this`: resolved from calling activation instead of defining activation (`ds.act.this_binding` at CALL site). ~57 call sites; architectural investigation before touching.
+- [x] **C8** — Arrow-function lexical `this`/`new.target`: captured at closure creation (`captured_this`/`captured_new_target` in `instantiate_closure`, live re-resolve pre-`super()` via `super_walk_live_this`); verified by behavior battery session 289. Residual arrow gaps tracked in plan 059.
 - [ ] **L1** — Sloppy-mode `var` declaration semantics / auto-vivification of undeclared identifiers into globals.
 - [ ] **L2** — Direct eval var-hoisting into caller/global scope.
 - [ ] **L3** — Indirect eval var-hoisting into global scope.
-- [ ] **X1** — Optional chaining edge cases.
-- [ ] **X2** — Arrow function lexical scoping (partially covered by C8).
+- [ ] **X1** — Two bugs (plan 059 §1a/1d): array PUTPROP/GETPROP fast path truncates non-integer numeric keys (`arr[1.1]=v` corrupts `arr[1]` — silent corruption, `vm_property.c3:2117/:117`); `(o?.m)()` keeps the receiver as `this` (spec: undefined).
+- [ ] **X2** — Arrow reparse path missing body `PUSH_VAR` (param-expression scope separation) + named-funcexpr name binding not shadowable by body `var` (plan 059 §1b/1e).
+- [ ] **E1** — Direct eval cannot compile `super.x`/`super[x]`/`super()`/nested-eval `new.target`; root cause is the three-way split super mechanism (`has_home_object` false for derived-class methods; object-literal `__super__` in an uncaptured PUSH_LEX scope). Fix = HomeObject unification, plan 059 §2-3. Also: `super` in plain fn-expr must be early SyntaxError; arrow compile paths must propagate `eval_mode` flags (plan 059 §1c).
+- [ ] **E2** — Escaped-arrow `super()` double-call not detected (live-frame walk in `super_init_this_chain`; needs captured this-state cell, plan 059 §4).
+- [ ] **Async generators** — `async function*` producer (168 of 229 current fails; for-await consumer + destructuring already correct). Biggest single lever; plan 060 candidate. Interim: parse-reject `async function*` expressions (currently compile as broken plain-async objects). Plus AsyncFromSync tick-ordering fidelity (3 tests, separable).
 
 ## Builtins
 
-- [ ] **`arguments` Symbol.iterator** — missing, breaks `[...arguments]`/spread.
-- [ ] **Shared iterator prototype `next`** — Array/Map/Set/String iterators each get their own `next`, so prototype-level `next` patching is ineffective.
-- [ ] **BigInt wrapper** — `BigInt`/`BigInt64Array`/`BigUint64Array`; large deferred feature, blocks String/Object/TypedArray tests.
+- [x] **`arguments` Symbol.iterator** — `[...arguments]`/spread works (verified session 289).
+- [x] **Shared iterator prototype `next`** — shared `%ArrayIteratorPrototype%` (session 284); Map/Set iterators inherit `next` from prototype; per-kind prototypes (String vs Array) are spec-correct.
+- [x] **BigInt wrapper** — `BigInt` global + prototype, `Object(1n)` wrapper, `BigInt64Array`/`BigUint64Array` all landed (plan 056 + sessions 285-288).
 - [ ] **S1** — String regexp-prototype-`*` v/u flag handling.
-- [ ] **S2** — String cstm-`*` on BigInt primitive (blocked on BigInt wrapper).
+- [ ] **S2** — String cstm-`*` on BigInt primitive (BigInt wrapper landed; re-run cluster).
 - [ ] **S3** — String indexOf ToInteger ordering.
 - [ ] **S4** — isWellFormed / toWellFormed ToString.
 - [ ] **S5** — String Symbol.iterator on non-obj-coercible.
