@@ -2371,20 +2371,19 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
             new_act.parent = ds.act;
             new_act.func = target;
             new_act.var_env = ctor_var_env;
-            // Named function expressions get a fresh declarative lex_env
-            // with the function name bound immutably (ES2015 §14.1.20).
+            // Named function expressions get the function name bound
+            // immutably in a fresh declarative env (ES2015 §14.1.20), spliced
+            // OUTER to the constructor's own body scope so a body
+            // var/let/param of the same name shadows it (§9.2.13).
             if (target.is_namebinding()) {
                 char[] name_data = target.get_name();
                 HString* name_hstr = intern_string(vm, name_data);
                 if (name_hstr != null) {
-                    if (try name_lex = setup_named_function_expr_env(vm, ctor_var_env, name_hstr, hobj)) {
-                        new_act.lex_env = name_lex;
-                    } else {
-                        new_act.lex_env = ctor_var_env;
+                    if (try name_env = setup_named_function_expr_env(vm, ctor_var_env.parent, name_hstr, hobj)) {
+                        ctor_var_env.parent = name_env;
                     }
-                } else {
-                    new_act.lex_env = ctor_var_env;
                 }
+                new_act.lex_env = ctor_var_env;
             } else {
                 // Use the captured lex_env so block-scoped let/const bindings
                 // from the enclosing function body are visible.  Mirrors the

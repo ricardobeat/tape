@@ -12,21 +12,23 @@ import duktape::re_bindings;
 import std::io;
 import std::math;
 
-/// Set up a named-function-expression's lexical environment.
+/// Set up a named-function-expression's name binding environment.
 /// Returns a fresh declarative env with `name_hstr` bound immutably to
-/// `func_obj`, or null on failure. The returned env's parent is `var_env`,
-/// so lookups for everything else still walk through the function's normal
-/// scope chain (per ES2015 §14.1.20 NamedEvaluation).
-fn EnvRecord*? setup_named_function_expr_env(Vm* vm, EnvRecord* var_env,
+/// `func_obj`, chained above `parent`. Per ES2015 §14.1.20/§9.2.13, the
+/// name binding lives in an environment OUTER to the function's own body
+/// scope, so a body `var`/`let`/param with the same name shadows it —
+/// callers splice this env onto the body scope's parent chain rather than
+/// making it the search head directly.
+fn EnvRecord*? setup_named_function_expr_env(Vm* vm, EnvRecord* parent,
                                               HString* name_hstr,
                                               HObject* func_obj) {
-    EnvRecord*? lex_env_raw = env::env_create_declarative(vm.heap, var_env);
-    if (catch err = lex_env_raw) return types::ALLOC_ERROR~;
-    EnvRecord* lex_env = lex_env_raw;
+    EnvRecord*? name_env_raw = env::env_create_declarative(vm.heap, parent);
+    if (catch err = name_env_raw) return types::ALLOC_ERROR~;
+    EnvRecord* name_env = name_env_raw;
     TVal func_tv; func_tv.set_object(func_obj);
     // Non-writable, enumerable, configurable — same flags PUTLEX_C uses for const.
-    lex_env.bindings.put_prop((void*)name_hstr, func_tv, hobject::PROP_FLAGS_EC);
-    return lex_env;
+    name_env.bindings.put_prop((void*)name_hstr, func_tv, hobject::PROP_FLAGS_EC);
+    return name_env;
 }
 
 /// Resolve the lexical environment for entering a compiled-function call frame.
@@ -90,11 +92,25 @@ fn EnvRecord* resolve_call_lex_env(Vm* vm, HObject* func_obj,
         }
     }
     if (target.is_namebinding()) {
+        // The name binding must be OUTER to the function's own body scope
+        // (ES2015 §14.1.20 NamedEvaluation / §9.2.13), so a body var/let/param
+        // named the same as the function shadows it. `is_namebinding` is only
+        // ever set on functions with needs_env()==true (register-resident
+        // callees resolve their own name to a register at compile time and
+        // never observe this env at all), so `var_env` here is always a fresh
+        // scope allocated for this call — safe to splice into.
         char[] name_data = target.get_name();
         HString* name_hstr = intern_string(vm, name_data);
         if (name_hstr != null) {
-            if (try name_lex = setup_named_function_expr_env(vm, base, name_hstr, func_obj)) {
-                return name_lex;
+            if (try name_env = setup_named_function_expr_env(vm, var_env.parent, name_hstr, func_obj)) {
+                var_env.parent = name_env;
+                if (base == var_env) return var_env;
+                // `base` (cap_lex) doesn't reach var_env directly — GETVAR's
+                // lex_env walk finds cap_lex's chain first, then falls back to
+                // a separate walk starting at var_env (see the `!found &&
+                // lex_env != var_env` fallback), which now reaches name_env
+                // right after var_env's own bindings.
+                return base;
             }
         }
     }
