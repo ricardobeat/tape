@@ -125,7 +125,7 @@ fn void builtin_function(BuiltinContext* ctx) {
 
     // Lex and compile as a function expression
     Lexer lex = lexer::lexer_init(src_buf[:src_pos], ctx.heap);
-    CompiledFunction*? cf = compiler::compile_function(&lex, ctx.heap, true);
+    CompiledFunction*? cf = compiler::compile_function(&lex, ctx.heap, true, false);
     CompiledFunction* func;
     if (try f = cf) {
         func = f;

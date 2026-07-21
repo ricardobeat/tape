@@ -2623,6 +2623,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
 
     inner_ctx.lexer.set_strict(true);
 
+    // Named function expression: the compiled function will be tagged
+    // is_namebinding, so it must not take the needs_env=false fast path
+    // (see is_named_func_expr doc in context.c3).
+    inner_ctx.is_named_func_expr = is_named_expr && name.len > 0;
+
     // Propagate strict mode: inner functions inherit enclosing strict context.
     inner_ctx.is_strict = self.is_strict;
 

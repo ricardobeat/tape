@@ -431,6 +431,12 @@ struct CompilerContext {
     // function must keep its scope object — its captured locals are read via
     // GETVAR, so the register-locals env-elision must not fire.
     bool has_captured_local;
+    // True for a named function expression whose CompiledFunction will be
+    // tagged is_namebinding (ES2015 §14.1.20): the VM splices a fresh name
+    // binding env onto var_env.parent at call time. That mutation is only
+    // safe on a per-call scope object, so such functions can never take the
+    // needs_env=false fast path that reuses the shared captured var_env.
+    bool is_named_func_expr;
 
     // When true, function_declaration() stores its binding via PUTLEX into
     // the current (innermost) lex_env instead of DECLVAR into var_env. Set
@@ -1204,7 +1210,8 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
                      && !self.has_captured_local
                      && !self.is_arrow
                      && !self.is_generator
-                     && !self.is_async;
+                     && !self.is_async
+                     && !self.is_named_func_expr;
     func.flags.needs_env = !can_skip_env;
     func.flags.is_global = self.is_global;
     func.flags.is_eval = self.eval_mode;

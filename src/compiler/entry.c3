@@ -277,7 +277,7 @@ fn CompiledFunction*? compile_eval(Lexer* lex, void* heap, bool allow_super = fa
 
 /// Compile a function expression or declaration.
 /// `is_expr` is true for function expressions, false for declarations.
-fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr) {
+fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr, bool force_strict = true) {
     // Reset error state for this compilation — see `compile`'s matching
     // reset. Without it, a stale `g_last_err_msg` left by a PREVIOUS
     // Function()-constructor SyntaxError makes finish()'s choke-point check
@@ -290,6 +290,13 @@ fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr) {
     g_last_err_col  = 0;
     CompilerContext ctx;
     ctx.init(lex, heap);
+    // The dynamic Function constructor (ES2019 §19.2.1.1.1) compiles a body
+    // with no enclosing lexical context to inherit strictness from — it is
+    // sloppy unless its own directive prologue says "use strict" (which
+    // parse_function_body's parse_directives call already detects and
+    // upgrades). Every other caller of this shared entry point (internal
+    // engine-authored prototype methods) keeps the strict-only default.
+    if (!force_strict) ctx.is_strict = false;
 
     // Parse function body
     ctx.parse_function_body(is_expr)!;
@@ -299,13 +306,14 @@ fn CompiledFunction*? compile_function(Lexer* lex, void* heap, bool is_expr) {
 
 /// Like compile_function but with generator/async flags set for dynamic
 /// GeneratorFunction / AsyncFunction constructor (ES2019 §19.2.1.1.1).
-fn CompiledFunction*? compile_function_kind(Lexer* lex, void* heap, bool is_expr, bool is_generator, bool is_async) {
+fn CompiledFunction*? compile_function_kind(Lexer* lex, void* heap, bool is_expr, bool is_generator, bool is_async, bool force_strict = true) {
     // See compile_function's matching reset — same stale-flag hazard.
     g_last_err_msg[0] = 0;
     g_last_err_line = 0;
     g_last_err_col  = 0;
     CompilerContext ctx;
     ctx.init(lex, heap);
+    if (!force_strict) ctx.is_strict = false;
     ctx.is_generator = is_generator;
     ctx.is_async = is_async;
     ctx.is_constructable = false;

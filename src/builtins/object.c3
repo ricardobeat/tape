@@ -4409,21 +4409,42 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
                 arr_iterator_close_after_throw(ctx, iterator);
                 return;
             }
+            // Pin key_val: a call_fn-routed getter/toString result's only
+            // owning reference is the shared vm.return_val slot, which the
+            // NEXT call_fn invocation below (Get('1'), then ToPropertyKey)
+            // overwrites — decref'ing key_val's object out from under us
+            // without this pin (test262 fromEntries/evaluation-order.js UAF).
+            bool key_val_pinned = false;
+            if (key_val.is_heap_allocated() && key_val.get_heapptr() != null) {
+                ((types::HeapHeader*)key_val.get_heapptr()).incref();
+                key_val_pinned = true;
+            }
             TVal val_val = from_entries_get_index(ctx, pair, 1);
             if (ctx.should_throw) {
+                if (key_val_pinned) ctx.heap.decref_tval(&key_val);
                 arr_iterator_close_after_throw(ctx, iterator);
                 return;
+            }
+            // Pin val_val too: ToPropertyKey below may invoke a user toString
+            // (another call_fn), which would clobber val_val the same way.
+            bool val_val_pinned = false;
+            if (val_val.is_heap_allocated() && val_val.get_heapptr() != null) {
+                ((types::HeapHeader*)val_val.get_heapptr()).incref();
+                val_val_pinned = true;
             }
 
             // ToPropertyKey(k) — a throwing toString also closes the iterator.
             HString* key_str = builtin_to_property_key(ctx, key_val);
+            if (key_val_pinned) ctx.heap.decref_tval(&key_val);
             if (ctx.should_throw) {
+                if (val_val_pinned) ctx.heap.decref_tval(&val_val);
                 arr_iterator_close_after_throw(ctx, iterator);
                 return;
             }
             if (key_str != null) {
                 obj.put_prop(key_str, val_val, hobject::PROP_FLAGS_WEC);
             }
+            if (val_val_pinned) ctx.heap.decref_tval(&val_val);
         }
         ctx.result.set_object(obj);
         return;
@@ -4516,7 +4537,16 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
 /// and builtin_to_string for primitives.
 fn HString* builtin_to_property_key(BuiltinContext* ctx, TVal key_val) {
     if (key_val.is_string()) {
-        return (HString*)key_val.get_heapptr();
+        HString* s = (HString*)key_val.get_heapptr();
+        // Symbols are always canonical (never re-interned as strings); plain
+        // strings must be. A string produced by e.g. a concat opcode's
+        // accumulator fast path is heap-allocated but NOT in the intern
+        // table, so put_prop's pointer-identity property lookup would never
+        // match it again from a literal (test262 fromEntries/evaluation-order.js).
+        if (s != null && !s.is_symbol() && !s.is_interned()) {
+            return builtin_intern_string(ctx.heap, s.get_data());
+        }
+        return s;
     }
     if (key_val.is_number()) {
         return builtin_to_string(ctx.heap, &key_val);
@@ -4527,8 +4557,15 @@ fn HString* builtin_to_property_key(BuiltinContext* ctx, TVal key_val) {
         if (key_obj.get_class() == hobject::ObjClass.SYMBOL) {
             return builtin_to_string(ctx.heap, &key_val);
         }
-        // For other objects, call ToString (invokes toString/valueOf via ToPrimitive)
-        return builtin_to_string_vm(ctx, &key_val);
+        // For other objects, call ToString (invokes toString/valueOf via ToPrimitive).
+        // builtin_to_string_vm does not guarantee an interned result (a
+        // toString() returning a fresh concat-accumulator string), so intern
+        // it here — same rationale as the is_string() branch above.
+        HString* ts = builtin_to_string_vm(ctx, &key_val);
+        if (ts != null && !ts.is_symbol() && !ts.is_interned()) {
+            return builtin_intern_string(ctx.heap, ts.get_data());
+        }
+        return ts;
     }
     // null, undefined, boolean — call ToString
     return builtin_to_string(ctx.heap, &key_val);
