@@ -3466,14 +3466,87 @@ fn TVal? Vm.run(Vm* vm) {
                 TVal name_val = ds.constants[bc];
                 if (name_val.is_string()) {
                     void* key = name_val.get_heapptr();
-                    found = env::env_has(ds.act.lex_env, key);
-                    if (!found && ds.act.lex_env != ds.act.var_env) {
-                        found = env::env_has(ds.act.var_env, key);
+
+                    // --- VarIC fast path: skip the env-chain walk on repeat
+                    // resolutions (hot strict-mode global-assignment loops).
+                    // Existence is all that's captured here — TDZ/const/
+                    // accessor state is PUTVAR_ASSIGN's business — so a hit
+                    // needs no flag checks, only the shape/generation guard
+                    // (a delete anywhere in the bindings object bumps the
+                    // generation and falls back to the walk).
+                    if (ds.var_ic_base != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        if (vic.env != null && vic.key == key && vic.search_head == (void*)ds.act.lex_env) {
+                            HObject* b = (HObject*)vic.bindings;
+                            if (b.shape_id == vic.shape_id
+                                && vm.heap.shapes[b.shape_id].generation == vic.generation) {
+                                ra.set_boolean(true);
+                                track_heap_store(ds.act, ra, (uint)insn.a);
+                                break;
+                            }
+                            vic.env = null;
+                        }
+                    }
+
+                    // --- Slow path: walk the chains, remembering the owning
+                    // env so the IC can serve the next execution.
+                    EnvRecord* owner = null;
+                    int owner_idx = -1;
+                    EnvRecord* cur = ds.act.lex_env;
+                    while (cur != null) {
+                        int idx = cur.bindings.find_prop_idx(key);
+                        if (idx >= 0) { owner = cur; owner_idx = idx; break; }
+                        cur = cur.parent;
+                    }
+                    if (owner == null && ds.act.lex_env != ds.act.var_env) {
+                        cur = ds.act.var_env;
+                        while (cur != null) {
+                            int idx = cur.bindings.find_prop_idx(key);
+                            if (idx >= 0) { owner = cur; owner_idx = idx; break; }
+                            cur = cur.parent;
+                        }
+                    }
+                    found = owner != null;
+                    if (found && ds.var_ic_base != null) {
+                        uint pc_off = (uint)(ds.curr_pc - 1 - ds.code_base);
+                        hobject::VarICEntry* vic = ds.var_ic_base + pc_off;
+                        vic.env = (void*)owner;
+                        vic.bindings = (void*)owner.bindings;
+                        vic.shape_id = owner.bindings.shape_id;
+                        vic.generation = vm.heap.shapes[owner.bindings.shape_id].generation;
+                        vic.prop_idx = (ushort)owner_idx;
+                        if (vic.key != null) { vm.heap.decref((types::HeapHeader*)vic.key); }
+                        vic.key = key;
+                        if (key != null) { ((types::HeapHeader*)key).incref(); }
+                        vic.search_head = (void*)ds.act.lex_env;
                     }
                 }
             }
             ra.set_boolean(found);
             track_heap_store(ds.act, ra, (uint)insn.a);
+            continue;
+        }
+
+        case Opcode.THROW_UNRESOLVED: {
+            // Pairs with RESOLVEVAR (strict plain assignment, ES2022
+            // §13.15.2 step 1 + §6.2.5.6 PutValue step 5): the LHS
+            // Reference's resolvability was captured in register A BEFORE
+            // the RHS ran, so an RHS side effect that created the global
+            // still throws here.
+            if (!ra.is_boolean() || !ra.get_boolean()) {
+                uint bc = insn.get_bc();
+                char* nm = (char*)"";
+                if (bc < vm.current_func.const_count) {
+                    TVal name_val = ds.constants[bc];
+                    if (name_val.is_string()) {
+                        nm = ((HString*)name_val.get_heapptr()).get_cstr();
+                    }
+                }
+                if (!vm_throw_error_fmt(vm, vm.heap.ref_err_proto, "'%s' is not defined", nm, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+            }
             continue;
         }
 

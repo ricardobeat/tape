@@ -517,12 +517,7 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             left = right;
         } else {
             if (lhs_ref_reg != MAX_REGISTERS) {
-                uint skip_ref_throw = self.emit_cond_jump(Opcode.IF_TRUE, (uint)lhs_ref_reg);
-                uint ref_msg_idx = self.add_string_constant("Unresolvable reference");
-                ushort ref_throw_reg = self.alloc_reg();
-                self.emit(bytecode::make_a_bc(Opcode.THROW_REF, (uint)ref_throw_reg, ref_msg_idx));
-                self.patch_jump(skip_ref_throw);
-                self.free_reg(ref_throw_reg);
+                self.emit_a_bc(Opcode.THROW_UNRESOLVED, (uint)lhs_ref_reg, lhs_getvar_name_idx);
             }
             // Simple assignment: left = right
             if (left != right) {

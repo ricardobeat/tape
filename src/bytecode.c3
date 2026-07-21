@@ -259,7 +259,14 @@ enum Opcode : char {
     /// `A = variable[constants[BC]]`  — read a variable by name
     /// looked up in the constant pool (A-BC format).
     GETVAR,
+    /// `A = env chain has a binding named constants[BC]` (A-BC). Captures
+    /// strict plain-assignment LHS resolvability BEFORE the RHS runs
+    /// (ES2022 §13.15.2 step 1); consumed by THROW_UNRESOLVED after the RHS.
     RESOLVEVAR,
+    /// Throw ReferenceError "constants[BC] is not defined" unless register A
+    /// holds true (A-BC). Pairs with RESOLVEVAR: an RHS side effect that
+    /// creates the global cannot retroactively make the LHS resolvable.
+    THROW_UNRESOLVED,
     /// `variable[constants[BC]] = A`  — write a variable by name (A-BC).
     /// Initialization store: does NOT perform a TDZ check (used by param sync,
     /// for-loop iteration variables, etc. which legitimately write a binding
@@ -768,6 +775,7 @@ fn OpFormat get_op_format(Opcode op) {
         case SETALEN:   return A_BC;
         case GETVAR:    return A_BC;
         case RESOLVEVAR: return A_BC;
+        case THROW_UNRESOLVED: return A_BC;
         case TYPEOFIDENT: return A_BC;
         case PUTVAR:    return A_BC;
         case DECLVAR:   return A_BC;
