@@ -151,7 +151,6 @@ UNSUPPORTED_PATTERN = re.compile(
     r"arraybuffer-transfer|immutable-arraybuffer|"
     r"joint-iteration|"
     # ES2024+ features (implement later)
-    r"Array\.fromAsync|"
     r"Atomics\.waitAsync|"
     # Complex features deferred.  (BigInt is implemented — plan 056 — so it is
     # no longer filtered here; BigInt64Array/BigUint64Array + DataView BigInt64

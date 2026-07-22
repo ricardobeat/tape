@@ -4788,6 +4788,14 @@ fn bool register_array_constructor(EnvRecord* global_env, Heap* heap) {
     from_tv.set_lightfunc((void*)(usz)Builtin.ARRAY_FROM.ordinal);
     arr.put_prop(from_key, from_tv, hobject::PROP_FLAGS_WC);
 
+    // Add Array.fromAsync (proposal-array-from-async, ES2026) as a static
+    // method on the constructor.
+    HString* from_async_key = builtin_intern_string(heap, "fromAsync");
+    if (from_async_key == null) return false;
+    TVal from_async_tv;
+    from_async_tv.set_lightfunc((void*)(usz)Builtin.ARRAY_FROM_ASYNC.ordinal);
+    arr.put_prop(from_async_key, from_async_tv, hobject::PROP_FLAGS_WC);
+
     // Add @@species accessor (ES2022 §23.1.2.5): getter returns `this`.
     HString* species_sym = ensure_species_symbol(heap);
     if (species_sym != null) {

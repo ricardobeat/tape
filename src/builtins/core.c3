@@ -564,6 +564,11 @@ enum Builtin : uint {
     ITERATOR_HELPER_RETURN,
     JSON_RAW_JSON,
     JSON_IS_RAW_JSON,
+    // --- Array.fromAsync (proposal-array-from-async, ES2026) ---
+    ARRAY_FROM_ASYNC,               // Array.fromAsync(asyncItems, mapfn, thisArg)
+    ARRAY_FROM_ASYNC_STEP_FULFILL,  // native reaction: awaited next()/element ready
+    ARRAY_FROM_ASYNC_MAP_FULFILL,   // native reaction: awaited mapped value ready
+    ARRAY_FROM_ASYNC_REJECT,        // native reaction: reject → close iterator, reject outer
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2755,6 +2760,11 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.ASYNC_FROM_SYNC_THROW.ordinal: return { "throw", 1 };
         case Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal: return { "", 1 };
         case Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal: return { "", 1 };
+        // Array.fromAsync + its internal reaction closures
+        case Builtin.ARRAY_FROM_ASYNC.ordinal: return { "fromAsync", 1 };
+        case Builtin.ARRAY_FROM_ASYNC_STEP_FULFILL.ordinal: return { "", 1 };
+        case Builtin.ARRAY_FROM_ASYNC_MAP_FULFILL.ordinal: return { "", 1 };
+        case Builtin.ARRAY_FROM_ASYNC_REJECT.ordinal: return { "", 1 };
         case Builtin.PROMISE_WITH_RESOLVERS.ordinal: return { "withResolvers", 0 };
         case Builtin.PROMISE_TRY.ordinal: return { "try", 1 };
         case Builtin.ERROR_ISERROR.ordinal: return { "isError", 1 };
@@ -3719,6 +3729,10 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ASYNC_FROM_SYNC_THROW.ordinal]          = &builtin_async_from_sync_throw,
     [Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal]   = &builtin_async_from_sync_value_unwrap,
     [Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal] = &builtin_async_from_sync_reject_forward,
+    [Builtin.ARRAY_FROM_ASYNC.ordinal]               = &builtin_array_from_async,
+    [Builtin.ARRAY_FROM_ASYNC_STEP_FULFILL.ordinal]  = &builtin_array_from_async_step_fulfill,
+    [Builtin.ARRAY_FROM_ASYNC_MAP_FULFILL.ordinal]   = &builtin_array_from_async_map_fulfill,
+    [Builtin.ARRAY_FROM_ASYNC_REJECT.ordinal]        = &builtin_array_from_async_reject,
     [Builtin.PROMISE_WITH_RESOLVERS.ordinal]         = &builtin_promise_with_resolvers,
     [Builtin.PROMISE_TRY.ordinal]                    = &builtin_promise_try,
     [Builtin.ERROR_ISERROR.ordinal]                  = &builtin_error_isError,
