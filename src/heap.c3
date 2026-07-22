@@ -1539,6 +1539,48 @@ fn void Heap.tval_copy_ref(&self, TVal* dst, TVal* src) @inline {
     }
 }
 
+/// Move a builtin's result (held in a transient local TVal, e.g. the slot
+/// `ctx.result` points at) into a VM register, releasing the transient's own
+/// claim when the result is a freshly built, non-interned string it solely owns.
+///
+/// Builtins populate their result via increffing setters (`set_string`, ...)
+/// regardless of whether the value is brand new (refcount 0 before the setter
+/// ran) or an already-owned value being passed through (refcount >= 1 before).
+/// `tval_copy_ref` establishes the register's own reference correctly in both
+/// cases, but the transient local's claim from the builtin's setter is
+/// otherwise never released. For most heap values this is harmless — objects
+/// are reclaimed by GC mark-sweep and interned strings are kept alive by the
+/// string table regardless of refcount — so releasing them here is at best
+/// pointless and at worst a use-after-free (a Symbol's backing string, for
+/// instance, is a live value other code still references at refcount 1).
+///
+/// The one class with no such backstop is a large, NON-interned, non-symbol
+/// string (e.g. from `String.fromCodePoint` or string concatenation): a pure
+/// refcounted leaf that leaks permanently if the setter's transient reference
+/// is never balanced. That — and only that — is what this releases. The
+/// refcount == 1 check confirms the setter's reference is the sole one: nothing
+/// else has had a chance to reference a value the builtin just created.
+fn void Heap.store_builtin_result(&self, TVal* dst, TVal* transient) @inline {
+    bool release_transient = false;
+    if (transient.is_string()) {
+        void* ptr = transient.get_heapptr();
+        // Exclude an aliased dst/transient (same string already sitting in the
+        // destination register): tval_copy_ref is refcount-neutral there, so
+        // releasing the transient would drop a live reference.
+        if (ptr != null && ptr != dst.get_heapptr()) {
+            hstring::HString* hs = (hstring::HString*)ptr;
+            if (!hs.flags.is_interned && !hs.flags.is_symbol
+                && ((HeapHeader*)ptr).refcount == 1) {
+                release_transient = true;
+            }
+        }
+    }
+    self.tval_copy_ref(dst, transient);
+    if (release_transient) {
+        self.decref((HeapHeader*)transient.get_heapptr());
+    }
+}
+
 // ============================================================================
 // Managed-object linked-list operations (doubly-linked via HeapHeader)
 // ============================================================================
