@@ -6,6 +6,7 @@ import duktape::bytecode;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::heap;
+import duktape::re_bindings;
 import std::io;
 
 // ============================================================================
@@ -3522,6 +3523,7 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
         case TokenType.REGEXP: {
             Token re_tok = self.advance()!;
+            self.validate_regexp_literal(re_tok.str_value)!;
             uint re_idx = self.add_string_constant(re_tok.str_value);
             ushort re_reg = self.alloc_reg();
             self.emit(bytecode::make_a_bc(Opcode.NEWREGEXP, (uint)re_reg, re_idx));
@@ -3561,6 +3563,67 @@ fn ushort? CompilerContext.primary_expr(&self) {
 /// here previously masked things like a lone `++`/`+` at end of input.
 fn ushort? CompilerContext.literal_keyword(&self) {
     return self.fail("unexpected token in expression")~;
+}
+
+/// Parse-time validation of a regexp literal (ES §12.9.3 early errors):
+/// the pattern must compile under the literal's flags. `str_value` is the
+/// raw "/pattern/flags" text. Splitting mirrors the VM's NEWREGEXP handler.
+/// Flags must be valid, non-duplicate, and u/v mutually exclusive.
+fn void? CompilerContext.validate_regexp_literal(&self, char[] raw) {
+    usz len = raw.len;
+    if (len < 2 || raw[0] != '/') return;
+
+    usz end_slash = len - 1;
+    while (end_slash > 0 &&
+           ((raw[end_slash] >= 'a' && raw[end_slash] <= 'z') ||
+            (raw[end_slash] >= 'A' && raw[end_slash] <= 'Z'))) {
+        end_slash--;
+    }
+    if (end_slash == 0 || raw[end_slash] != '/') return;
+
+    char[] pattern_data = raw[1..end_slash - 1];
+    char[] flag_data = {};
+    if (end_slash + 1 < len) {
+        flag_data = raw[end_slash + 1..len - 1];
+    }
+
+    int flags = 0;
+    uint seen = 0;
+    foreach (f : flag_data) {
+        uint bit;
+        switch (f) {
+            case 'g': bit = 1;
+            case 'i': bit = 2;    flags |= re_bindings::RE_FLAG_IGNORECASE;
+            case 'm': bit = 4;    flags |= re_bindings::RE_FLAG_MULTILINE;
+            case 's': bit = 8;    flags |= re_bindings::RE_FLAG_DOTALL;
+            case 'u': bit = 16;   flags |= re_bindings::RE_FLAG_UNICODE;
+            case 'y': bit = 32;   flags |= re_bindings::RE_FLAG_STICKY;
+            case 'd': bit = 64;   flags |= re_bindings::RE_FLAG_INDICES;
+            case 'v': bit = 128;  flags |= re_bindings::RE_FLAG_UNICODE_SETS;
+            default:
+                return self.fail("invalid regexp flag")~;
+        }
+        if ((seen & bit) != 0) {
+            return self.fail("duplicate regexp flag")~;
+        }
+        seen |= bit;
+    }
+    if ((seen & 16) != 0 && (seen & 128) != 0) {
+        return self.fail("regexp flags u and v are mutually exclusive")~;
+    }
+
+    usz plen = pattern_data.len;
+    char* buf = (char*)alloc::malloc_try(mem, (sz)(plen + 1)) ?? null;
+    if (buf == null) return;
+    defer mem::free(buf);
+    mem::copy(buf, pattern_data.ptr, (sz)(plen));
+    buf[plen] = 0;
+    char[128] error_buf;
+    void* compiled = re_bindings::re_compile(buf, plen, flags, &error_buf, 128);
+    if (compiled == null) {
+        return self.fail("invalid regular expression")~;
+    }
+    re_bindings::re_free(compiled);
 }
 
 /// Parse object literal: { key: value, ... }
