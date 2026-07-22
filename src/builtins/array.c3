@@ -3450,8 +3450,10 @@ fn bool arr_has_prop(HObject* obj, ulong key, Heap* heap, void* vm = null) {
     // TypedArray: integer indices in [0, length) are own data properties served
     // from the backing buffer (they never appear in the named-property table).
     if (is_typed_array_class(obj.get_class())) {
-        uint ta_shift = ta_elem_shift(obj.get_class());
-        ulong ta_len = (ulong)((*obj.extra_ptr()).view.byte_length >> ta_shift);
+        // Use the effective element count so a length-tracking view over a
+        // resizable buffer, or a fixed view whose buffer shrank, reports its
+        // CURRENT length rather than the stale stored byte_length.
+        ulong ta_len = (ulong)ta_element_count(obj);
         return key < ta_len;
     }
     HString* pk = heap.int_to_hstring((long)key);
@@ -4060,8 +4062,9 @@ fn bool arr_get_elem_vm(HObject* obj, ulong key, Heap* heap, BuiltinContext* ctx
     // TypedArray: integer indices in [0, length) load from the backing buffer.
     if (is_typed_array_class(obj.get_class())) {
         hobject::ObjClass ta_cls = obj.get_class();
-        uint ta_shift = ta_elem_shift(ta_cls);
-        ulong ta_len = (ulong)((*obj.extra_ptr()).view.byte_length >> ta_shift);
+        // Effective element count: reflects a resizable buffer's current size and
+        // returns 0 for a detached / out-of-bounds view.
+        ulong ta_len = (ulong)ta_element_count(obj);
         if (key >= ta_len) return false;
         HObject* ta_buf = (*obj.extra_ptr()).view.buffer;
         char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
