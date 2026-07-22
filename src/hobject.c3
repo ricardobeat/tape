@@ -151,6 +151,12 @@ enum ObjClass : char {
     MAP_ITERATOR,
     SET_ITERATOR,
     REGEXP_STRING_ITERATOR,
+    /// Iterator Helper object (ES2025 §27.1.2) — lazy map/filter/take/drop/
+    /// flatMap result. Backed by HObjectIteratorHelper, not a real generator.
+    ITERATOR_HELPER,
+    /// %WrapForValidIteratorPrototype% instance (ES2025 §27.1.3.2.2.1) —
+    /// created by Iterator.from() to adapt a plain iterator/next pair.
+    WRAP_FOR_VALID_ITERATOR,
     /// Internal GC cell for boxed accessor pairs (getter + setter).
     GETTER_SETTER,
 }
@@ -548,6 +554,36 @@ struct HObjectRegExpStringIterator {
     uint     flags;        /// Bit 0: global flag; bit 1: done flag.
 }
 
+/// %WrapForValidIteratorPrototype% instance: adapts a plain object exposing
+/// `next`/`return` to the Iterator protocol. Active when obj_class is
+/// WRAP_FOR_VALID_ITERATOR. Mirrors the spec's Iterator Record: [[Iterator]]
+/// and [[NextMethod]] (cached once, per GetIteratorDirect semantics).
+struct HObjectWrapForValidIterator {
+    HObject* iterated;      /// [[Iterated]].[[Iterator]] — the wrapped object.
+    TVal     next_method;   /// [[Iterated]].[[NextMethod]] — cached `next`.
+}
+
+/// Iterator Helper object (ES2025 §27.1.2): the shared representation for
+/// map/filter/take/drop/flatMap results. Active when obj_class is
+/// ITERATOR_HELPER. Unlike the spec (which models these as generators),
+/// `next()`/`return()` are implemented as a plain state machine driven
+/// directly off the underlying iterator's `next()` — every helper kind other
+/// than flatMap needs no state beyond the fields below, and flatMap's inner
+/// iterator is threaded through `inner_iter`/`inner_next`.
+struct HObjectIteratorHelper {
+    HObject* underlying;     /// The wrapped Iterator Record's [[Iterator]].
+    TVal     next_method;    /// The wrapped Iterator Record's [[NextMethod]].
+    TVal     callback;       /// mapper / predicate (unused by take/drop).
+    double   remaining;      /// take/drop: remaining count (+Infinity allowed).
+    double   counter;        /// map/filter/flatMap: 0-based step counter.
+    uint     kind;            /// IterHelperKind ordinal.
+    uint     state;           /// IterHelperState ordinal.
+    /// flatMap only: the current inner iterator (Iterator Record), or null
+    /// when not currently flattening one.
+    HObject* inner_iter;
+    TVal     inner_next;
+}
+
 /// Proxy exotic object: [[ProxyTarget]] + [[ProxyHandler]].
 /// Active when obj_class == PROXY.  Both are null once the proxy is revoked.
 /// builtin_fn_index overlays HObjectFunction.builtin_fn_index so that a
@@ -595,6 +631,8 @@ union HObjectExtra {
     HObjectPromise               promise;
     HObjectIterator              iter;
     HObjectRegExpStringIterator  regexp_iter;
+    HObjectWrapForValidIterator  wrap_iter;
+    HObjectIteratorHelper        iter_helper;
     HObjectGetterSetter          gs;
     HObjectProxy                 proxy;
     HObjectArrayBuffer           ab;

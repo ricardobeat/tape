@@ -260,8 +260,14 @@ struct Heap {
     HObject* generator_func_proto; // GeneratorFunction.prototype (ES6 §25.2.3)
     HObject* async_func_proto;     // AsyncFunction.prototype (ES2017 §25.7.3)
     HObject* iterator_proto;   // %IteratorPrototype% (ES6 §25.1.2)
+    HObject* iterator_ctor;    // %Iterator% constructor (ES2025 §27.1.3.1), for Iterator.from's OrdinaryHasInstance check
+    HObject* iterator_helper_proto; // %IteratorHelperPrototype% (ES2025 §27.1.2.1)
+    HObject* wrap_for_valid_iterator_proto; // %WrapForValidIteratorPrototype% (ES2025 §27.1.3.2.2.1)
     HObject* async_from_sync_iter_proto; // %AsyncFromSyncIteratorPrototype% (ES2018 §27.1.4)
     HObject* array_iterator_proto; // %ArrayIteratorPrototype% (ES6 §22.1.5)
+    HObject* map_iterator_proto;   // %MapIteratorPrototype% (ES6 §23.1.5)
+    HObject* set_iterator_proto;   // %SetIteratorPrototype% (ES6 §23.2.5)
+    HObject* string_iterator_proto; // %StringIteratorPrototype% (ES6 §22.1.5 for strings)
     HObject* typedarray_proto; // Shared %TypedArray%.prototype
     HObject* typedarray_intrinsic; // %TypedArray% abstract constructor
     HObject* arraybuffer_proto; // ArrayBuffer.prototype
@@ -1194,8 +1200,14 @@ fn void Heap.reset(&self) {
     self.generator_func_proto = null;
     self.async_func_proto     = null;
     self.iterator_proto       = null;
+    self.iterator_ctor        = null;
+    self.iterator_helper_proto = null;
+    self.wrap_for_valid_iterator_proto = null;
     self.async_from_sync_iter_proto = null;
     self.array_iterator_proto = null;
+    self.map_iterator_proto = null;
+    self.set_iterator_proto = null;
+    self.string_iterator_proto = null;
     self.typedarray_proto = null;
     self.typedarray_intrinsic = null;
     self.arraybuffer_proto = null;
@@ -1841,6 +1853,23 @@ fn void Heap.drain_gray(&self) {
                     self.mark_hobject((*obj.extra_ptr()).regexp_iter.regexp);
                 }
                 break;
+            case ObjClass.WRAP_FOR_VALID_ITERATOR:
+                if ((*obj.extra_ptr()).wrap_iter.iterated != null) {
+                    self.mark_hobject((*obj.extra_ptr()).wrap_iter.iterated);
+                }
+                self.mark_tval(&(*obj.extra_ptr()).wrap_iter.next_method);
+                break;
+            case ObjClass.ITERATOR_HELPER:
+                if ((*obj.extra_ptr()).iter_helper.underlying != null) {
+                    self.mark_hobject((*obj.extra_ptr()).iter_helper.underlying);
+                }
+                self.mark_tval(&(*obj.extra_ptr()).iter_helper.next_method);
+                self.mark_tval(&(*obj.extra_ptr()).iter_helper.callback);
+                if ((*obj.extra_ptr()).iter_helper.inner_iter != null) {
+                    self.mark_hobject((*obj.extra_ptr()).iter_helper.inner_iter);
+                }
+                self.mark_tval(&(*obj.extra_ptr()).iter_helper.inner_next);
+                break;
             case ObjClass.GETTER_SETTER:
                 self.mark_tval(&(*obj.extra_ptr()).gs.getter);
                 self.mark_tval(&(*obj.extra_ptr()).gs.setter);
@@ -1902,8 +1931,14 @@ fn void Heap.mark_roots(&self) {
     if (self.generator_func_proto != null) { self.mark_hobject(self.generator_func_proto); }
     if (self.async_func_proto != null) { self.mark_hobject(self.async_func_proto); }
     if (self.iterator_proto != null) { self.mark_hobject(self.iterator_proto); }
+    if (self.iterator_ctor != null) { self.mark_hobject(self.iterator_ctor); }
+    if (self.iterator_helper_proto != null) { self.mark_hobject(self.iterator_helper_proto); }
+    if (self.wrap_for_valid_iterator_proto != null) { self.mark_hobject(self.wrap_for_valid_iterator_proto); }
     if (self.async_from_sync_iter_proto != null) { self.mark_hobject(self.async_from_sync_iter_proto); }
     if (self.array_iterator_proto != null) { self.mark_hobject(self.array_iterator_proto); }
+    if (self.map_iterator_proto != null) { self.mark_hobject(self.map_iterator_proto); }
+    if (self.set_iterator_proto != null) { self.mark_hobject(self.set_iterator_proto); }
+    if (self.string_iterator_proto != null) { self.mark_hobject(self.string_iterator_proto); }
     if (self.typedarray_proto != null) { self.mark_hobject(self.typedarray_proto); }
     if (self.typedarray_intrinsic != null) { self.mark_hobject(self.typedarray_intrinsic); }
     if (self.arraybuffer_proto != null) { self.mark_hobject(self.arraybuffer_proto); }
@@ -2160,25 +2195,27 @@ $if $feature(HEAP_VERIFY):
     }
 
     // Check built-in constructor prototypes
-    ZString[25] ctor_names = {
+    ZString[31] ctor_names = {
         "object_proto", "bool_proto", "string_proto", "number_proto",
         "array_proto", "function_proto", "date_proto", "regexp_proto",
         "map_proto", "set_proto", "weakmap_proto", "weakset_proto",
         "symbol_proto", "bigint_proto", "promise_proto", "generator_proto", "generator_func_proto",
         "async_func_proto",
         "iterator_proto", "array_iterator_proto", "typedarray_proto", "typedarray_intrinsic", "arraybuffer_proto", "dataview_proto",
-        "async_from_sync_iter_proto"
+        "async_from_sync_iter_proto", "iterator_ctor", "iterator_helper_proto", "wrap_for_valid_iterator_proto",
+        "map_iterator_proto", "set_iterator_proto", "string_iterator_proto"
     };
-    HObject*[25] ctor_protos = {
+    HObject*[31] ctor_protos = {
         self.object_proto, self.bool_proto, self.string_proto, self.number_proto,
         self.array_proto, self.function_proto, self.date_proto, self.regexp_proto,
         self.map_proto, self.set_proto, self.weakmap_proto, self.weakset_proto,
         self.symbol_proto, self.bigint_proto, self.promise_proto, self.generator_proto, self.generator_func_proto,
         self.async_func_proto,
         self.iterator_proto, self.array_iterator_proto, self.typedarray_proto, self.typedarray_intrinsic, self.arraybuffer_proto, self.dataview_proto,
-        self.async_from_sync_iter_proto
+        self.async_from_sync_iter_proto, self.iterator_ctor, self.iterator_helper_proto, self.wrap_for_valid_iterator_proto,
+        self.map_iterator_proto, self.set_iterator_proto, self.string_iterator_proto
     };
-    for (uint i = 0; i < 25; i++) {
+    for (uint i = 0; i < 31; i++) {
         if (ctor_protos[i] != null) {
             if (!self.validate_hobject((HeapHeader*)ctor_protos[i], ctor_names[i])) errors++;
             checked++;

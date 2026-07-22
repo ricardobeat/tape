@@ -463,6 +463,8 @@ fn bool register_generator_constructor(EnvRecord* global_env, Heap* heap) {
     HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = proto_raw) return false;
     HObject* proto = proto_raw;
+    // Provisional — re-wired to %Iterator.prototype% once it exists, in the
+    // deferred prototype-chain wiring pass (ES2025 §27.8.1).
     proto.prototype = heap.object_proto;
     heap.generator_proto = proto;
 

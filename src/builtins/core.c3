@@ -530,6 +530,28 @@ enum Builtin : uint {
     SET_PROTO_ISSUPERSETOF,         // Set.prototype.isSupersetOf(other)
     SET_PROTO_ISDISJOINTFROM,       // Set.prototype.isDisjointFrom(other)
     REGEXP_ESCAPE, // RegExp.escape(string) (ES2026 proposal-regex-escaping)
+    // --- Iterator Helpers (ES2025 §27.1) ---
+    ITERATOR_CTOR,                  // Iterator() — throws (abstract, subclassable)
+    ITERATOR_FROM,                  // Iterator.from(obj)
+    ITERATOR_PROTO_CONSTRUCTOR_GET, // get Iterator.prototype.constructor
+    ITERATOR_PROTO_CONSTRUCTOR_SET, // set Iterator.prototype.constructor
+    ITERATOR_PROTO_TOSTRINGTAG_GET, // get Iterator.prototype[Symbol.toStringTag]
+    ITERATOR_PROTO_TOSTRINGTAG_SET, // set Iterator.prototype[Symbol.toStringTag]
+    ITERATOR_PROTO_MAP,
+    ITERATOR_PROTO_FILTER,
+    ITERATOR_PROTO_TAKE,
+    ITERATOR_PROTO_DROP,
+    ITERATOR_PROTO_FLATMAP,
+    ITERATOR_PROTO_REDUCE,
+    ITERATOR_PROTO_TOARRAY,
+    ITERATOR_PROTO_FOREACH,
+    ITERATOR_PROTO_SOME,
+    ITERATOR_PROTO_EVERY,
+    ITERATOR_PROTO_FIND,
+    WRAP_FOR_VALID_ITERATOR_NEXT,
+    WRAP_FOR_VALID_ITERATOR_RETURN,
+    ITERATOR_HELPER_NEXT,
+    ITERATOR_HELPER_RETURN,
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2701,6 +2723,28 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.SET_PROTO_ISSUPERSETOF.ordinal: return { "isSupersetOf", 1 };
         case Builtin.SET_PROTO_ISDISJOINTFROM.ordinal: return { "isDisjointFrom", 1 };
         case Builtin.REGEXP_ESCAPE.ordinal: return { "escape", 1 };
+        // Iterator Helpers (ES2025 §27.1)
+        case Builtin.ITERATOR_CTOR.ordinal: return { "Iterator", 0 };
+        case Builtin.ITERATOR_FROM.ordinal: return { "from", 1 };
+        case Builtin.ITERATOR_PROTO_CONSTRUCTOR_GET.ordinal: return { "get constructor", 0 };
+        case Builtin.ITERATOR_PROTO_CONSTRUCTOR_SET.ordinal: return { "set constructor", 1 };
+        case Builtin.ITERATOR_PROTO_TOSTRINGTAG_GET.ordinal: return { "get [Symbol.toStringTag]", 0 };
+        case Builtin.ITERATOR_PROTO_TOSTRINGTAG_SET.ordinal: return { "set [Symbol.toStringTag]", 1 };
+        case Builtin.ITERATOR_PROTO_MAP.ordinal: return { "map", 1 };
+        case Builtin.ITERATOR_PROTO_FILTER.ordinal: return { "filter", 1 };
+        case Builtin.ITERATOR_PROTO_TAKE.ordinal: return { "take", 1 };
+        case Builtin.ITERATOR_PROTO_DROP.ordinal: return { "drop", 1 };
+        case Builtin.ITERATOR_PROTO_FLATMAP.ordinal: return { "flatMap", 1 };
+        case Builtin.ITERATOR_PROTO_REDUCE.ordinal: return { "reduce", 1 };
+        case Builtin.ITERATOR_PROTO_TOARRAY.ordinal: return { "toArray", 0 };
+        case Builtin.ITERATOR_PROTO_FOREACH.ordinal: return { "forEach", 1 };
+        case Builtin.ITERATOR_PROTO_SOME.ordinal: return { "some", 1 };
+        case Builtin.ITERATOR_PROTO_EVERY.ordinal: return { "every", 1 };
+        case Builtin.ITERATOR_PROTO_FIND.ordinal: return { "find", 1 };
+        case Builtin.WRAP_FOR_VALID_ITERATOR_NEXT.ordinal: return { "next", 0 };
+        case Builtin.WRAP_FOR_VALID_ITERATOR_RETURN.ordinal: return { "return", 0 };
+        case Builtin.ITERATOR_HELPER_NEXT.ordinal: return { "next", 0 };
+        case Builtin.ITERATOR_HELPER_RETURN.ordinal: return { "return", 0 };
         default: return { "", -1 };
     }
 }
@@ -3631,6 +3675,27 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.SET_PROTO_ISSUPERSETOF.ordinal]        = &builtin_set_proto_isSupersetOf,
     [Builtin.SET_PROTO_ISDISJOINTFROM.ordinal]      = &builtin_set_proto_isDisjointFrom,
     [Builtin.REGEXP_ESCAPE.ordinal]                  = &builtin_regexp_escape,
+    [Builtin.ITERATOR_CTOR.ordinal]                 = &builtin_iterator_ctor,
+    [Builtin.ITERATOR_FROM.ordinal]                 = &builtin_iterator_from,
+    [Builtin.ITERATOR_PROTO_CONSTRUCTOR_GET.ordinal] = &builtin_iterator_proto_constructor_get,
+    [Builtin.ITERATOR_PROTO_CONSTRUCTOR_SET.ordinal] = &builtin_iterator_proto_constructor_set,
+    [Builtin.ITERATOR_PROTO_TOSTRINGTAG_GET.ordinal] = &builtin_iterator_proto_tostringtag_get,
+    [Builtin.ITERATOR_PROTO_TOSTRINGTAG_SET.ordinal] = &builtin_iterator_proto_tostringtag_set,
+    [Builtin.ITERATOR_PROTO_MAP.ordinal]             = &builtin_iterator_proto_map,
+    [Builtin.ITERATOR_PROTO_FILTER.ordinal]          = &builtin_iterator_proto_filter,
+    [Builtin.ITERATOR_PROTO_TAKE.ordinal]            = &builtin_iterator_proto_take,
+    [Builtin.ITERATOR_PROTO_DROP.ordinal]            = &builtin_iterator_proto_drop,
+    [Builtin.ITERATOR_PROTO_FLATMAP.ordinal]         = &builtin_iterator_proto_flatmap,
+    [Builtin.ITERATOR_PROTO_REDUCE.ordinal]          = &builtin_iterator_proto_reduce,
+    [Builtin.ITERATOR_PROTO_TOARRAY.ordinal]         = &builtin_iterator_proto_toarray,
+    [Builtin.ITERATOR_PROTO_FOREACH.ordinal]         = &builtin_iterator_proto_foreach,
+    [Builtin.ITERATOR_PROTO_SOME.ordinal]            = &builtin_iterator_proto_some,
+    [Builtin.ITERATOR_PROTO_EVERY.ordinal]           = &builtin_iterator_proto_every,
+    [Builtin.ITERATOR_PROTO_FIND.ordinal]            = &builtin_iterator_proto_find,
+    [Builtin.WRAP_FOR_VALID_ITERATOR_NEXT.ordinal]   = &builtin_wrap_for_valid_iterator_next,
+    [Builtin.WRAP_FOR_VALID_ITERATOR_RETURN.ordinal] = &builtin_wrap_for_valid_iterator_return,
+    [Builtin.ITERATOR_HELPER_NEXT.ordinal]           = &builtin_iterator_helper_next,
+    [Builtin.ITERATOR_HELPER_RETURN.ordinal]         = &builtin_iterator_helper_return,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
@@ -3942,6 +4007,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // built-in iterators, providing [Symbol.iterator]() that returns `this`.
     if (!register_iterator_prototype(heap)) return false;
 
+    // Register the Iterator global constructor, Iterator.prototype's helper
+    // methods (map/filter/take/drop/flatMap/reduce/toArray/forEach/some/
+    // every/find), %IteratorHelperPrototype%, and
+    // %WrapForValidIteratorPrototype% (ES2025 §27.1).
+    if (!register_iterator_ctor_and_helpers(global_env, heap)) return false;
+
     // Register %AsyncFromSyncIteratorPrototype% (ES2018 §27.1.4) — wraps a
     // sync iterator so `for await` can drive it.
     if (!register_async_from_sync_iterator_prototype(heap)) return false;
@@ -3970,7 +4041,10 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     if (heap.weakset_proto != null) heap.weakset_proto.prototype = heap.object_proto;
     if (heap.symbol_proto != null) heap.symbol_proto.prototype = heap.object_proto;
     if (heap.promise_proto != null) heap.promise_proto.prototype = heap.object_proto;
-    if (heap.generator_proto != null) heap.generator_proto.prototype = heap.object_proto;
+    // ES2025 §27.8.1 %GeneratorPrototype%.[[Prototype]] is %Iterator.prototype%
+    // (not Object.prototype directly) now that Iterator Helpers exist — this
+    // is what makes `function*(){}().map(...)` etc. work on generators.
+    if (heap.generator_proto != null) heap.generator_proto.prototype = heap.iterator_proto;
     if (heap.iterator_proto != null)  heap.iterator_proto.prototype = heap.object_proto;
     if (heap.async_from_sync_iter_proto != null) heap.async_from_sync_iter_proto.prototype = heap.object_proto;
 

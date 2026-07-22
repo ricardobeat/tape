@@ -2,11 +2,14 @@
 module duktape::builtins;
 import duktape::types;
 import std::io;
+import std::math;
 
 import duktape::heap;
 import duktape::hstring;
 import duktape::hobject;
 import duktape::re_bindings;
+import duktape::vm;
+import duktape::env;
 
 // ============================================================================
 // Iterator protocol — built-in @@iterator methods and .next() functions
@@ -49,20 +52,9 @@ fn void create_map_iterator(BuiltinContext* ctx, uint kind) {
     (*iter.extra_ptr()).iter.target = map;
     (*iter.extra_ptr()).iter.index = 0;
     (*iter.extra_ptr()).iter.kind = kind;
-    iter.prototype = heap.iterator_proto;
-
-    HString* next_key = builtin_intern_string(heap, "next");
-    if (next_key != null) {
-        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (try fn_obj = fn_raw) {
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.MAP_ITERATOR_NEXT.ordinal;
-            fn_obj.flags.callable = true;
-            fn_obj.prototype = heap.function_proto;
-            TVal fn_tv;
-            fn_tv.set_object(fn_obj);
-            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
-        }
-    }
+    // MapIterator instances share %MapIteratorPrototype%'s .next and
+    // @@toStringTag — mirrors %ArrayIteratorPrototype%'s shared .next.
+    iter.prototype = heap.map_iterator_proto;
     ctx.result.set_object(iter);
 }
 
@@ -79,20 +71,9 @@ fn void create_set_iterator(BuiltinContext* ctx, uint kind) {
     (*iter.extra_ptr()).iter.target = set;
     (*iter.extra_ptr()).iter.index = 0;
     (*iter.extra_ptr()).iter.kind = kind;
-    iter.prototype = heap.iterator_proto;
-
-    HString* next_key = builtin_intern_string(heap, "next");
-    if (next_key != null) {
-        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (try fn_obj = fn_raw) {
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.SET_ITERATOR_NEXT.ordinal;
-            fn_obj.flags.callable = true;
-            fn_obj.prototype = heap.function_proto;
-            TVal fn_tv;
-            fn_tv.set_object(fn_obj);
-            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
-        }
-    }
+    // SetIterator instances share %SetIteratorPrototype%'s .next and
+    // @@toStringTag — mirrors %ArrayIteratorPrototype%'s shared .next.
+    iter.prototype = heap.set_iterator_proto;
     ctx.result.set_object(iter);
 }
 fn void builtin_array_proto_values(BuiltinContext* ctx) {
@@ -129,21 +110,9 @@ fn void builtin_string_proto_symbol_iter(BuiltinContext* ctx) {
     // occupies bytes 8-11 — non-overlapping, so both can be used together.
     (*iter.extra_ptr()).prim.primitive_value.set_string(str_data);
     (*iter.extra_ptr()).iter.index = 0;
-    iter.prototype = heap.iterator_proto;
-
-    // Add .next method as an own property
-    HString* next_key = builtin_intern_string(heap, "next");
-    if (next_key != null) {
-        HObject*? fn_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
-        if (try fn_obj = fn_raw) {
-            (*fn_obj.extra_ptr()).func.builtin_fn_index = (int)Builtin.STRING_ITERATOR_NEXT.ordinal;
-            fn_obj.flags.callable = true;
-            fn_obj.prototype = heap.function_proto;
-            TVal fn_tv;
-            fn_tv.set_object(fn_obj);
-            iter.put_prop(next_key, fn_tv, hobject::PROP_FLAGS_NWC);
-        }
-    }
+    // StringIterator instances share %StringIteratorPrototype%'s .next and
+    // @@toStringTag — mirrors %ArrayIteratorPrototype%'s shared .next.
+    iter.prototype = heap.string_iterator_proto;
 
     ctx.result.set_object(iter);
 }
@@ -683,5 +652,1361 @@ fn bool register_iterator_prototype(Heap* heap) {
     next_tv.set_object(next_fn);
     array_proto.put_prop(next_key, next_tv, hobject::PROP_FLAGS_WC);
 
+    HString* tag_sym = ensure_tostringtag_symbol(heap);
+    if (tag_sym != null) {
+        TVal tag_tv; tag_tv.set_string(builtin_intern_string(heap, "Array Iterator"));
+        array_proto.put_prop(tag_sym, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // %MapIteratorPrototype%, %SetIteratorPrototype%, %StringIteratorPrototype%
+    // — dedicated sub-prototypes (mirroring %ArrayIteratorPrototype% above) so
+    // each kind gets its own @@toStringTag without polluting %Iterator.prototype%.
+    HObject*? map_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = map_proto_raw) return false;
+    HObject* map_iter_proto = map_proto_raw;
+    map_iter_proto.prototype = proto;
+    heap.map_iterator_proto = map_iter_proto;
+    if (!register_string_proto_method(map_iter_proto, heap, "next", Builtin.MAP_ITERATOR_NEXT.ordinal)) return false;
+    if (tag_sym != null) {
+        TVal tag_tv; tag_tv.set_string(builtin_intern_string(heap, "Map Iterator"));
+        map_iter_proto.put_prop(tag_sym, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    HObject*? set_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = set_proto_raw) return false;
+    HObject* set_iter_proto = set_proto_raw;
+    set_iter_proto.prototype = proto;
+    heap.set_iterator_proto = set_iter_proto;
+    if (!register_string_proto_method(set_iter_proto, heap, "next", Builtin.SET_ITERATOR_NEXT.ordinal)) return false;
+    if (tag_sym != null) {
+        TVal tag_tv; tag_tv.set_string(builtin_intern_string(heap, "Set Iterator"));
+        set_iter_proto.put_prop(tag_sym, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    HObject*? str_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = str_proto_raw) return false;
+    HObject* str_iter_proto = str_proto_raw;
+    str_iter_proto.prototype = proto;
+    heap.string_iterator_proto = str_iter_proto;
+    if (!register_string_proto_method(str_iter_proto, heap, "next", Builtin.STRING_ITERATOR_NEXT.ordinal)) return false;
+    if (tag_sym != null) {
+        TVal tag_tv; tag_tv.set_string(builtin_intern_string(heap, "String Iterator"));
+        str_iter_proto.put_prop(tag_sym, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
     return true;
+}
+
+/// Register an accessor property (getter/setter pair) with the given flags.
+fn bool iterhelper_register_accessor(HObject* proto, Heap* heap, void* key, uint getter_idx, uint setter_idx,
+                                       char[] getter_name, char[] setter_name) {
+    HObject*? getter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = getter_raw) return false;
+    HObject* getter = getter_raw;
+    getter.flags.callable = true;
+    getter.flags.constructable = false;
+    getter.prototype = heap.function_proto;
+    (*getter.extra_ptr()).func.builtin_fn_index = (int)getter_idx;
+    set_func_ctor_name_length(getter, heap, getter_name, 0);
+
+    HObject*? setter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = setter_raw) return false;
+    HObject* setter = setter_raw;
+    setter.flags.callable = true;
+    setter.flags.constructable = false;
+    setter.prototype = heap.function_proto;
+    (*setter.extra_ptr()).func.builtin_fn_index = (int)setter_idx;
+    set_func_ctor_name_length(setter, heap, setter_name, 1);
+
+    TVal getter_tv; getter_tv.set_object(getter);
+    TVal setter_tv; setter_tv.set_object(setter);
+    hobject::PropFlags acc_flags;
+    acc_flags.writable = false;
+    acc_flags.enumerable = false;
+    acc_flags.configurable = true;
+    acc_flags.is_accessor = true;
+    proto.put_prop(key, hobject::hobject_create_accessors(heap, getter_tv, setter_tv), acc_flags);
+    return true;
+}
+
+/// Register the Iterator global constructor, Iterator.prototype's methods
+/// (map/filter/take/drop/flatMap/reduce/toArray/forEach/some/every/find),
+/// its constructor/@@toStringTag accessor pair, %IteratorHelperPrototype%,
+/// and %WrapForValidIteratorPrototype%. Must run after register_iterator_
+/// prototype (needs heap.iterator_proto) and after register_function_
+/// constructor (needs heap.function_proto).
+fn bool register_iterator_ctor_and_helpers(EnvRecord* global_env, Heap* heap) {
+    HObject* proto = heap.iterator_proto;
+    if (proto == null) return false;
+
+    // Iterator.prototype methods (ES2025 §27.1.3.3).
+    if (!register_string_proto_method(proto, heap, "map", Builtin.ITERATOR_PROTO_MAP.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "filter", Builtin.ITERATOR_PROTO_FILTER.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "take", Builtin.ITERATOR_PROTO_TAKE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "drop", Builtin.ITERATOR_PROTO_DROP.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "flatMap", Builtin.ITERATOR_PROTO_FLATMAP.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "reduce", Builtin.ITERATOR_PROTO_REDUCE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "toArray", Builtin.ITERATOR_PROTO_TOARRAY.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "forEach", Builtin.ITERATOR_PROTO_FOREACH.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "some", Builtin.ITERATOR_PROTO_SOME.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "every", Builtin.ITERATOR_PROTO_EVERY.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "find", Builtin.ITERATOR_PROTO_FIND.ordinal)) return false;
+
+    // Iterator.prototype.constructor — accessor pair (ES2025 §27.1.3.3.1).
+    HString* ctor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    if (!iterhelper_register_accessor(proto, heap, ctor_key,
+            Builtin.ITERATOR_PROTO_CONSTRUCTOR_GET.ordinal, Builtin.ITERATOR_PROTO_CONSTRUCTOR_SET.ordinal,
+            "get constructor", "set constructor")) return false;
+
+    // Iterator.prototype[Symbol.toStringTag] — accessor pair.
+    HString* tag_sym = ensure_tostringtag_symbol(heap);
+    if (tag_sym != null) {
+        if (!iterhelper_register_accessor(proto, heap, tag_sym,
+                Builtin.ITERATOR_PROTO_TOSTRINGTAG_GET.ordinal, Builtin.ITERATOR_PROTO_TOSTRINGTAG_SET.ordinal,
+                "get [Symbol.toStringTag]", "set [Symbol.toStringTag]")) return false;
+    }
+
+    // Create the Iterator constructor function object.
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.prototype = heap.function_proto;
+    ctor.flags.callable = true;
+    ctor.flags.constructable = true;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.ITERATOR_CTOR.ordinal;
+    set_func_ctor_name_length(ctor, heap, "Iterator", 0);
+    heap.iterator_ctor = ctor;
+
+    // Iterator.prototype (non-writable, non-enumerable, non-configurable).
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+    TVal proto_tv; proto_tv.set_object(proto);
+    hobject::PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Iterator.from(obj).
+    if (!register_string_proto_method(ctor, heap, "from", Builtin.ITERATOR_FROM.ordinal)) return false;
+
+    // Register the Iterator global binding.
+    {
+        HString* key = builtin_intern_string(heap, "Iterator");
+        if (key == null) return false;
+        TVal ctor_tv; ctor_tv.set_object(ctor);
+        env::env_declare_nonenum(global_env, key, ctor_tv);
+    }
+
+    // %IteratorHelperPrototype% (ES2025 §27.1.2.1): [[Prototype]] is
+    // %Iterator.prototype%; owns the shared next()/return() and @@toStringTag.
+    HObject*? ih_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = ih_proto_raw) return false;
+    HObject* ih_proto = ih_proto_raw;
+    ih_proto.prototype = proto;
+    heap.iterator_helper_proto = ih_proto;
+    if (!register_string_proto_method(ih_proto, heap, "next", Builtin.ITERATOR_HELPER_NEXT.ordinal)) return false;
+    if (!register_string_proto_method(ih_proto, heap, "return", Builtin.ITERATOR_HELPER_RETURN.ordinal)) return false;
+    if (tag_sym != null) {
+        TVal tag_tv; tag_tv.set_string(builtin_intern_string(heap, "Iterator Helper"));
+        ih_proto.put_prop(tag_sym, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // %WrapForValidIteratorPrototype% (ES2025 §27.1.3.2.2.1): [[Prototype]]
+    // is %Iterator.prototype%; owns the shared next()/return().
+    HObject*? wrap_proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = wrap_proto_raw) return false;
+    HObject* wrap_proto = wrap_proto_raw;
+    wrap_proto.prototype = proto;
+    heap.wrap_for_valid_iterator_proto = wrap_proto;
+    if (!register_string_proto_method(wrap_proto, heap, "next", Builtin.WRAP_FOR_VALID_ITERATOR_NEXT.ordinal)) return false;
+    if (!register_string_proto_method(wrap_proto, heap, "return", Builtin.WRAP_FOR_VALID_ITERATOR_RETURN.ordinal)) return false;
+
+    return true;
+}
+
+// ============================================================================
+// Iterator Helpers (ES2025 §27.1) — Iterator, Iterator.from,
+// %IteratorHelperPrototype%, %WrapForValidIteratorPrototype%, and the
+// Iterator.prototype methods (map/filter/take/drop/flatMap/reduce/toArray/
+// forEach/some/every/find).
+// ============================================================================
+
+/// GetV(V, P) — ES2025 §7.3.4: like Get(O, P) but P is looked up on
+/// `lookup_obj` (the [[Prototype]]-chain search anchor — a wrapper object
+/// for primitive receivers) while any accessor getter found is invoked with
+/// Receiver = `receiver` (the true, possibly-primitive, ECMAScript value).
+/// Falls back to undefined on a null lookup_obj/key.
+fn TVal iterhelper_getv(BuiltinContext* ctx, HObject* lookup_obj, void* key, TVal receiver) {
+    TVal undef; undef.set_undefined();
+    if (lookup_obj == null || key == null) return undef;
+    hobject::PropLookupResult res = lookup_obj.get_prop_or_accessor_proto(key, true);
+    switch (res.kind) {
+        case hobject::PropLookupKind.PROP_DATA:
+            return res.data_val;
+        case hobject::PropLookupKind.PROP_ACCESSOR: {
+            TVal getter = res.acc.accessor_fn;
+            if (getter.is_undefined() || getter.is_null()) return undef;
+            if (ctx.heap.call_fn == null || ctx.vm == null) return undef;
+            TVal result = ctx.heap.call_fn(ctx.vm, getter, null, 0, receiver);
+            if (ctx.heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = ctx.heap.error_value;
+                ctx.heap.has_error = false;
+                return undef;
+            }
+            return result;
+        }
+        default:
+            return undef;
+    }
+}
+
+/// Build an IteratorResult object {value, done} (ES2015 §7.4.7).
+fn HObject* iterhelper_make_result(Heap* heap, TVal value, bool done) {
+    HObject*? result_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = result_raw) return null;
+    HObject* result = result_raw;
+    result.prototype = heap.object_proto;
+    HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+    result.put_prop(value_key, value, hobject::PROP_FLAGS_WEC);
+    HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+    TVal done_tv;
+    done_tv.set_boolean(done);
+    result.put_prop(done_key, done_tv, hobject::PROP_FLAGS_WEC);
+    return result;
+}
+
+/// GetIteratorDirect(obj) — ES2025 §7.4.5: Get(obj, "next"), bundled with obj
+/// itself as the Iterator Record's [[Iterator]]. Returns false (ctx.should_throw
+/// set) only if the `next` lookup itself throws (e.g. a throwing accessor).
+fn bool iterhelper_get_iterator_direct(BuiltinContext* ctx, HObject* obj, TVal* out_next) {
+    HString* next_key = builtin_intern_string(ctx.heap, "next");
+    if (next_key == null) { out_next.set_undefined(); return true; }
+    TVal? next_opt = builtins_generic_get(obj, next_key, ctx);
+    if (ctx.should_throw) return false;
+    if (try nm = next_opt) { *out_next = nm; } else { out_next.set_undefined(); }
+    return true;
+}
+
+/// IteratorStep + IteratorValue collapsed into one call (IteratorStepValue,
+/// ES2025 §7.4.9): calls `next_method` on `iterator`, returns true with
+/// *out_value set to the step's .value when not done, false with
+/// *out_done = true when done, and false with ctx.should_throw set on error.
+fn bool iterhelper_step_value(BuiltinContext* ctx, HObject* iterator, TVal next_method, TVal* out_value, bool* out_done) {
+    Heap* heap = ctx.heap;
+    *out_done = false;
+    bool callable = next_method.is_lightfunc() ||
+        (next_method.is_object() && next_method.get_heapptr() != null &&
+         ((HObject*)next_method.get_heapptr()).is_callable());
+    if (!callable) {
+        builtin_throw(ctx, heap.type_err_proto, "next is not a function");
+        return false;
+    }
+    if (heap.call_fn == null || ctx.vm == null) { out_value.set_undefined(); return false; }
+    TVal iterator_tv; iterator_tv.set_object(iterator);
+    TVal step = heap.call_fn(ctx.vm, next_method, null, 0, iterator_tv);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        return false;
+    }
+    if (!step.is_object() || step.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator result is not an object");
+        return false;
+    }
+    HObject* step_obj = (HObject*)step.get_heapptr();
+    HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+    TVal? done_opt = builtins_generic_get(step_obj, done_key, ctx);
+    if (ctx.should_throw) return false;
+    bool done = false;
+    if (try dv = done_opt) { done = builtin_to_boolean(&dv); }
+    if (done) { *out_done = true; return false; }
+    HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+    TVal? value_opt = builtins_generic_get(step_obj, value_key, ctx);
+    if (ctx.should_throw) return false;
+    if (try vv = value_opt) { *out_value = vv; } else { out_value.set_undefined(); }
+    return true;
+}
+
+/// IteratorClose(iteratorRecord, completion) — ES2025 §7.4.11, "closes" the
+/// underlying iterator by calling its `.return()` if present. Unlike
+/// promise_iterator_close, this can PROPAGATE a throw from return() itself:
+/// when `had_error` is false (the original completion was normal) and
+/// return() throws, that throw becomes the new completion (ctx.should_throw
+/// is set); when `had_error` is true, the original abrupt completion already
+/// recorded in ctx takes precedence and return()'s own result/error is
+/// discarded, matching "if completion is a throw completion, return ?
+/// completion" (step 4).
+fn void iterhelper_iterator_close(BuiltinContext* ctx, HObject* iterator, bool had_error) {
+    Heap* heap = ctx.heap;
+    // `ctx.should_throw`/`ctx.throw_value` already hold the ORIGINAL abrupt
+    // completion when had_error is true — clear them before probing `return`
+    // so a throw from GetMethod/return() itself can be told apart from the
+    // pre-existing one, then restore/override per the rules below.
+    TVal saved_throw_value = ctx.throw_value;
+    ctx.should_throw = false;
+
+    HString* return_key = builtin_intern_string(heap, "return");
+    if (return_key == null) {
+        if (had_error) { ctx.should_throw = true; ctx.throw_value = saved_throw_value; }
+        return;
+    }
+    TVal? return_opt = builtins_generic_get(iterator, return_key, ctx);
+    if (ctx.should_throw) {
+        // GetMethod(iterator, "return") itself threw — this replaces the
+        // original completion regardless of whether it was normal or abrupt.
+        return;
+    }
+    TVal return_method;
+    if (try rm = return_opt) { return_method = rm; } else { return_method.set_undefined(); }
+    if (return_method.is_undefined() || return_method.is_null()) {
+        if (had_error) { ctx.should_throw = true; ctx.throw_value = saved_throw_value; }
+        return;
+    }
+    bool callable = return_method.is_lightfunc() ||
+        (return_method.is_object() && return_method.get_heapptr() != null &&
+         ((HObject*)return_method.get_heapptr()).is_callable());
+    if (!callable) {
+        if (!had_error) {
+            builtin_throw(ctx, heap.type_err_proto, "'return' method is not a function");
+        } else {
+            ctx.should_throw = true;
+            ctx.throw_value = saved_throw_value;
+        }
+        return;
+    }
+    if (heap.call_fn == null || ctx.vm == null) {
+        if (had_error) { ctx.should_throw = true; ctx.throw_value = saved_throw_value; }
+        return;
+    }
+    TVal iterator_tv; iterator_tv.set_object(iterator);
+    heap.call_fn(ctx.vm, return_method, null, 0, iterator_tv);
+    if (heap.has_error) {
+        if (!had_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+        }
+        heap.has_error = false;
+        if (had_error) { ctx.should_throw = true; ctx.throw_value = saved_throw_value; }
+        return;
+    }
+    if (had_error) { ctx.should_throw = true; ctx.throw_value = saved_throw_value; }
+}
+
+/// GetIteratorFlattenable(obj, primitiveHandling) — ES2025 §7.4.4.
+/// primitiveStringsAllowed: when true (Iterator.from), a String primitive is
+/// iterated via its own @@iterator; when false (flatMap's inner iterator),
+/// any non-Object throws TypeError, no String exception.
+/// On success returns true with *out_iterator/*out_next set to the Iterator
+/// Record. On failure returns false with ctx.should_throw set.
+fn bool iterhelper_get_iterator_flattenable(BuiltinContext* ctx, TVal obj, bool primitive_strings_allowed,
+                                             HObject** out_iterator, TVal* out_next) {
+    Heap* heap = ctx.heap;
+    HObject* obj_obj = null;
+    if (obj.is_object() && obj.get_heapptr() != null) {
+        obj_obj = (HObject*)obj.get_heapptr();
+    } else if (primitive_strings_allowed && obj.is_string() &&
+               !(((HString*)obj.get_heapptr()) != null && ((HString*)obj.get_heapptr()).is_symbol())) {
+        // Wrap the string primitive so @@iterator can be looked up via
+        // String.prototype (mirrors Array.from's primitive-wrapping path).
+        HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = wrapped) { out_iterator[0] = null; return false; }
+        HObject* w = wrapped;
+        (*w.extra_ptr()).prim.primitive_value = obj;
+        w.prototype = heap.string_proto;
+        obj_obj = w;
+    } else {
+        builtin_throw(ctx, heap.type_err_proto, "not an object");
+        return false;
+    }
+
+    HString* iter_sym = ensure_iterator_symbol(heap);
+    if (iter_sym == null) { out_iterator[0] = null; return false; }
+    // GetV(obj, @@iterator) — ES2025 §7.3.4: unlike builtins_generic_get
+    // (which calls an inherited accessor's getter with `this` = the object
+    // that OWNS the accessor), GetV on a wrapped primitive must invoke the
+    // getter with Receiver = the ORIGINAL primitive value, matching
+    // `Iterator.from('')` observing `typeof this === 'string'` inside a
+    // user-defined String.prototype[Symbol.iterator] getter.
+    TVal method = iterhelper_getv(ctx, obj_obj, iter_sym, obj);
+    if (ctx.should_throw) return false;
+
+    HObject* iterator_obj;
+    if (method.is_undefined() || method.is_null()) {
+        // No @@iterator: obj itself must already be an iterator object.
+        iterator_obj = obj_obj;
+    } else {
+        bool callable = method.is_lightfunc() ||
+            (method.is_object() && method.get_heapptr() != null &&
+             ((HObject*)method.get_heapptr()).is_callable());
+        if (!callable) {
+            builtin_throw(ctx, heap.type_err_proto, "Symbol.iterator is not a function");
+            return false;
+        }
+        if (heap.call_fn == null || ctx.vm == null) { out_iterator[0] = null; return false; }
+        // Call with the ORIGINAL value as `this` (not the temporary wrapper
+        // object), matching Array.from's primitive-string handling — a
+        // String.prototype[Symbol.iterator] call expects a String/string
+        // primitive `this`, not a plain OBJECT-class wrapper.
+        TVal iterator_val = heap.call_fn(ctx.vm, method, null, 0, obj);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return false;
+        }
+        if (!iterator_val.is_object() || iterator_val.get_heapptr() == null) {
+            builtin_throw(ctx, heap.type_err_proto, "Result of the Symbol.iterator method is not an object");
+            return false;
+        }
+        iterator_obj = (HObject*)iterator_val.get_heapptr();
+    }
+
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, iterator_obj, &next_method)) return false;
+    *out_iterator = iterator_obj;
+    *out_next = next_method;
+    return true;
+}
+
+/// Iterator() — ES2025 §27.1.3.1.1: abstract, subclassable constructor.
+/// Throws unless NewTarget is a strict subclass (super() from `class X
+/// extends Iterator`), matching "NewTarget is either undefined or the
+/// active function object" -> TypeError.
+fn void builtin_iterator_ctor(BuiltinContext* ctx) {
+    if (ctx.new_target == null || ctx.new_target == ctx.callee_obj) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Iterator constructor cannot be called directly");
+        return;
+    }
+    HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = obj_raw) { ctx.result.set_undefined(); return; }
+    HObject* obj = obj_raw;
+    obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.iterator_proto);
+    ctx.result.set_object(obj);
+}
+
+/// Iterator.from(obj) — ES2025 §27.1.3.2.2.
+fn void builtin_iterator_from(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal obj = builtin_arg(ctx, 0);
+
+    HObject* iterator_obj;
+    TVal next_method;
+    if (!iterhelper_get_iterator_flattenable(ctx, obj, true, &iterator_obj, &next_method)) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // hasInstance = OrdinaryHasInstance(%Iterator%, iteratorRecord.[[Iterator]])
+    bool has_instance = false;
+    {
+        HObject* cur = iterator_obj;
+        uint depth = 0;
+        while (cur != null && depth < hobject::MAX_PROTO_DEPTH) {
+            if (cur == heap.iterator_proto) { has_instance = true; break; }
+            if (cur.flags.exotic_proxyobj) {
+                TVal next;
+                if (!proxy_mop_get_proto(ctx.vm, heap, cur, &next)) {
+                    if (heap.has_error) {
+                        ctx.should_throw = true;
+                        ctx.throw_value = heap.error_value;
+                        heap.has_error = false;
+                    }
+                    ctx.result.set_undefined();
+                    return;
+                }
+                cur = next.is_object() ? (HObject*)next.get_heapptr() : null;
+            } else {
+                cur = cur.prototype;
+            }
+            depth++;
+        }
+    }
+    // OrdinaryHasInstance walks C.prototype's chain against V — but we're
+    // checking whether %Iterator.prototype% itself appears on iterator_obj's
+    // OWN prototype chain, which is exactly "V instanceof %Iterator%".
+
+    if (has_instance) {
+        ctx.result.set_object(iterator_obj);
+        return;
+    }
+
+    HObject*? wrapper_raw = heap.alloc_object(hobject::ObjClass.WRAP_FOR_VALID_ITERATOR);
+    if (catch err = wrapper_raw) { ctx.result.set_undefined(); return; }
+    HObject* wrapper = wrapper_raw;
+    wrapper.prototype = heap.wrap_for_valid_iterator_proto;
+    (*wrapper.extra_ptr()).wrap_iter.iterated = iterator_obj;
+    (*wrapper.extra_ptr()).wrap_iter.next_method = next_method;
+    ctx.result.set_object(wrapper);
+}
+
+/// get Iterator.prototype.constructor — ES2025 §27.1.3.3.1.1.
+fn void builtin_iterator_proto_constructor_get(BuiltinContext* ctx) {
+    if (ctx.heap.iterator_ctor != null) {
+        ctx.result.set_object(ctx.heap.iterator_ctor);
+    } else {
+        ctx.result.set_undefined();
+    }
+}
+
+/// set Iterator.prototype.constructor — ES2025 §27.1.3.3.1.2:
+/// SetterThatIgnoresPrototypeProperties(this, %Iterator.prototype%, "constructor", v).
+fn void builtin_iterator_proto_constructor_set(BuiltinContext* ctx) {
+    HString* key = (HString*)ctx.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    iterhelper_setter_ignores_prototype_properties(ctx, ctx.heap.iterator_proto, key);
+    ctx.result.set_undefined();
+}
+
+/// get Iterator.prototype[Symbol.toStringTag] — ES2025 §27.1.3.3.13(ish).
+fn void builtin_iterator_proto_tostringtag_get(BuiltinContext* ctx) {
+    HString* s = builtin_intern_string(ctx.heap, "Iterator");
+    if (s != null) { ctx.result.set_string(s); } else { ctx.result.set_undefined(); }
+}
+
+/// set Iterator.prototype[Symbol.toStringTag] —
+/// SetterThatIgnoresPrototypeProperties(this, %Iterator.prototype%, %Symbol.toStringTag%, v).
+fn void builtin_iterator_proto_tostringtag_set(BuiltinContext* ctx) {
+    HString* key = ensure_tostringtag_symbol(ctx.heap);
+    iterhelper_setter_ignores_prototype_properties(ctx, ctx.heap.iterator_proto, key);
+    ctx.result.set_undefined();
+}
+
+/// SetterThatIgnoresPrototypeProperties(thisValue, home, propertyKey, value)
+/// — ES2025 §7.3.37. `value` is the setter's sole argument (ctx.regs[base_reg]).
+fn void iterhelper_setter_ignores_prototype_properties(BuiltinContext* ctx, HObject* home, void* property_key) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    TVal value = builtin_arg(ctx, 0);
+
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "cannot set property on a non-object");
+        return;
+    }
+    HObject* this_obj = (HObject*)this_val.get_heapptr();
+    if (this_obj == home) {
+        builtin_throw(ctx, heap.type_err_proto, "cannot assign to read only property");
+        return;
+    }
+    if (property_key == null) return;
+
+    // "Let propertyDesc be ? thisValue.[[GetOwnProperty]](propertyKey)." — an
+    // own accessor property must invoke its setter (Set semantics); an own
+    // data property is simply overwritten in place. Neither case exists here
+    // beyond a plain data-property lookup since thisValue is arbitrary
+    // ECMAScript-authored code (own accessor "constructor"/@@toStringTag
+    // properties are vanishingly rare test surface but handled below).
+    int idx = this_obj.find_prop_idx(property_key);
+    if (idx >= 0) {
+        hobject::PropFlags pf = this_obj.get_prop_flags((uint)idx);
+        if (pf.is_accessor) {
+            TVal setter = hobject::hobject_access_setter(this_obj.prop_values()[idx]);
+            bool callable = setter.is_lightfunc() ||
+                (setter.is_object() && setter.get_heapptr() != null &&
+                 ((HObject*)setter.get_heapptr()).is_callable());
+            if (callable && heap.call_fn != null && ctx.vm != null) {
+                TVal[1] args = { value };
+                heap.call_fn(ctx.vm, setter, &args[0], 1, this_val);
+                if (heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = heap.error_value;
+                    heap.has_error = false;
+                }
+            }
+            return;
+        }
+        if (!pf.writable) {
+            builtin_throw(ctx, heap.type_err_proto, "cannot assign to read only property");
+            return;
+        }
+        this_obj.put_prop(property_key, value, pf);
+        return;
+    }
+
+    // "If propertyDesc is undefined ... CreateDataPropertyOrThrow" — own
+    // property is absent, so create a plain WEC data property (matching
+    // CreateDataProperty on a non-exotic ordinary object).
+    if (!this_obj.is_extensible()) {
+        builtin_throw(ctx, heap.type_err_proto, "object is not extensible");
+        return;
+    }
+    if (!this_obj.put_prop(property_key, value, hobject::PROP_FLAGS_WEC)) {
+        builtin_throw(ctx, heap.type_err_proto, "Cannot add property, no space left");
+    }
+}
+
+/// %WrapForValidIteratorPrototype%.next() — ES2025 §27.1.3.2.2.1.1.
+fn void builtin_wrap_for_valid_iterator_next(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null ||
+        ((HObject*)this_val.get_heapptr()).get_class() != hobject::ObjClass.WRAP_FOR_VALID_ITERATOR) {
+        builtin_throw(ctx, heap.type_err_proto, "not a WrapForValidIterator object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    HObject* iterated = (*obj.extra_ptr()).wrap_iter.iterated;
+    TVal next_method = (*obj.extra_ptr()).wrap_iter.next_method;
+
+    bool callable = next_method.is_lightfunc() ||
+        (next_method.is_object() && next_method.get_heapptr() != null &&
+         ((HObject*)next_method.get_heapptr()).is_callable());
+    if (!callable) {
+        builtin_throw(ctx, heap.type_err_proto, "next is not a function");
+        return;
+    }
+    if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+    TVal iterated_tv; iterated_tv.set_object(iterated);
+    TVal step = heap.call_fn(ctx.vm, next_method, null, 0, iterated_tv);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        ctx.result.set_undefined();
+        return;
+    }
+    *ctx.result = step;
+}
+
+/// %WrapForValidIteratorPrototype%.return() — ES2025 §27.1.3.2.2.1.2.
+fn void builtin_wrap_for_valid_iterator_return(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null ||
+        ((HObject*)this_val.get_heapptr()).get_class() != hobject::ObjClass.WRAP_FOR_VALID_ITERATOR) {
+        builtin_throw(ctx, heap.type_err_proto, "not a WrapForValidIterator object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    HObject* iterator = (*obj.extra_ptr()).wrap_iter.iterated;
+
+    HString* return_key = builtin_intern_string(heap, "return");
+    TVal? return_opt = builtins_generic_get(iterator, return_key, ctx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    TVal return_method;
+    if (try rm = return_opt) { return_method = rm; } else { return_method.set_undefined(); }
+
+    if (return_method.is_undefined() || return_method.is_null()) {
+        TVal undef; undef.set_undefined();
+        HObject* result = iterhelper_make_result(heap, undef, true);
+        if (result != null) { ctx.result.set_object(result); } else { ctx.result.set_undefined(); }
+        return;
+    }
+    bool callable = return_method.is_lightfunc() ||
+        (return_method.is_object() && return_method.get_heapptr() != null &&
+         ((HObject*)return_method.get_heapptr()).is_callable());
+    if (!callable) {
+        builtin_throw(ctx, heap.type_err_proto, "return is not a function");
+        return;
+    }
+    if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+    TVal iterator_tv; iterator_tv.set_object(iterator);
+    TVal step = heap.call_fn(ctx.vm, return_method, null, 0, iterator_tv);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        ctx.result.set_undefined();
+        return;
+    }
+    *ctx.result = step;
+}
+
+// ----------------------------------------------------------------------------
+// Iterator Helper object state machine (backs %IteratorHelperPrototype%).
+// ----------------------------------------------------------------------------
+
+const uint IH_STATE_SUSPENDED = 0;  /// Not yet exhausted, safe to resume.
+const uint IH_STATE_EXECUTING = 1;  /// Re-entered from within its own step (throws).
+const uint IH_STATE_COMPLETED = 2;  /// Exhausted or closed; next() always returns done.
+
+const uint IH_KIND_MAP     = 0;
+const uint IH_KIND_FILTER  = 1;
+const uint IH_KIND_TAKE    = 2;
+const uint IH_KIND_DROP    = 3;
+const uint IH_KIND_FLATMAP = 4;
+
+/// Shared constructor for every lazy Iterator Helper object.
+fn HObject* iterhelper_create(Heap* heap, HObject* underlying, TVal next_method, TVal callback, uint kind, double remaining) {
+    HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.ITERATOR_HELPER);
+    if (catch err = obj_raw) return null;
+    HObject* obj = obj_raw;
+    obj.prototype = heap.iterator_helper_proto;
+    (*obj.extra_ptr()).iter_helper.underlying = underlying;
+    (*obj.extra_ptr()).iter_helper.next_method = next_method;
+    (*obj.extra_ptr()).iter_helper.callback = callback;
+    (*obj.extra_ptr()).iter_helper.remaining = remaining;
+    (*obj.extra_ptr()).iter_helper.counter = 0;
+    (*obj.extra_ptr()).iter_helper.kind = kind;
+    (*obj.extra_ptr()).iter_helper.state = IH_STATE_SUSPENDED;
+    (*obj.extra_ptr()).iter_helper.inner_iter = null;
+    (*obj.extra_ptr()).iter_helper.inner_next.set_undefined();
+    return obj;
+}
+
+/// %IteratorHelperPrototype%.next() — drives one step of the helper's
+/// closure. Real generators suspend mid-closure; this state machine instead
+/// re-derives "where the closure would be" from `counter`/`remaining`/
+/// `inner_iter` and runs straight through to the next yield point (or to
+/// exhaustion) on every call — equivalent because every helper kind here
+/// yields at most once per external next() call, except flatMap, whose inner
+/// loop is resumed via the persisted inner_iter/inner_next fields.
+fn void builtin_iterator_helper_next(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null ||
+        ((HObject*)this_val.get_heapptr()).get_class() != hobject::ObjClass.ITERATOR_HELPER) {
+        builtin_throw(ctx, heap.type_err_proto, "not an Iterator Helper object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    HObjectIteratorHelper* ih = &(*obj.extra_ptr()).iter_helper;
+
+    if (ih.state == IH_STATE_EXECUTING) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator Helper is already executing");
+        return;
+    }
+    if (ih.state == IH_STATE_COMPLETED) {
+        TVal undef; undef.set_undefined();
+        HObject* result = iterhelper_make_result(heap, undef, true);
+        if (result != null) { ctx.result.set_object(result); } else { ctx.result.set_undefined(); }
+        return;
+    }
+
+    ih.state = IH_STATE_EXECUTING;
+    TVal out_value;
+    bool done_result = false;
+    bool ok = iterhelper_run_step(ctx, obj, ih, &out_value, &done_result);
+    // ctx.should_throw firing mid-closure is itself an abrupt completion —
+    // the helper is finished either way once run_step returns.
+    if (!ok || done_result) {
+        ih.state = IH_STATE_COMPLETED;
+        if (!ok) { ctx.result.set_undefined(); return; }
+        TVal undef; undef.set_undefined();
+        HObject* result = iterhelper_make_result(heap, undef, true);
+        if (result != null) { ctx.result.set_object(result); } else { ctx.result.set_undefined(); }
+        return;
+    }
+    ih.state = IH_STATE_SUSPENDED;
+    HObject* result = iterhelper_make_result(heap, out_value, false);
+    if (result != null) { ctx.result.set_object(result); } else { ctx.result.set_undefined(); }
+}
+
+/// Runs the closure body for one step. Returns false (ctx.should_throw set)
+/// on an abrupt completion the underlying iterator has already been closed
+/// for (via IfAbruptCloseIterator); returns true with *out_done=true when
+/// the closure reaches its natural ReturnCompletion(undefined) end; returns
+/// true with *out_done=false and *out_value set when it yields a value.
+fn bool iterhelper_run_step(BuiltinContext* ctx, HObject* obj, HObjectIteratorHelper* ih, TVal* out_value, bool* out_done) {
+    Heap* heap = ctx.heap;
+    switch (ih.kind) {
+        case IH_KIND_MAP: {
+            TVal value;
+            bool step_done;
+            if (!iterhelper_step_value(ctx, ih.underlying, ih.next_method, &value, &step_done)) {
+                if (step_done) { *out_done = true; return true; }
+                iterhelper_iterator_close(ctx, ih.underlying, true);
+                return false;
+            }
+            TVal counter_tv; counter_tv.set_fastint((long)ih.counter);
+            TVal[2] args = { value, counter_tv };
+            if (heap.call_fn == null || ctx.vm == null) { out_value.set_undefined(); return false; }
+            TVal undef_this; undef_this.set_undefined();
+            TVal mapped = heap.call_fn(ctx.vm, ih.callback, &args[0], 2, undef_this);
+            if (heap.has_error) {
+                ctx.should_throw = true;
+                ctx.throw_value = heap.error_value;
+                heap.has_error = false;
+                iterhelper_iterator_close(ctx, ih.underlying, true);
+                return false;
+            }
+            ih.counter += 1;
+            *out_value = mapped;
+            return true;
+        }
+        case IH_KIND_FILTER: {
+            while (true) {
+                TVal value;
+                bool step_done;
+                if (!iterhelper_step_value(ctx, ih.underlying, ih.next_method, &value, &step_done)) {
+                    if (step_done) { *out_done = true; return true; }
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+                TVal counter_tv; counter_tv.set_fastint((long)ih.counter);
+                TVal[2] args = { value, counter_tv };
+                if (heap.call_fn == null || ctx.vm == null) { out_value.set_undefined(); return false; }
+                TVal undef_this; undef_this.set_undefined();
+                TVal selected = heap.call_fn(ctx.vm, ih.callback, &args[0], 2, undef_this);
+                if (heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = heap.error_value;
+                    heap.has_error = false;
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+                ih.counter += 1;
+                if (builtin_to_boolean(&selected)) {
+                    *out_value = value;
+                    return true;
+                }
+            }
+        }
+        case IH_KIND_TAKE: {
+            if (ih.remaining == 0.0) {
+                iterhelper_iterator_close(ctx, ih.underlying, false);
+                if (ctx.should_throw) return false;
+                *out_done = true;
+                return true;
+            }
+            if (ih.remaining != double::inf) {
+                ih.remaining -= 1.0;
+            }
+            TVal value;
+            bool step_done;
+            if (!iterhelper_step_value(ctx, ih.underlying, ih.next_method, &value, &step_done)) {
+                if (step_done) { *out_done = true; return true; }
+                return false;
+            }
+            *out_value = value;
+            return true;
+        }
+        case IH_KIND_DROP: {
+            while (ih.remaining > 0.0) {
+                if (ih.remaining != double::inf) {
+                    ih.remaining -= 1.0;
+                }
+                TVal value;
+                bool step_done;
+                if (!iterhelper_step_value(ctx, ih.underlying, ih.next_method, &value, &step_done)) {
+                    if (step_done) { *out_done = true; return true; }
+                    return false;
+                }
+            }
+            TVal value;
+            bool step_done;
+            if (!iterhelper_step_value(ctx, ih.underlying, ih.next_method, &value, &step_done)) {
+                if (step_done) { *out_done = true; return true; }
+                return false;
+            }
+            *out_value = value;
+            return true;
+        }
+        case IH_KIND_FLATMAP: {
+            while (true) {
+                if (ih.inner_iter != null) {
+                    TVal inner_value;
+                    bool inner_done;
+                    if (!iterhelper_step_value(ctx, ih.inner_iter, ih.inner_next, &inner_value, &inner_done)) {
+                        if (!inner_done) {
+                            // Inner iterator itself threw — close it (backup
+                            // completion is discarded per spec step) then
+                            // close the outer iterator with this completion.
+                            bool inner_had_error = ctx.should_throw;
+                            iterhelper_iterator_close(ctx, ih.inner_iter, true);
+                            ih.inner_iter = null;
+                            iterhelper_iterator_close(ctx, ih.underlying, inner_had_error);
+                            return false;
+                        }
+                        ih.inner_iter = null;
+                    } else {
+                        *out_value = inner_value;
+                        return true;
+                    }
+                }
+
+                TVal value;
+                bool step_done;
+                if (!iterhelper_step_value(ctx, ih.underlying, ih.next_method, &value, &step_done)) {
+                    if (step_done) { *out_done = true; return true; }
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+                TVal counter_tv; counter_tv.set_fastint((long)ih.counter);
+                TVal[2] args = { value, counter_tv };
+                if (heap.call_fn == null || ctx.vm == null) { out_value.set_undefined(); return false; }
+                TVal undef_this; undef_this.set_undefined();
+                TVal mapped = heap.call_fn(ctx.vm, ih.callback, &args[0], 2, undef_this);
+                if (heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = heap.error_value;
+                    heap.has_error = false;
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+                HObject* inner_iterator;
+                TVal inner_next_method;
+                if (!iterhelper_get_iterator_flattenable(ctx, mapped, false, &inner_iterator, &inner_next_method)) {
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+                ih.counter += 1;
+                ih.inner_iter = inner_iterator;
+                ih.inner_next = inner_next_method;
+            }
+        }
+        default:
+            *out_done = true;
+            return true;
+    }
+}
+
+/// %IteratorHelperPrototype%.return() — ES2025 §27.1.2.1.2.
+fn void builtin_iterator_helper_return(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null ||
+        ((HObject*)this_val.get_heapptr()).get_class() != hobject::ObjClass.ITERATOR_HELPER) {
+        builtin_throw(ctx, heap.type_err_proto, "not an Iterator Helper object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    HObjectIteratorHelper* ih = &(*obj.extra_ptr()).iter_helper;
+
+    if (ih.state != IH_STATE_COMPLETED) {
+        ih.state = IH_STATE_COMPLETED;
+        if (ih.inner_iter != null) {
+            iterhelper_iterator_close(ctx, ih.inner_iter, false);
+            ih.inner_iter = null;
+            // A throw here still must close the outer/underlying iterator
+            // before propagating (IteratorCloseAll closes in reverse order).
+            bool had_error = ctx.should_throw;
+            iterhelper_iterator_close(ctx, ih.underlying, had_error);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        } else {
+            iterhelper_iterator_close(ctx, ih.underlying, false);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        }
+    }
+
+    TVal undef; undef.set_undefined();
+    HObject* result = iterhelper_make_result(heap, undef, true);
+    if (result != null) { ctx.result.set_object(result); } else { ctx.result.set_undefined(); }
+}
+
+// ----------------------------------------------------------------------------
+// Iterator.prototype lazy methods: map, filter, take, drop, flatMap.
+// ----------------------------------------------------------------------------
+
+/// Iterator.prototype.map(mapper) — ES2025 §27.1.3.3.8.
+fn void builtin_iterator_proto_map(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator.prototype.map called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    TVal mapper = builtin_arg(ctx, 0);
+    if (!arr_from_is_callable(mapper)) {
+        builtin_throw(ctx, heap.type_err_proto, "mapper is not a function");
+        bool had_error = ctx.should_throw;
+        iterhelper_iterator_close(ctx, obj, had_error);
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, obj, &next_method)) { ctx.result.set_undefined(); return; }
+
+    HObject* helper = iterhelper_create(heap, obj, next_method, mapper, IH_KIND_MAP, 0.0);
+    if (helper != null) { ctx.result.set_object(helper); } else { ctx.result.set_undefined(); }
+}
+
+/// Iterator.prototype.filter(predicate) — ES2025 §27.1.3.3.4.
+fn void builtin_iterator_proto_filter(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator.prototype.filter called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    TVal predicate = builtin_arg(ctx, 0);
+    if (!arr_from_is_callable(predicate)) {
+        builtin_throw(ctx, heap.type_err_proto, "predicate is not a function");
+        bool had_error = ctx.should_throw;
+        iterhelper_iterator_close(ctx, obj, had_error);
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, obj, &next_method)) { ctx.result.set_undefined(); return; }
+
+    HObject* helper = iterhelper_create(heap, obj, next_method, predicate, IH_KIND_FILTER, 0.0);
+    if (helper != null) { ctx.result.set_object(helper); } else { ctx.result.set_undefined(); }
+}
+
+/// Shared ToIntegerOrInfinity(limit) + RangeError(NaN/negative) validation for
+/// take/drop. On failure closes `this_obj` (IfAbruptCloseIterator against an
+/// Iterator Record whose [[NextMethod]] is still unset, per spec — the
+/// underlying `.next` must not be read before validation succeeds) and sets
+/// ctx.should_throw. Returns true with *out_limit set on success.
+fn bool iterhelper_validate_limit(BuiltinContext* ctx, HObject* this_obj, double* out_limit) {
+    Heap* heap = ctx.heap;
+    TVal limit = builtin_arg(ctx, 0);
+    double num_limit = builtin_to_number_vm(ctx, &limit);
+    if (ctx.should_throw) {
+        iterhelper_iterator_close(ctx, this_obj, true);
+        return false;
+    }
+    if (math::is_nan(num_limit)) {
+        builtin_throw(ctx, heap.range_err_proto, "Invalid limit");
+        bool had_error = ctx.should_throw;
+        iterhelper_iterator_close(ctx, this_obj, had_error);
+        return false;
+    }
+    double int_limit = math::is_inf(num_limit) ? num_limit : math::trunc(num_limit);
+    if (int_limit < 0) {
+        builtin_throw(ctx, heap.range_err_proto, "Invalid limit");
+        bool had_error = ctx.should_throw;
+        iterhelper_iterator_close(ctx, this_obj, had_error);
+        return false;
+    }
+    *out_limit = int_limit;
+    return true;
+}
+
+/// Iterator.prototype.take(limit) — ES2025 §27.1.3.3.11.
+fn void builtin_iterator_proto_take(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator.prototype.take called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    double limit;
+    if (!iterhelper_validate_limit(ctx, obj, &limit)) { ctx.result.set_undefined(); return; }
+
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, obj, &next_method)) { ctx.result.set_undefined(); return; }
+
+    TVal unused; unused.set_undefined();
+    HObject* helper = iterhelper_create(heap, obj, next_method, unused, IH_KIND_TAKE, limit);
+    if (helper != null) { ctx.result.set_object(helper); } else { ctx.result.set_undefined(); }
+}
+
+/// Iterator.prototype.drop(limit) — ES2025 §27.1.3.3.2.
+fn void builtin_iterator_proto_drop(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator.prototype.drop called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    double limit;
+    if (!iterhelper_validate_limit(ctx, obj, &limit)) { ctx.result.set_undefined(); return; }
+
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, obj, &next_method)) { ctx.result.set_undefined(); return; }
+
+    TVal unused; unused.set_undefined();
+    HObject* helper = iterhelper_create(heap, obj, next_method, unused, IH_KIND_DROP, limit);
+    if (helper != null) { ctx.result.set_object(helper); } else { ctx.result.set_undefined(); }
+}
+
+/// Iterator.prototype.flatMap(mapper) — ES2025 §27.1.3.3.6.
+fn void builtin_iterator_proto_flatmap(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator.prototype.flatMap called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    TVal mapper = builtin_arg(ctx, 0);
+    if (!arr_from_is_callable(mapper)) {
+        builtin_throw(ctx, heap.type_err_proto, "mapper is not a function");
+        bool had_error = ctx.should_throw;
+        iterhelper_iterator_close(ctx, obj, had_error);
+        ctx.result.set_undefined();
+        return;
+    }
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, obj, &next_method)) { ctx.result.set_undefined(); return; }
+
+    HObject* helper = iterhelper_create(heap, obj, next_method, mapper, IH_KIND_FLATMAP, 0.0);
+    if (helper != null) { ctx.result.set_object(helper); } else { ctx.result.set_undefined(); }
+}
+
+// ----------------------------------------------------------------------------
+// Iterator.prototype eager methods: reduce, toArray, forEach, some, every, find.
+// ----------------------------------------------------------------------------
+
+/// Validate `this` is an object and IsCallable(fn); on success returns the
+/// Iterator Record (obj, next_method) via GetIteratorDirect. On any failure
+/// closes obj (if the callable check failed) and sets ctx.should_throw.
+fn bool iterhelper_eager_setup(BuiltinContext* ctx, TVal callback, char[] not_callable_msg, HObject** out_obj, TVal* out_next) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "called on non-object");
+        return false;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (!arr_from_is_callable(callback)) {
+        builtin_throw(ctx, heap.type_err_proto, not_callable_msg);
+        bool had_error = ctx.should_throw;
+        iterhelper_iterator_close(ctx, obj, had_error);
+        return false;
+    }
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, obj, &next_method)) return false;
+    *out_obj = obj;
+    *out_next = next_method;
+    return true;
+}
+
+/// Iterator.prototype.reduce(reducer[, initialValue]) — ES2025 §27.1.3.3.9.
+fn void builtin_iterator_proto_reduce(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal reducer = builtin_arg(ctx, 0);
+    HObject* obj;
+    TVal next_method;
+    if (!iterhelper_eager_setup(ctx, reducer, "reducer is not a function", &obj, &next_method)) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    TVal accumulator;
+    double counter;
+    if (ctx.argc < 2) {
+        bool step_done;
+        if (!iterhelper_step_value(ctx, obj, next_method, &accumulator, &step_done)) {
+            if (step_done) {
+                builtin_throw(ctx, heap.type_err_proto, "Reduce of empty iterator with no initial value");
+            }
+            ctx.result.set_undefined();
+            return;
+        }
+        counter = 1;
+    } else {
+        accumulator = builtin_arg(ctx, 1);
+        counter = 0;
+    }
+
+    while (true) {
+        TVal value;
+        bool step_done;
+        if (!iterhelper_step_value(ctx, obj, next_method, &value, &step_done)) {
+            if (step_done) { *ctx.result = accumulator; return; }
+            ctx.result.set_undefined();
+            return;
+        }
+        TVal counter_tv; counter_tv.set_fastint((long)counter);
+        TVal[3] args = { accumulator, value, counter_tv };
+        if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+        TVal undef_this; undef_this.set_undefined();
+        TVal result = heap.call_fn(ctx.vm, reducer, &args[0], 3, undef_this);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            iterhelper_iterator_close(ctx, obj, true);
+            ctx.result.set_undefined();
+            return;
+        }
+        accumulator = result;
+        counter += 1;
+    }
+}
+
+/// Iterator.prototype.toArray() — ES2025 §27.1.3.3.12.
+fn void builtin_iterator_proto_toarray(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator.prototype.toArray called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    TVal next_method;
+    if (!iterhelper_get_iterator_direct(ctx, obj, &next_method)) { ctx.result.set_undefined(); return; }
+
+    HObject*? arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = arr_raw) { ctx.result.set_undefined(); return; }
+    HObject* arr = arr_raw;
+    arr.prototype = heap.array_proto;
+
+    uint idx = 0;
+    while (true) {
+        TVal value;
+        bool step_done;
+        if (!iterhelper_step_value(ctx, obj, next_method, &value, &step_done)) {
+            if (step_done) { ctx.result.set_object(arr); return; }
+            ctx.result.set_undefined();
+            return;
+        }
+        arr.set_array_idx(idx, value);
+        idx++;
+        *arr.array_len_ptr() = idx;
+    }
+}
+
+/// Iterator.prototype.forEach(procedure) — ES2025 §27.1.3.3.7.
+fn void builtin_iterator_proto_foreach(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal procedure = builtin_arg(ctx, 0);
+    HObject* obj;
+    TVal next_method;
+    if (!iterhelper_eager_setup(ctx, procedure, "procedure is not a function", &obj, &next_method)) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    double counter = 0;
+    while (true) {
+        TVal value;
+        bool step_done;
+        if (!iterhelper_step_value(ctx, obj, next_method, &value, &step_done)) {
+            if (step_done) { ctx.result.set_undefined(); return; }
+            ctx.result.set_undefined();
+            return;
+        }
+        TVal counter_tv; counter_tv.set_fastint((long)counter);
+        TVal[2] args = { value, counter_tv };
+        if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+        TVal undef_this; undef_this.set_undefined();
+        heap.call_fn(ctx.vm, procedure, &args[0], 2, undef_this);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            iterhelper_iterator_close(ctx, obj, true);
+            ctx.result.set_undefined();
+            return;
+        }
+        counter += 1;
+    }
+}
+
+/// Iterator.prototype.some(predicate) — ES2025 §27.1.3.3.10.
+fn void builtin_iterator_proto_some(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal predicate = builtin_arg(ctx, 0);
+    HObject* obj;
+    TVal next_method;
+    if (!iterhelper_eager_setup(ctx, predicate, "predicate is not a function", &obj, &next_method)) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    double counter = 0;
+    while (true) {
+        TVal value;
+        bool step_done;
+        if (!iterhelper_step_value(ctx, obj, next_method, &value, &step_done)) {
+            if (step_done) { ctx.result.set_boolean(false); return; }
+            ctx.result.set_undefined();
+            return;
+        }
+        TVal counter_tv; counter_tv.set_fastint((long)counter);
+        TVal[2] args = { value, counter_tv };
+        if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+        TVal undef_this; undef_this.set_undefined();
+        TVal result = heap.call_fn(ctx.vm, predicate, &args[0], 2, undef_this);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            iterhelper_iterator_close(ctx, obj, true);
+            ctx.result.set_undefined();
+            return;
+        }
+        if (builtin_to_boolean(&result)) {
+            iterhelper_iterator_close(ctx, obj, false);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            ctx.result.set_boolean(true);
+            return;
+        }
+        counter += 1;
+    }
+}
+
+/// Iterator.prototype.every(predicate) — ES2025 §27.1.3.3.3.
+fn void builtin_iterator_proto_every(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal predicate = builtin_arg(ctx, 0);
+    HObject* obj;
+    TVal next_method;
+    if (!iterhelper_eager_setup(ctx, predicate, "predicate is not a function", &obj, &next_method)) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    double counter = 0;
+    while (true) {
+        TVal value;
+        bool step_done;
+        if (!iterhelper_step_value(ctx, obj, next_method, &value, &step_done)) {
+            if (step_done) { ctx.result.set_boolean(true); return; }
+            ctx.result.set_undefined();
+            return;
+        }
+        TVal counter_tv; counter_tv.set_fastint((long)counter);
+        TVal[2] args = { value, counter_tv };
+        if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+        TVal undef_this; undef_this.set_undefined();
+        TVal result = heap.call_fn(ctx.vm, predicate, &args[0], 2, undef_this);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            iterhelper_iterator_close(ctx, obj, true);
+            ctx.result.set_undefined();
+            return;
+        }
+        if (!builtin_to_boolean(&result)) {
+            iterhelper_iterator_close(ctx, obj, false);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            ctx.result.set_boolean(false);
+            return;
+        }
+        counter += 1;
+    }
+}
+
+/// Iterator.prototype.find(predicate) — ES2025 §27.1.3.3.5.
+fn void builtin_iterator_proto_find(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+    TVal predicate = builtin_arg(ctx, 0);
+    HObject* obj;
+    TVal next_method;
+    if (!iterhelper_eager_setup(ctx, predicate, "predicate is not a function", &obj, &next_method)) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    double counter = 0;
+    while (true) {
+        TVal value;
+        bool step_done;
+        if (!iterhelper_step_value(ctx, obj, next_method, &value, &step_done)) {
+            if (step_done) { ctx.result.set_undefined(); return; }
+            ctx.result.set_undefined();
+            return;
+        }
+        TVal counter_tv; counter_tv.set_fastint((long)counter);
+        TVal[2] args = { value, counter_tv };
+        if (heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+        TVal undef_this; undef_this.set_undefined();
+        TVal result = heap.call_fn(ctx.vm, predicate, &args[0], 2, undef_this);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            iterhelper_iterator_close(ctx, obj, true);
+            ctx.result.set_undefined();
+            return;
+        }
+        if (builtin_to_boolean(&result)) {
+            iterhelper_iterator_close(ctx, obj, false);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            *ctx.result = value;
+            return;
+        }
+        counter += 1;
+    }
 }

@@ -150,7 +150,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"Math\.sumPrecise|json-parse-with-source|"
     r"uint8array-base64|Float16Array|resizable-arraybuffer|"
     r"arraybuffer-transfer|immutable-arraybuffer|"
-    r"joint-iteration|iterator-helpers|"
+    r"joint-iteration|"
     # ES2024+ features (implement later)
     r"Array\.fromAsync|"
     r"change-array-by-copy|Atomics\.waitAsync|"
