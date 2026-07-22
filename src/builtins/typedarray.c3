@@ -3320,6 +3320,504 @@ fn void builtin_ta_from(BuiltinContext* ctx) @noinline {
 }
 
 // ============================================================================
+// Uint8Array base64/hex (tc39 proposal-arraybuffer-base64)
+// ============================================================================
+
+const char B64_ALPHABET_BASE64 = 0;
+const char B64_ALPHABET_BASE64URL = 1;
+
+const char B64_LAST_LOOSE = 0;
+const char B64_LAST_STRICT = 1;
+const char B64_LAST_STOP_BEFORE_PARTIAL = 2;
+
+const char B64_K_WS = 64; // ASCII whitespace sentinel in decode tables
+const char B64_K_ER = 65; // illegal-character sentinel in decode tables
+
+const char[64] B64_ENC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const char[64] B64URL_ENC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const char[16] HEX_DIGITS = "0123456789abcdef";
+
+/// Map a Unicode codepoint to its base64 sextet value, or B64_K_WS for ASCII
+/// whitespace, or B64_K_ER for any illegal character. Only ASCII codepoints
+/// can be valid; any codepoint >= 128 is illegal (multi-byte input chars).
+fn char b64_decode_char(uint cp, char alphabet) {
+    if (cp >= 128) return B64_K_ER;
+    // ECMAScript "ASCII whitespace": tab, LF, FF, CR, space.
+    if (cp == 0x09 || cp == 0x0A || cp == 0x0C || cp == 0x0D || cp == 0x20) return B64_K_WS;
+    if (cp >= 'A' && cp <= 'Z') return (char)(cp - 'A');
+    if (cp >= 'a' && cp <= 'z') return (char)(cp - 'a' + 26);
+    if (cp >= '0' && cp <= '9') return (char)(cp - '0' + 52);
+    if (alphabet == B64_ALPHABET_BASE64URL) {
+        if (cp == '-') return 62;
+        if (cp == '_') return 63;
+    } else {
+        if (cp == '+') return 62;
+        if (cp == '/') return 63;
+    }
+    return B64_K_ER;
+}
+
+/// hex nibble value for an ASCII codepoint, or -1 if not a hex digit.
+fn int hex_decode_char(uint cp) {
+    if (cp >= '0' && cp <= '9') return (int)(cp - '0');
+    if (cp >= 'a' && cp <= 'f') return (int)(cp - 'a' + 10);
+    if (cp >= 'A' && cp <= 'F') return (int)(cp - 'A' + 10);
+    return -1;
+}
+
+/// Result of a base64/hex decode: bytes written to dst, chars read from src,
+/// and whether an error occurred.
+struct B64DecodeResult {
+    uint read;
+    uint written;
+    bool err;
+}
+
+/// FromBase64 abstract operation (proposal-arraybuffer-base64). Decodes the
+/// codepoint-indexed string `src` (length `src_len` in codepoints — equal to
+/// UTF-16 units for the ASCII prefix that any valid input consists of) into
+/// `dst` (capacity `max_len`). Faithful port of quickjs's from_base64.
+fn B64DecodeResult from_base64(HString* src, uint src_len, char* dst, uint max_len,
+                               char alphabet, char last_chunk) {
+    B64DecodeResult r;
+    r.read = 0; r.written = 0; r.err = false;
+
+    uint read = 0;
+    uint written = 0;
+    uint acc = 0;
+    int seen = 0;
+    uint index = 0;
+
+    if (max_len == 0) { r.read = 0; r.written = 0; return r; }
+
+    for (;;) {
+        if (seen == 0) {
+            // Fast path: decode complete groups of 4 valid characters.
+            while (index + 4 <= src_len && written + 3 <= max_len) {
+                char v0 = b64_decode_char(src.char_at(index), alphabet);
+                char v1 = b64_decode_char(src.char_at(index + 1), alphabet);
+                char v2 = b64_decode_char(src.char_at(index + 2), alphabet);
+                char v3 = b64_decode_char(src.char_at(index + 3), alphabet);
+                if ((v0 | v1 | v2 | v3) >= 64) break;
+                uint v = ((uint)v0 << 18) | ((uint)v1 << 12) | ((uint)v2 << 6) | (uint)v3;
+                dst[written]     = (char)(v >> 16);
+                dst[written + 1] = (char)(v >> 8);
+                dst[written + 2] = (char)v;
+                written += 3;
+                index += 4;
+            }
+            read = index;
+            if (written >= max_len) { r.read = read; r.written = written; return r; }
+        }
+
+        // Slow path: whitespace, padding, partial groups, capacity.
+        while (index < src_len && b64_decode_char(src.char_at(index), alphabet) == B64_K_WS) index++;
+
+        if (index == src_len) {
+            if (seen > 0) {
+                if (last_chunk == B64_LAST_STOP_BEFORE_PARTIAL) { r.read = read; r.written = written; return r; }
+                if (last_chunk == B64_LAST_STRICT) { r.err = true; return r; }
+                // loose
+                if (seen == 1) { r.err = true; return r; }
+                break;
+            }
+            r.read = src_len; r.written = written; return r;
+        }
+
+        uint ch = src.char_at(index++);
+
+        if (ch == '=') {
+            if (seen < 2) { r.err = true; return r; }
+            while (index < src_len && b64_decode_char(src.char_at(index), alphabet) == B64_K_WS) index++;
+            if (seen == 2) {
+                if (index == src_len) {
+                    if (last_chunk == B64_LAST_STOP_BEFORE_PARTIAL) { r.read = read; r.written = written; return r; }
+                    r.err = true; return r;
+                }
+                if (src.char_at(index) == '=') {
+                    index++;
+                    while (index < src_len && b64_decode_char(src.char_at(index), alphabet) == B64_K_WS) index++;
+                } else {
+                    r.err = true; return r;
+                }
+            }
+            // After padding, only whitespace is allowed.
+            if (index != src_len) { r.err = true; return r; }
+            if (last_chunk == B64_LAST_STRICT) {
+                uint mask = (seen == 2) ? 0xF : 0x3;
+                if (acc & mask) { r.err = true; return r; }
+            }
+            break;
+        }
+
+        char v = b64_decode_char(ch, alphabet);
+        if (v >= 64) { r.err = true; return r; }
+
+        // Check remaining capacity before committing to this group.
+        uint remaining = max_len - written;
+        if ((remaining == 1 && seen == 2) || (remaining == 2 && seen == 3)) {
+            r.read = read; r.written = written; return r;
+        }
+
+        acc = (acc << 6) | (uint)v;
+        seen++;
+
+        if (seen == 4) {
+            dst[written]     = (char)(acc >> 16);
+            dst[written + 1] = (char)(acc >> 8);
+            dst[written + 2] = (char)acc;
+            written += 3;
+            acc = 0;
+            seen = 0;
+            read = index;
+            if (written >= max_len) { r.read = read; r.written = written; return r; }
+        }
+    }
+
+    if (seen == 2) {
+        dst[written++] = (char)(acc >> 4);
+    } else if (seen == 3) {
+        dst[written]     = (char)(acc >> 10);
+        dst[written + 1] = (char)(acc >> 2);
+        written += 2;
+    }
+    r.read = src_len; r.written = written; return r;
+}
+
+/// FromHex abstract operation. Decodes hex pairs from `src` into `dst`
+/// (capacity `max_len`), writing bytes up to the first error. Odd total
+/// length is an error (with no bytes written for the trailing odd char).
+fn B64DecodeResult from_hex(HString* src, uint src_len, char* dst, uint max_len) {
+    B64DecodeResult r;
+    r.read = 0; r.written = 0; r.err = false;
+
+    if ((src_len & 1) != 0) { r.err = true; return r; }
+
+    uint written = 0;
+    uint i = 0;
+    while (i < src_len && written < max_len) {
+        int hi = hex_decode_char(src.char_at(i));
+        int lo = hex_decode_char(src.char_at(i + 1));
+        if (hi < 0 || lo < 0) { r.err = true; return r; }
+        dst[written++] = (char)((hi << 4) | lo);
+        i += 2;
+    }
+    r.read = i; r.written = written;
+    return r;
+}
+
+/// GetOptionsObject (proposal): undefined -> null (treat as empty), object ->
+/// itself, otherwise throw TypeError. Returns the options object (or null for
+/// undefined). Sets should_throw on error.
+fn HObject* b64_get_options_object(BuiltinContext* ctx, TVal opt) {
+    if (opt.is_undefined()) return null;
+    if (opt.is_object() && opt.get_heapptr() != null) return (HObject*)opt.get_heapptr();
+    arraybuffer_throw_type_error(ctx, "options must be an object or undefined");
+    return null;
+}
+
+/// Read the "alphabet" option (default "base64"). Sets should_throw on error;
+/// returns 0xFF sentinel then. Only genuine string primitives are accepted.
+fn char b64_get_alphabet_option(BuiltinContext* ctx, HObject* opts) {
+    if (opts == null) return B64_ALPHABET_BASE64;
+    HString* key = builtin_intern_string(ctx.heap, "alphabet");
+    TVal? v = builtins_generic_get(opts, key, ctx);
+    if (ctx.should_throw) return 0xFF;
+    TVal val;
+    if (try tv = v) { val = tv; } else { ctx.should_throw = true; return 0xFF; }
+    if (val.is_undefined()) return B64_ALPHABET_BASE64;
+    if (!val.is_string() || ((HString*)val.get_heapptr()).is_symbol()) {
+        arraybuffer_throw_type_error(ctx, "alphabet must be a string");
+        return 0xFF;
+    }
+    HString* s = (HString*)val.get_heapptr();
+    if (s.equals("base64")) return B64_ALPHABET_BASE64;
+    if (s.equals("base64url")) return B64_ALPHABET_BASE64URL;
+    arraybuffer_throw_type_error(ctx, "invalid alphabet");
+    return 0xFF;
+}
+
+/// Read the "lastChunkHandling" option (default "loose"). Sets should_throw on
+/// error; returns 0xFF sentinel then.
+fn char b64_get_last_chunk_option(BuiltinContext* ctx, HObject* opts) {
+    if (opts == null) return B64_LAST_LOOSE;
+    HString* key = builtin_intern_string(ctx.heap, "lastChunkHandling");
+    TVal? v = builtins_generic_get(opts, key, ctx);
+    if (ctx.should_throw) return 0xFF;
+    TVal val;
+    if (try tv = v) { val = tv; } else { ctx.should_throw = true; return 0xFF; }
+    if (val.is_undefined()) return B64_LAST_LOOSE;
+    if (!val.is_string() || ((HString*)val.get_heapptr()).is_symbol()) {
+        arraybuffer_throw_type_error(ctx, "lastChunkHandling must be a string");
+        return 0xFF;
+    }
+    HString* s = (HString*)val.get_heapptr();
+    if (s.equals("loose")) return B64_LAST_LOOSE;
+    if (s.equals("strict")) return B64_LAST_STRICT;
+    if (s.equals("stop-before-partial")) return B64_LAST_STOP_BEFORE_PARTIAL;
+    arraybuffer_throw_type_error(ctx, "invalid lastChunkHandling");
+    return 0xFF;
+}
+
+/// ValidateUint8Array: receiver must be a (possibly detached) Uint8Array.
+/// Returns the object, or null + TypeError.
+fn HObject* b64_validate_uint8array(BuiltinContext* ctx) {
+    if (!ctx.this_val.is_object() || ctx.this_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "receiver is not a Uint8Array");
+        return null;
+    }
+    HObject* obj = (HObject*)ctx.this_val.get_heapptr();
+    if (obj.flags.obj_class != hobject::ObjClass.UINT8ARRAY) {
+        arraybuffer_throw_type_error(ctx, "receiver is not a Uint8Array");
+        return null;
+    }
+    return obj;
+}
+
+/// Read the string argument, requiring a genuine String primitive (no
+/// coercion). Sets should_throw + returns null on non-string.
+fn HString* b64_require_string_arg(BuiltinContext* ctx) {
+    TVal arg;
+    if (ctx.argc >= 1) { arg = ctx.regs[ctx.base_reg]; } else { arg.set_undefined(); }
+    if (!arg.is_string() || ((HString*)arg.get_heapptr()).is_symbol()) {
+        arraybuffer_throw_type_error(ctx, "argument must be a string");
+        return null;
+    }
+    return (HString*)arg.get_heapptr();
+}
+
+/// Allocate a fresh Uint8Array of `length` bytes whose [[Prototype]] is
+/// %Uint8Array.prototype% (used by fromBase64/fromHex — receiver is ignored).
+fn HObject* b64_alloc_uint8array(BuiltinContext* ctx, uint length) {
+    HObject* result = ta_alloc_same_class(ctx, hobject::ObjClass.UINT8ARRAY, length);
+    if (result != null && ctx.heap.uint8array_proto != null) {
+        result.prototype = ctx.heap.uint8array_proto;
+    }
+    return result;
+}
+
+/// Build a { read, written } result object with C_W_E data properties.
+fn void b64_make_read_written(BuiltinContext* ctx, uint read, uint written) {
+    HObject*? raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = raw) { arraybuffer_throw_range_error(ctx, "out of memory"); return; }
+    HObject* obj = raw;
+    obj.prototype = ctx.heap.object_proto;
+    HString* read_key = builtin_intern_string(ctx.heap, "read");
+    HString* written_key = builtin_intern_string(ctx.heap, "written");
+    TVal read_tv; read_tv.set_fastint((long)read);
+    TVal written_tv; written_tv.set_fastint((long)written);
+    obj.put_prop(read_key, read_tv, hobject::PROP_FLAGS_WEC);
+    obj.put_prop(written_key, written_tv, hobject::PROP_FLAGS_WEC);
+    ctx.result.set_object(obj);
+}
+
+/// Uint8Array.fromBase64(string [, options]) — receiver ignored.
+fn void builtin_uint8array_from_base64(BuiltinContext* ctx) {
+    HString* str = b64_require_string_arg(ctx);
+    if (str == null) return;
+    TVal opt; if (ctx.argc >= 2) { opt = ctx.regs[ctx.base_reg + 1]; } else { opt.set_undefined(); }
+    HObject* opts = b64_get_options_object(ctx, opt);
+    if (ctx.should_throw) return;
+    char alphabet = b64_get_alphabet_option(ctx, opts);
+    if (ctx.should_throw) return;
+    char last_chunk = b64_get_last_chunk_option(ctx, opts);
+    if (ctx.should_throw) return;
+
+    uint str_len = str.char_length();
+    uint out_cap = (str_len / 4) * 3 + 3;
+    char* buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(out_cap == 0 ? 1 : out_cap));
+    if (buf == null) { arraybuffer_throw_range_error(ctx, "out of memory"); return; }
+
+    B64DecodeResult res = from_base64(str, str_len, buf, out_cap, alphabet, last_chunk);
+    if (res.err) {
+        ctx.heap.free_func(ctx.heap.heap_udata, buf);
+        builtin_throw(ctx, ctx.heap.syntax_err_proto, "invalid base64 string");
+        return;
+    }
+    HObject* result = b64_alloc_uint8array(ctx, res.written);
+    if (result == null) { ctx.heap.free_func(ctx.heap.heap_udata, buf); return; }
+    if (res.written > 0) {
+        HObject* rbuf = (*result.extra_ptr()).view.buffer;
+        char* dst = (*rbuf.extra_ptr()).ab.data + (*result.extra_ptr()).view.byte_offset;
+        mem::copy(dst, buf, (sz)((usz)res.written));
+    }
+    ctx.heap.free_func(ctx.heap.heap_udata, buf);
+    ctx.result.set_object(result);
+}
+
+/// Uint8Array.fromHex(string) — receiver ignored.
+fn void builtin_uint8array_from_hex(BuiltinContext* ctx) {
+    HString* str = b64_require_string_arg(ctx);
+    if (str == null) return;
+
+    uint str_len = str.char_length();
+    uint out_cap = str_len / 2 + 1;
+    char* buf = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)out_cap);
+    if (buf == null) { arraybuffer_throw_range_error(ctx, "out of memory"); return; }
+
+    B64DecodeResult res = from_hex(str, str_len, buf, out_cap);
+    if (res.err) {
+        ctx.heap.free_func(ctx.heap.heap_udata, buf);
+        builtin_throw(ctx, ctx.heap.syntax_err_proto, "invalid hex string");
+        return;
+    }
+    HObject* result = b64_alloc_uint8array(ctx, res.written);
+    if (result == null) { ctx.heap.free_func(ctx.heap.heap_udata, buf); return; }
+    if (res.written > 0) {
+        HObject* rbuf = (*result.extra_ptr()).view.buffer;
+        char* dst = (*rbuf.extra_ptr()).ab.data + (*result.extra_ptr()).view.byte_offset;
+        mem::copy(dst, buf, (sz)((usz)res.written));
+    }
+    ctx.heap.free_func(ctx.heap.heap_udata, buf);
+    ctx.result.set_object(result);
+}
+
+/// Uint8Array.prototype.toBase64([options])
+fn void builtin_uint8array_proto_to_base64(BuiltinContext* ctx) {
+    HObject* obj = b64_validate_uint8array(ctx);
+    if (obj == null) return;
+
+    TVal opt; if (ctx.argc >= 1) { opt = ctx.regs[ctx.base_reg]; } else { opt.set_undefined(); }
+    HObject* opts = b64_get_options_object(ctx, opt);
+    if (ctx.should_throw) return;
+    char alphabet = b64_get_alphabet_option(ctx, opts);
+    if (ctx.should_throw) return;
+    // omitPadding: ToBoolean (default false).
+    bool omit_padding = false;
+    if (opts != null) {
+        HString* op_key = builtin_intern_string(ctx.heap, "omitPadding");
+        TVal? opv = builtins_generic_get(opts, op_key, ctx);
+        if (ctx.should_throw) return;
+        if (try v = opv) omit_padding = builtin_to_boolean(&v);
+    }
+
+    // Re-check detach after option getters (which may detach the buffer).
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "Uint8Array buffer is detached");
+        return;
+    }
+
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint len = (*obj.extra_ptr()).view.byte_length;
+    char* data = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+
+    char[64]* alpha = alphabet == B64_ALPHABET_BASE64URL ? &B64URL_ENC : &B64_ENC;
+    uint out_len = 4 * ((len + 2) / 3);
+    char* out = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(out_len == 0 ? 1 : out_len));
+    if (out == null) { arraybuffer_throw_range_error(ctx, "out of memory"); return; }
+
+    uint i = 0;
+    uint j = 0;
+    while (i + 3 <= len) {
+        uint v = ((uint)(char)data[i] << 16) | ((uint)(char)data[i + 1] << 8) | (uint)(char)data[i + 2];
+        out[j]     = (*alpha)[(v >> 18) & 63];
+        out[j + 1] = (*alpha)[(v >> 12) & 63];
+        out[j + 2] = (*alpha)[(v >> 6) & 63];
+        out[j + 3] = (*alpha)[v & 63];
+        i += 3; j += 4;
+    }
+    uint rem = len - i;
+    if (rem == 1) {
+        uint v = (uint)(char)data[i] << 16;
+        out[j++] = (*alpha)[(v >> 18) & 63];
+        out[j++] = (*alpha)[(v >> 12) & 63];
+        if (!omit_padding) { out[j++] = '='; out[j++] = '='; }
+    } else if (rem == 2) {
+        uint v = ((uint)(char)data[i] << 16) | ((uint)(char)data[i + 1] << 8);
+        out[j++] = (*alpha)[(v >> 18) & 63];
+        out[j++] = (*alpha)[(v >> 12) & 63];
+        out[j++] = (*alpha)[(v >> 6) & 63];
+        if (!omit_padding) { out[j++] = '='; }
+    }
+
+    HString* result = ctx.heap.str_intern(out[:j]);
+    ctx.heap.free_func(ctx.heap.heap_udata, out);
+    if (result == null) { arraybuffer_throw_range_error(ctx, "out of memory"); return; }
+    ctx.result.set_string(result);
+}
+
+/// Uint8Array.prototype.toHex()
+fn void builtin_uint8array_proto_to_hex(BuiltinContext* ctx) {
+    HObject* obj = b64_validate_uint8array(ctx);
+    if (obj == null) return;
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "Uint8Array buffer is detached");
+        return;
+    }
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint len = (*obj.extra_ptr()).view.byte_length;
+    char* data = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+
+    uint out_len = len * 2;
+    char* out = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(out_len == 0 ? 1 : out_len));
+    if (out == null) { arraybuffer_throw_range_error(ctx, "out of memory"); return; }
+    for (uint i = 0; i < len; i++) {
+        char b = data[i];
+        out[i * 2]     = HEX_DIGITS[(b >> 4) & 0xF];
+        out[i * 2 + 1] = HEX_DIGITS[b & 0xF];
+    }
+    HString* result = ctx.heap.str_intern(out[:out_len]);
+    ctx.heap.free_func(ctx.heap.heap_udata, out);
+    if (result == null) { arraybuffer_throw_range_error(ctx, "out of memory"); return; }
+    ctx.result.set_string(result);
+}
+
+/// Uint8Array.prototype.setFromBase64(string [, options])
+fn void builtin_uint8array_proto_set_from_base64(BuiltinContext* ctx) {
+    HObject* obj = b64_validate_uint8array(ctx);
+    if (obj == null) return;
+    HString* str = b64_require_string_arg(ctx);
+    if (str == null) return;
+    TVal opt; if (ctx.argc >= 2) { opt = ctx.regs[ctx.base_reg + 1]; } else { opt.set_undefined(); }
+    HObject* opts = b64_get_options_object(ctx, opt);
+    if (ctx.should_throw) return;
+    char alphabet = b64_get_alphabet_option(ctx, opts);
+    if (ctx.should_throw) return;
+    char last_chunk = b64_get_last_chunk_option(ctx, opts);
+    if (ctx.should_throw) return;
+
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "Uint8Array buffer is detached");
+        return;
+    }
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint len = (*obj.extra_ptr()).view.byte_length;
+    char* data = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+
+    uint str_len = str.char_length();
+    B64DecodeResult res = from_base64(str, str_len, data, len, alphabet, last_chunk);
+    if (res.err) {
+        builtin_throw(ctx, ctx.heap.syntax_err_proto, "invalid base64 string");
+        return;
+    }
+    b64_make_read_written(ctx, res.read, res.written);
+}
+
+/// Uint8Array.prototype.setFromHex(string)
+fn void builtin_uint8array_proto_set_from_hex(BuiltinContext* ctx) {
+    HObject* obj = b64_validate_uint8array(ctx);
+    if (obj == null) return;
+    HString* str = b64_require_string_arg(ctx);
+    if (str == null) return;
+
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "Uint8Array buffer is detached");
+        return;
+    }
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint len = (*obj.extra_ptr()).view.byte_length;
+    char* data = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+
+    uint str_len = str.char_length();
+    B64DecodeResult res = from_hex(str, str_len, data, len);
+    if (res.err) {
+        builtin_throw(ctx, ctx.heap.syntax_err_proto, "invalid hex string");
+        return;
+    }
+    b64_make_read_written(ctx, res.read, res.written);
+}
+
+// ============================================================================
 // Registration
 // ============================================================================
 
@@ -3495,6 +3993,18 @@ fn bool register_ta_ctor(EnvRecord* global_env, Heap* heap, char[] name, uint fn
     TVal val;
     val.set_object(ctor);
     env::env_declare_nonenum(global_env, key, val);
+
+    // Uint8Array base64/hex methods (tc39 proposal-arraybuffer-base64) live only
+    // on %Uint8Array% and %Uint8Array.prototype%, not the shared %TypedArray%.
+    if (name == "Uint8Array") {
+        heap.uint8array_proto = ctor_proto;
+        if (!register_string_proto_method(ctor, heap, "fromBase64", Builtin.UINT8ARRAY_FROM_BASE64.ordinal)) return false;
+        if (!register_string_proto_method(ctor, heap, "fromHex",    Builtin.UINT8ARRAY_FROM_HEX.ordinal))    return false;
+        if (!register_string_proto_method(ctor_proto, heap, "toBase64",      Builtin.UINT8ARRAY_PROTO_TO_BASE64.ordinal))      return false;
+        if (!register_string_proto_method(ctor_proto, heap, "toHex",         Builtin.UINT8ARRAY_PROTO_TO_HEX.ordinal))         return false;
+        if (!register_string_proto_method(ctor_proto, heap, "setFromBase64", Builtin.UINT8ARRAY_PROTO_SET_FROM_BASE64.ordinal)) return false;
+        if (!register_string_proto_method(ctor_proto, heap, "setFromHex",    Builtin.UINT8ARRAY_PROTO_SET_FROM_HEX.ordinal))    return false;
+    }
     return true;
 }
 

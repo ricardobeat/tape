@@ -147,7 +147,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
     r"json-parse-with-source|"
-    r"uint8array-base64|Float16Array|resizable-arraybuffer|"
+    r"Float16Array|resizable-arraybuffer|"
     r"arraybuffer-transfer|immutable-arraybuffer|"
     r"joint-iteration|"
     # ES2024+ features (implement later)
@@ -794,6 +794,7 @@ PHASES = [
             "built-ins/TypedArray",
             "built-ins/TypedArrayConstructors",
             "built-ins/DataView",
+            "built-ins/Uint8Array",
         ],
     },
     {

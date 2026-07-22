@@ -270,6 +270,7 @@ struct Heap {
     HObject* string_iterator_proto; // %StringIteratorPrototype% (ES6 §22.1.5 for strings)
     HObject* typedarray_proto; // Shared %TypedArray%.prototype
     HObject* typedarray_intrinsic; // %TypedArray% abstract constructor
+    HObject* uint8array_proto; // %Uint8Array%.prototype (for fromBase64/fromHex result protos)
     HObject* arraybuffer_proto; // ArrayBuffer.prototype
     HObject* dataview_proto; // DataView.prototype
 
@@ -1210,6 +1211,7 @@ fn void Heap.reset(&self) {
     self.string_iterator_proto = null;
     self.typedarray_proto = null;
     self.typedarray_intrinsic = null;
+    self.uint8array_proto = null;
     self.arraybuffer_proto = null;
     self.dataview_proto = null;
 
@@ -1983,6 +1985,7 @@ fn void Heap.mark_roots(&self) {
     if (self.string_iterator_proto != null) { self.mark_hobject(self.string_iterator_proto); }
     if (self.typedarray_proto != null) { self.mark_hobject(self.typedarray_proto); }
     if (self.typedarray_intrinsic != null) { self.mark_hobject(self.typedarray_intrinsic); }
+    if (self.uint8array_proto != null) { self.mark_hobject(self.uint8array_proto); }
     if (self.arraybuffer_proto != null) { self.mark_hobject(self.arraybuffer_proto); }
     if (self.dataview_proto != null) { self.mark_hobject(self.dataview_proto); }
 

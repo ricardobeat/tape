@@ -297,6 +297,13 @@ enum Builtin : uint {
     TA_PROTO_TO_LOCALE_STRING,
     TA_OF,
     TA_FROM,
+    // Uint8Array base64/hex (tc39 proposal-arraybuffer-base64)
+    UINT8ARRAY_FROM_BASE64,
+    UINT8ARRAY_FROM_HEX,
+    UINT8ARRAY_PROTO_TO_BASE64,
+    UINT8ARRAY_PROTO_TO_HEX,
+    UINT8ARRAY_PROTO_SET_FROM_BASE64,
+    UINT8ARRAY_PROTO_SET_FROM_HEX,
     TYPEDARRAY_INTRINSIC,
     FUNCTION_PROTO_HASINSTANCE,
     DATE_PROTO_TOPRIMITIVE,
@@ -2706,6 +2713,12 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         // %TypedArray% intrinsic statics
         case Builtin.TA_OF.ordinal: return { "of", 0 };
         case Builtin.TA_FROM.ordinal: return { "from", 1 };
+        case Builtin.UINT8ARRAY_FROM_BASE64.ordinal: return { "fromBase64", 1 };
+        case Builtin.UINT8ARRAY_FROM_HEX.ordinal: return { "fromHex", 1 };
+        case Builtin.UINT8ARRAY_PROTO_TO_BASE64.ordinal: return { "toBase64", 0 };
+        case Builtin.UINT8ARRAY_PROTO_TO_HEX.ordinal: return { "toHex", 0 };
+        case Builtin.UINT8ARRAY_PROTO_SET_FROM_BASE64.ordinal: return { "setFromBase64", 1 };
+        case Builtin.UINT8ARRAY_PROTO_SET_FROM_HEX.ordinal: return { "setFromHex", 1 };
         case Builtin.TYPEDARRAY_INTRINSIC.ordinal: return { "TypedArray", 0 };
         case Builtin.FUNCTION_PROTO_HASINSTANCE.ordinal: return { "[Symbol.hasInstance]", 1 };
         case Builtin.DATE_PROTO_TOPRIMITIVE.ordinal: return { "[Symbol.toPrimitive]", 1 };
@@ -3647,6 +3660,12 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.TA_PROTO_TO_LOCALE_STRING.ordinal] = &builtin_ta_proto_toLocaleString,
     [Builtin.TA_OF.ordinal]                    = &builtin_ta_of,
     [Builtin.TA_FROM.ordinal]                  = &builtin_ta_from,
+    [Builtin.UINT8ARRAY_FROM_BASE64.ordinal]       = &builtin_uint8array_from_base64,
+    [Builtin.UINT8ARRAY_FROM_HEX.ordinal]          = &builtin_uint8array_from_hex,
+    [Builtin.UINT8ARRAY_PROTO_TO_BASE64.ordinal]   = &builtin_uint8array_proto_to_base64,
+    [Builtin.UINT8ARRAY_PROTO_TO_HEX.ordinal]      = &builtin_uint8array_proto_to_hex,
+    [Builtin.UINT8ARRAY_PROTO_SET_FROM_BASE64.ordinal] = &builtin_uint8array_proto_set_from_base64,
+    [Builtin.UINT8ARRAY_PROTO_SET_FROM_HEX.ordinal]    = &builtin_uint8array_proto_set_from_hex,
     [Builtin.TYPEDARRAY_INTRINSIC.ordinal]     = &builtin_typedarray_intrinsic,
     [Builtin.FUNCTION_PROTO_HASINSTANCE.ordinal] = &builtin_function_proto_hasInstance,
     [Builtin.DATE_PROTO_TOPRIMITIVE.ordinal]     = &builtin_date_proto_toPrimitive,
