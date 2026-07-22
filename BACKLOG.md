@@ -27,7 +27,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ### Todo — small (batch 2, one agent each)
 
-- [x] **`change-array-by-copy` un-skip** — agent fixed toReversed hole semantics + implemented TypedArray.with; coordinator fixed with()'s coerce-before-range-check-and-copy ordering; phase 22 0 fails.
+- [>] **`change-array-by-copy` un-skip** — TypedArray side done (phase 22 clean, incl. coordinator's with() coercion-order fix); 15 Array-side residuals surfaced in phase 6 (toSpliced/toSorted/with holes, comparefn validation, length-limit RangeError) — follow-up agent running.
 - [ ] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`).
 - [ ] **`JSON.parse` source access** (`json-parse-with-source`).
 - [ ] **`Array.fromAsync`**.
@@ -62,7 +62,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [x] **`await` as BindingIdentifier in nested-function positions** — fixed via shared `expect_binding_identifier()` honoring [Await]/[Yield] boundaries (arrow params inherit, bodies reset); 9/10, CE:unexpected back to 0; the 10th needs `using` (explicit-resource-management, unimplemented).
 - [x] **`new Set(string)` throws** — fixed: `coll_construct` wraps primitives (correct [[Prototype]]) before the iterable check; `new Map("ab")` correctly TypeErrors on non-object entries.
 - [x] **`Array.from` primitive-wrapper prototype** — fixed by the iterator-helpers agent (real [[Prototype]] set; numbers/booleans/bigints handled too).
-- [>] **Large-string refcount leak** — >256-byte (`MAX_INTERN_BYTES`) non-interned strings from fromCodePoint/concat never decref'd (~5-7 MB/property-escapes test); only matters in long single-process runs. First agent stopped by user mid-investigation; its worktree (agent-a178867b5c7d24326) holds an UNVERIFIED ~157-line uncommitted diff exploring DECLVAR-ownership — treat as notes, not a fix (agent itself doubted it). Restart fresh with a tighter scope when picked up.
+- [x] **Large-string refcount leak** — >256-byte (`MAX_INTERN_BYTES`) non-interned strings from fromCodePoint/concat never decref'd (~5-7 MB/property-escapes test); FIXED (opus agent, s292): builtin/getter result-copy sites now release the transient setter-ref for non-interned non-symbol strings at refcount 1 (`Heap.store_builtin_result`); ~98.6% of the leak class gone (281→4 objects/test), ASan-clean. Residual ~45 KB/test through the same dispatch site left deliberately (needs raw-register-overwrite decref surgery — the Symbol-string UAF trap is documented in the helper). First agent's worktree diff (agent-a178867b5c7d24326) is superseded.
 - [ ] **`RegExp.prototype.compile` missing entirely** — Annex B method; invisible today (annexB dir excluded), blocks 1 duplicate-named-groups test.
 - [ ] **Regexp literals never parse-time-validated** — only `new RegExp(str)` runs `re_compile`, so `/(?g:a)/`-style early SyntaxErrors are silently accepted in literal form; fails 80 `language/literals/regexp/early-err-*` `$DONOTEVALUATE` tests (outside the phase scoring surface). Compiler-wide change; will bite any future "new regexp syntax with early error" feature.
 
