@@ -2673,16 +2673,20 @@ fn void builtin_ta_proto_with(BuiltinContext* ctx) {
         actual_index = (long)len + actual_index;
     }
 
+    // Coerce the value BEFORE the range check and the copy (§23.2.3.36 steps
+    // 6-7: ToNumber/ToBigInt runs first and may execute user code that
+    // mutates the source or throws; the RangeError comes after).
+    TVal new_val; new_val.set_number(0.0);
+    if (ctx.argc > 1) {
+        new_val = ctx.regs[ctx.base_reg + 1];
+    }
+    TAScalar scalar = ta_coerce_element(cls, &new_val, ctx);
+    if (ctx.should_throw) return;
+
     // Check if index is in range
     if (actual_index < 0 || actual_index >= (long)len) {
         arraybuffer_throw_range_error(ctx, "Invalid index for with()");
         return;
-    }
-
-    // Get value to set
-    TVal new_val; new_val.set_number(0.0);
-    if (ctx.argc > 1) {
-        new_val = ctx.regs[ctx.base_reg + 1];
     }
 
     // Create new TypedArray
@@ -2692,13 +2696,20 @@ fn void builtin_ta_proto_with(BuiltinContext* ctx) {
     HObject* res_buf = (*result.extra_ptr()).view.buffer;
     char* dst = (*res_buf.extra_ptr()).ab.data;
 
+    // Re-derive the source pointer: the value coercion above may have run
+    // user code that detached or resized the buffer.
+    if (ta_is_detached(obj)) {
+        arraybuffer_throw_type_error(ctx, "TypedArray buffer detached during with()");
+        return;
+    }
+    src = (*buf.extra_ptr()).ab.data + byte_off;
+
     // Copy all elements
     if (len > 0) mem::copy(dst, src, (sz)((usz)(len * elem_sz)));
 
     // Set the modified element
     char* dp = dst + ((uint)actual_index << shift);
-    ta_write_element(dp, cls, &new_val, ctx);
-    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    ta_store_scalar(dp, cls, &scalar);
 
     ctx.result.set_object(result);
 }
