@@ -1703,10 +1703,18 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
                 self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
                 self.free_reg(spread_reg);
 
-                // Adjust next_reg past the worst-case spread area
-                // (conservatively reserve space; actual count is only known at runtime)
-                if (self.next_reg <= dest_start + 1) {
-                    self.next_reg = dest_start + 2;
+                // Reserve the worst-case spread window past first_arg +
+                // arg_count so subsequent assignment_expr() evaluations
+                // (trailing args, comma RHS) don't allocate their value
+                // register inside the live spread area — overwriting it
+                // before PUTARG reads it back. The exact count is unknown
+                // statically; use a conservative cap. Without this, a
+                // short array literal followed by a plain arg (e.g.
+                // `f(1, ...[2,3,4,5], 99)`) lands the trailing arg's
+                // evaluation register inside the spread window.
+                ushort post_spread = dest_start + SPREAD_MAX_SLOTS;
+                if (self.next_reg < post_spread) {
+                    self.next_reg = post_spread;
                 }
             } else {
                 ushort arg_reg = self.assignment_expr()!;
