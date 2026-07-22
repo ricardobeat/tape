@@ -27,7 +27,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ### Todo — small (batch 2, one agent each)
 
-- [>] **`change-array-by-copy` un-skip** — toSorted/with already work; un-skip and fix residuals (toReversed/toSpliced, TypedArray variants).
+- [x] **`change-array-by-copy` un-skip** — agent fixed toReversed hole semantics + implemented TypedArray.with; coordinator fixed with()'s coerce-before-range-check-and-copy ordering; phase 22 0 fails.
 - [ ] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`).
 - [ ] **`JSON.parse` source access** (`json-parse-with-source`).
 - [ ] **`Array.fromAsync`**.
