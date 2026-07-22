@@ -58,7 +58,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [ ] **Getter/setter methods never create `arguments`** — `{get x(){ arguments }}` fails standalone; `static-init-arguments-methods.js`.
 - [ ] **`let x; var x;` redeclaration not rejected** — no conflict detection anywhere; `static-init-invalid-lex-var.js`.
 - [>] **`await` as BindingIdentifier in nested-function positions** — function-decl name, catch param, generator/accessor param names, `{await}` shorthand, arrow param-default; 9 tests, no class involvement; one (`generators/static-init-await-binding.js`) now shows as the suite's only CE:unexpected. Agent running.
-- [>] **`new Set(string)` throws** — `coll_construct` checks is-object before the iterable protocol; affects the whole keyed-collection constructor family.
+- [x] **`new Set(string)` throws** — fixed: `coll_construct` wraps primitives (correct [[Prototype]]) before the iterable check; `new Map("ab")` correctly TypeErrors on non-object entries.
 - [x] **`Array.from` primitive-wrapper prototype** — fixed by the iterator-helpers agent (real [[Prototype]] set; numbers/booleans/bigints handled too).
 - [>] **Large-string refcount leak** — >256-byte (`MAX_INTERN_BYTES`) non-interned strings from fromCodePoint/concat never decref'd (~5-7 MB/property-escapes test); only matters in long single-process runs. Agent running.
 - [ ] **`RegExp.prototype.compile` missing entirely** — Annex B method; invisible today (annexB dir excluded), blocks 1 duplicate-named-groups test.
