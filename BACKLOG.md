@@ -30,7 +30,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [x] **`change-array-by-copy` un-skip** — fully landed: TypedArray side (incl. with() coercion order) + all 15 Array-side residuals (holes-as-own-props, toSorted via shared array_sort_compare, toSpliced arg/limit semantics); phases 5/6/22 all 0 fails.
 - [x] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`) — 69/71 (2 need immutable-arraybuffer); Uint8Array dir added to phase 22.
 - [x] **`JSON.parse` source access** (`json-parse-with-source`) — reviver context.source spans + JSON.rawJSON/isRawJSON; 21/22 (last is cross-realm staging); also fixed pre-existing `JSON.parse('{}', reviver)` → undefined (zero-alloc mistaken for OOM).
-- [ ] **`Array.fromAsync`**.
+- [x] **`Array.fromAsync`** — native promise state machine (no async-fn dependency); 80 pass / 6 async-gen-source skips (plan 060) / 7 blocked on the param-capture scramble bug below.
 - [x] **`Math.sumPrecise`** — Shewchuk algorithm ported from quickjs; 10/10.
 - [x] **`Iterator.concat`** (`iterator-sequencing`) — 30/31; the 31st exposed the spread-into-builtin bug below.
 - [x] **`#x in obj`** (`class-fields-private-in`, plan 054 P6) — cherry-picked from `console` branch: new `HAS_BRAND` opcode (boolean own-property brand probe, TypeError on non-object RHS), `binary_expr` peek for `HASH_IDENT in`.
@@ -52,6 +52,9 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - **qjs CLI/std/os modules** — not JS-language parity; out of scope.
 
 ## Known bugs (pre-existing, exposed by un-skips)
+
+- [>] **Object-literal method + default param + param-capturing closure scrambles param slots** — `{ m(a, b, c = "") { push(() => b); return String(b); } }`: `b` reads as the CLOSURE OBJECT inside the method. Breaks temporalHelpers.observeProperty (wrong key to defineProperty) → 7 fromAsync tests. Minimal repro in scratchpad dp7.js. Agent running.
+- [ ] **Borrowed array-iterator target in chained `.call().then()`** — `Expr.call(C, arrayArg).then(...)` frees/corrupts arrayArg when a builtin defers iteration to microtasks (built-in array iterator holds a borrowed pointer). Found by the fromAsync agent; statement break dodges it. VM refcount issue in .call re-dispatch.
 
 - [ ] **`test/json_stringify_ext.js` local test fails on main** — regex `lastIndex` in `toJSON`; reproduces before the JSON source-access work (agent-verified). Small standalone fix.
 
