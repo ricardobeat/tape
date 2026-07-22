@@ -146,7 +146,6 @@ UNSUPPORTED_PATTERN = re.compile(
     r"import-defer|export-defer|import-attributes|import-text|import-bytes|"
     r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
-    r"iterator-sequencing|"
     r"json-parse-with-source|"
     r"uint8array-base64|Float16Array|resizable-arraybuffer|"
     r"arraybuffer-transfer|immutable-arraybuffer|"

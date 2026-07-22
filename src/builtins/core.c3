@@ -549,6 +549,7 @@ enum Builtin : uint {
     ITERATOR_PROTO_SOME,
     ITERATOR_PROTO_EVERY,
     ITERATOR_PROTO_FIND,
+    ITERATOR_CONCAT,
     WRAP_FOR_VALID_ITERATOR_NEXT,
     WRAP_FOR_VALID_ITERATOR_RETURN,
     ITERATOR_HELPER_NEXT,
@@ -2765,6 +2766,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.ITERATOR_PROTO_SOME.ordinal: return { "some", 1 };
         case Builtin.ITERATOR_PROTO_EVERY.ordinal: return { "every", 1 };
         case Builtin.ITERATOR_PROTO_FIND.ordinal: return { "find", 1 };
+        case Builtin.ITERATOR_CONCAT.ordinal: return { "concat", -1 };
         case Builtin.WRAP_FOR_VALID_ITERATOR_NEXT.ordinal: return { "next", 0 };
         case Builtin.WRAP_FOR_VALID_ITERATOR_RETURN.ordinal: return { "return", 0 };
         case Builtin.ITERATOR_HELPER_NEXT.ordinal: return { "next", 0 };
@@ -3717,6 +3719,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ITERATOR_PROTO_SOME.ordinal]            = &builtin_iterator_proto_some,
     [Builtin.ITERATOR_PROTO_EVERY.ordinal]           = &builtin_iterator_proto_every,
     [Builtin.ITERATOR_PROTO_FIND.ordinal]            = &builtin_iterator_proto_find,
+    [Builtin.ITERATOR_CONCAT.ordinal]                = &builtin_iterator_concat,
     [Builtin.WRAP_FOR_VALID_ITERATOR_NEXT.ordinal]   = &builtin_wrap_for_valid_iterator_next,
     [Builtin.WRAP_FOR_VALID_ITERATOR_RETURN.ordinal] = &builtin_wrap_for_valid_iterator_return,
     [Builtin.ITERATOR_HELPER_NEXT.ordinal]           = &builtin_iterator_helper_next,

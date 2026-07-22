@@ -790,6 +790,9 @@ fn bool register_iterator_ctor_and_helpers(EnvRecord* global_env, Heap* heap) {
     // Iterator.from(obj).
     if (!register_string_proto_method(ctor, heap, "from", Builtin.ITERATOR_FROM.ordinal)) return false;
 
+    // Iterator.concat(...iterables).
+    if (!register_string_proto_method(ctor, heap, "concat", Builtin.ITERATOR_CONCAT.ordinal)) return false;
+
     // Register the Iterator global binding.
     {
         HString* key = builtin_intern_string(heap, "Iterator");
@@ -1326,6 +1329,7 @@ const uint IH_KIND_FILTER  = 1;
 const uint IH_KIND_TAKE    = 2;
 const uint IH_KIND_DROP    = 3;
 const uint IH_KIND_FLATMAP = 4;
+const uint IH_KIND_CONCAT  = 5;
 
 /// Shared constructor for every lazy Iterator Helper object.
 fn HObject* iterhelper_create(Heap* heap, HObject* underlying, TVal next_method, TVal callback, uint kind, double remaining) {
@@ -1546,6 +1550,150 @@ fn bool iterhelper_run_step(BuiltinContext* ctx, HObject* obj, HObjectIteratorHe
                 ih.inner_next = inner_next_method;
             }
         }
+        case IH_KIND_CONCAT: {
+            // concat sequences through multiple iterables stored in a wrapper.
+            // wrapper.iterables: array of iterables (validated at concat() time)
+            // wrapper.methods: array of their @@iterator methods (pre-fetched at concat() time)
+            // counter: current index into the arrays
+            while (true) {
+                // If we have an active inner iterator, try to get its next value
+                if (ih.inner_iter != null) {
+                    TVal value;
+                    bool step_done;
+                    if (!iterhelper_step_value(ctx, ih.inner_iter, ih.inner_next, &value, &step_done)) {
+                        if (step_done) {
+                            // Inner iterator exhausted (returned done=true).
+                            // Per spec, we don't call return() on exhausted iterators.
+                            // Just clear it and move to the next iterable.
+                            ih.inner_iter = null;
+                            ih.counter += 1;
+                            continue;
+                        }
+                        // Inner iterator threw — close the outer iterator too
+                        iterhelper_iterator_close(ctx, ih.underlying, true);
+                        return false;
+                    }
+                    // Yielded a value
+                    *out_value = value;
+                    return true;
+                }
+
+                // No active inner iterator — get the next iterable and its method
+                HObject* wrapper = ih.underlying;
+                if (wrapper == null) { *out_done = true; return true; }
+
+                // Get the total count of iterables
+                HString* count_key = builtin_intern_string(heap, "count");
+                if (count_key == null) { *out_done = true; return true; }
+                TVal? count_opt = wrapper.get_prop_proto(count_key);
+                if (ctx.should_throw) return false;
+                long count = 0;
+                if (try count_tv = count_opt) {
+                    if (count_tv.is_fastint()) {
+                        count = count_tv.get_fastint();
+                    } else if (count_tv.is_number()) {
+                        count = (long)count_tv.get_number();
+                    }
+                }
+
+                // Check if we've exhausted all iterables
+                if ((long)ih.counter >= count) {
+                    *out_done = true;
+                    return true;
+                }
+
+                // Get iterables and methods arrays
+                HString* iterables_key = builtin_intern_string(heap, "iterables");
+                if (iterables_key == null) { *out_done = true; return true; }
+                TVal? iterables_opt = wrapper.get_prop_proto(iterables_key);
+                if (ctx.should_throw) return false;
+                TVal iterables_tv;
+                if (try itv = iterables_opt) { iterables_tv = itv; } else { *out_done = true; return true; }
+
+                if (!iterables_tv.is_object() || iterables_tv.get_heapptr() == null) {
+                    *out_done = true;
+                    return true;
+                }
+                HObject* iterables_arr = (HObject*)iterables_tv.get_heapptr();
+
+                HString* methods_key = builtin_intern_string(heap, "methods");
+                if (methods_key == null) { *out_done = true; return true; }
+                TVal? methods_opt = wrapper.get_prop_proto(methods_key);
+                if (ctx.should_throw) return false;
+                TVal methods_tv;
+                if (try mtv = methods_opt) { methods_tv = mtv; } else { *out_done = true; return true; }
+
+                if (!methods_tv.is_object() || methods_tv.get_heapptr() == null) {
+                    *out_done = true;
+                    return true;
+                }
+                HObject* methods_arr = (HObject*)methods_tv.get_heapptr();
+
+                // Get the current iterable and its pre-fetched method
+                TVal? iterable_opt = iterables_arr.get_array_idx((uint)ih.counter);
+                TVal iterable_tv;
+                if (try itv = iterable_opt) { iterable_tv = itv; } else {
+                    // Hole in array, skip to next
+                    ih.counter += 1;
+                    continue;
+                }
+
+                TVal? method_opt = methods_arr.get_array_idx((uint)ih.counter);
+                TVal method_tv;
+                if (try mtv = method_opt) { method_tv = mtv; } else {
+                    // Should not happen if stored correctly
+                    ih.counter += 1;
+                    continue;
+                }
+
+                // Call the pre-fetched @@iterator method on the iterable
+                bool callable = method_tv.is_lightfunc() ||
+                    (method_tv.is_object() && method_tv.get_heapptr() != null &&
+                     ((HObject*)method_tv.get_heapptr()).is_callable());
+                if (!callable) {
+                    // Should not happen if validated correctly, but close and fail gracefully
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    builtin_throw(ctx, heap.type_err_proto, "Iterator method is not callable");
+                    return false;
+                }
+
+                if (heap.call_fn == null || ctx.vm == null) {
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+
+                // Call method(iterable) to get the iterator
+                TVal iterator_val = heap.call_fn(ctx.vm, method_tv, null, 0, iterable_tv);
+                if (heap.has_error) {
+                    ctx.should_throw = true;
+                    ctx.throw_value = heap.error_value;
+                    heap.has_error = false;
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+
+                // Validate the returned iterator
+                if (!iterator_val.is_object() || iterator_val.get_heapptr() == null) {
+                    builtin_throw(ctx, heap.type_err_proto, "Iterator method did not return an object");
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+
+                HObject* iterator = (HObject*)iterator_val.get_heapptr();
+
+                // Get the next method from the iterator
+                TVal next_method;
+                if (!iterhelper_get_iterator_direct(ctx, iterator, &next_method)) {
+                    iterhelper_iterator_close(ctx, ih.underlying, true);
+                    return false;
+                }
+
+                // Set as active inner iterator
+                ih.inner_iter = iterator;
+                ih.inner_next = next_method;
+                // Note: counter will be incremented when this iterator is exhausted
+            }
+        }
         default:
             *out_done = true;
             return true;
@@ -1564,8 +1712,13 @@ fn void builtin_iterator_helper_return(BuiltinContext* ctx) {
     HObject* obj = (HObject*)this_val.get_heapptr();
     HObjectIteratorHelper* ih = &(*obj.extra_ptr()).iter_helper;
 
+    if (ih.state == IH_STATE_EXECUTING) {
+        builtin_throw(ctx, heap.type_err_proto, "Iterator Helper is already executing");
+        return;
+    }
+
     if (ih.state != IH_STATE_COMPLETED) {
-        ih.state = IH_STATE_COMPLETED;
+        ih.state = IH_STATE_EXECUTING;
         if (ih.inner_iter != null) {
             iterhelper_iterator_close(ctx, ih.inner_iter, false);
             ih.inner_iter = null;
@@ -1573,9 +1726,11 @@ fn void builtin_iterator_helper_return(BuiltinContext* ctx) {
             // before propagating (IteratorCloseAll closes in reverse order).
             bool had_error = ctx.should_throw;
             iterhelper_iterator_close(ctx, ih.underlying, had_error);
+            ih.state = IH_STATE_COMPLETED;
             if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         } else {
             iterhelper_iterator_close(ctx, ih.underlying, false);
+            ih.state = IH_STATE_COMPLETED;
             if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         }
     }
@@ -2009,4 +2164,112 @@ fn void builtin_iterator_proto_find(BuiltinContext* ctx) {
         }
         counter += 1;
     }
+}
+
+/// Iterator.concat(...iterables) — TC39 iterator-sequencing proposal.
+/// Returns a lazy iterator that sequences through all iterables in order.
+/// Validates all arguments upfront: each must be an object with callable @@iterator.
+fn void builtin_iterator_concat(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    // Validate and collect all iterables and their methods upfront
+    // Step 1: For each argument, validate it's an object with callable @@iterator
+    HObject*? iterables_arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = iterables_arr_raw) { ctx.result.set_undefined(); return; }
+    HObject* iterables_arr = iterables_arr_raw;
+    iterables_arr.prototype = heap.array_proto;
+
+    // Also need a methods array to store the @@iterator methods
+    HObject*? methods_arr_raw = heap.alloc_object(hobject::ObjClass.ARRAY);
+    if (catch err = methods_arr_raw) { ctx.result.set_undefined(); return; }
+    HObject* methods_arr = methods_arr_raw;
+    methods_arr.prototype = heap.array_proto;
+
+    uint num_args = ctx.argc;
+    long count = 0;
+
+    for (uint i = 0; i < num_args; i++) {
+        TVal arg = builtin_arg(ctx, i);
+
+        // Check if arg is an object
+        if (!arg.is_object() || arg.get_heapptr() == null) {
+            builtin_throw(ctx, heap.type_err_proto, "Iterator.concat argument must be an object");
+            ctx.result.set_undefined();
+            return;
+        }
+
+        HObject* arg_obj = (HObject*)arg.get_heapptr();
+
+        // Get @@iterator method
+        HString* iter_sym = ensure_iterator_symbol(heap);
+        if (iter_sym == null) { ctx.result.set_undefined(); return; }
+
+        TVal? method_opt = builtins_generic_get(arg_obj, iter_sym, ctx);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
+        TVal method;
+        if (try m = method_opt) { method = m; } else { method.set_undefined(); }
+
+        // Check if method is callable
+        if (method.is_undefined() || method.is_null()) {
+            builtin_throw(ctx, heap.type_err_proto, "Iterator.concat argument has no iterator method");
+            ctx.result.set_undefined();
+            return;
+        }
+
+        bool callable = method.is_lightfunc() ||
+            (method.is_object() && method.get_heapptr() != null &&
+             ((HObject*)method.get_heapptr()).is_callable());
+        if (!callable) {
+            builtin_throw(ctx, heap.type_err_proto, "Iterator.concat argument's iterator method is not callable");
+            ctx.result.set_undefined();
+            return;
+        }
+
+        // Add to the arrays
+        iterables_arr.set_array_idx((uint)count, arg);
+        methods_arr.set_array_idx((uint)count, method);
+        count += 1;
+    }
+
+    iterables_arr.array_used = (uint)count;
+    *iterables_arr.array_len_ptr() = (uint)count;
+    methods_arr.array_used = (uint)count;
+    *methods_arr.array_len_ptr() = (uint)count;
+
+    // Create wrapper object to hold iterables array, methods array, and metadata
+    HObject*? wrapper_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = wrapper_raw) { ctx.result.set_undefined(); return; }
+    HObject* wrapper = wrapper_raw;
+    wrapper.prototype = null;
+
+    // Store the iterables array
+    HString* iterables_key = builtin_intern_string(heap, "iterables");
+    if (iterables_key != null) {
+        TVal iterables_tv; iterables_tv.set_object(iterables_arr);
+        wrapper.put_prop(iterables_key, iterables_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    // Store the methods array
+    HString* methods_key = builtin_intern_string(heap, "methods");
+    if (methods_key != null) {
+        TVal methods_tv; methods_tv.set_object(methods_arr);
+        wrapper.put_prop(methods_key, methods_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    // Store the count
+    HString* count_key = builtin_intern_string(heap, "count");
+    if (count_key != null) {
+        TVal count_tv; count_tv.set_fastint(count);
+        wrapper.put_prop(count_key, count_tv, hobject::PROP_FLAGS_WEC);
+    }
+
+    // Create the iterator helper with concat kind
+    // underlying: wrapper object (holds iterables, methods, count)
+    // next_method: undefined (unused for concat)
+    // callback: undefined (unused for concat)
+    // remaining: 0 (unused for concat)
+    TVal undef; undef.set_undefined();
+    HObject* helper = iterhelper_create(heap, wrapper, undef, undef, IH_KIND_CONCAT, 0.0);
+    if (helper != null) { ctx.result.set_object(helper); } else { ctx.result.set_undefined(); }
 }
