@@ -60,7 +60,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 - [x] **Captured-method aliasing** — NOT REPRODUCIBLE on merged HEAD (dedicated agent exhausted alias/IC/GC variants; coordinator re-confirmed 4 repro shapes clean). The iterator-helpers agent's mid-implementation observation was an artifact of its then-uncommitted state. Reopen only with a repro on current main. Note: the triggering test file is absent from our test262 snapshot.
 
-- [ ] **Getter/setter methods never create `arguments`** — `{get x(){ arguments }}` fails standalone; `static-init-arguments-methods.js`.
+- [x] **Getter/setter methods never create `arguments`** — fixed (console branch cherry-pick): both accessor invocation paths (invoke_getter + the two setter paths) now declare a sized arguments object like ordinary CALLs.
 - [x] **`let x; var x;` redeclaration not rejected** — fixed (console branch cherry-pick): `block()` pre-scans var declarators (recursing into nested blocks, skipping function/class bodies) and rejects overlap with lexical names per §13.2.1.
 - [x] **`await` as BindingIdentifier in nested-function positions** — fixed via shared `expect_binding_identifier()` honoring [Await]/[Yield] boundaries (arrow params inherit, bodies reset); 9/10, CE:unexpected back to 0; the 10th needs `using` (explicit-resource-management, unimplemented).
 - [x] **`new Set(string)` throws** — fixed: `coll_construct` wraps primitives (correct [[Prototype]]) before the iterable check; `new Map("ab")` correctly TypeErrors on non-object entries.
