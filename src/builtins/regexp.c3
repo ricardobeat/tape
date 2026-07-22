@@ -517,7 +517,12 @@ fn HObject* regexp_build_match_result(BuiltinContext* ctx, void* re_data, HStrin
                     } else {
                         cap_val.set_undefined();
                     }
-                    groups.put_prop(name_str, cap_val, hobject::PROP_FLAGS_WEC);
+                    // Duplicate names (one per alternative) share this loop;
+                    // a defined value always wins, but an undefined one must
+                    // not clobber a value already set by an earlier alternative.
+                    if (!cap_val.is_undefined() || !groups.has_prop(name_str)) {
+                        groups.put_prop(name_str, cap_val, hobject::PROP_FLAGS_WEC);
+                    }
                 }
                 // Each entry is: name bytes + '\0' + scope byte (2 bytes minimum)
                 p += (long)(name_len + 2);
@@ -593,7 +598,12 @@ fn HObject* regexp_build_match_result(BuiltinContext* ctx, void* re_data, HStrin
                             } else {
                                 pair_tv.set_undefined();
                             }
-                            igroups.put_prop(name_str, pair_tv, hobject::PROP_FLAGS_WEC);
+                            // Duplicate names (one per alternative) share this loop;
+                            // a defined value always wins, but an undefined one must
+                            // not clobber a value already set by an earlier alternative.
+                            if (!pair_tv.is_undefined() || !igroups.has_prop(name_str)) {
+                                igroups.put_prop(name_str, pair_tv, hobject::PROP_FLAGS_WEC);
+                            }
                         }
                         // Each entry is: name bytes + '\0' + scope byte (2 bytes minimum)
                         p += (long)(name_len + 2);
@@ -2567,6 +2577,146 @@ fn void builtin_regexp_species_getter(BuiltinContext* ctx) {
     *ctx.result = ctx.regs[ctx.base_reg - 1];
 }
 
+/// Append two lowercase hex digits for a byte value (0-0xFF) to `buf` at `*len`.
+fn void re_escape_append_hex2(char* buf, usz* len, uint byte_val) @inline {
+    char[16] hex_digits = "0123456789abcdef";
+    buf[(*len)++] = hex_digits[(byte_val >> 4) & 0xF];
+    buf[(*len)++] = hex_digits[byte_val & 0xF];
+}
+
+/// Append `\xHH` (byte_val <= 0xFF) to `buf` at `*len`.
+fn void re_escape_append_x(char* buf, usz* len, uint byte_val) @inline {
+    buf[(*len)++] = '\\';
+    buf[(*len)++] = 'x';
+    re_escape_append_hex2(buf, len, byte_val);
+}
+
+/// Append `\uHHHH` (a UTF-16 code unit) to `buf` at `*len`.
+fn void re_escape_append_u(char* buf, usz* len, uint code_unit) @inline {
+    buf[(*len)++] = '\\';
+    buf[(*len)++] = 'u';
+    re_escape_append_hex2(buf, len, (code_unit >> 8) & 0xFF);
+    re_escape_append_hex2(buf, len, code_unit & 0xFF);
+}
+
+/// EncodeForRegExpEscape ( c ) — ES2026 proposal-regex-escaping.
+/// Appends the escaped representation of code point `cp` to `buf` at `*len`.
+/// `buf` must have at least 12 bytes of headroom (worst case: astral
+/// codepoint needing two \uHHHH escapes).
+fn void re_escape_encode_codepoint(char* buf, usz* len, uint cp) {
+    // SyntaxCharacter or U+002F (SOLIDUS): backslash + the character itself.
+    switch (cp) {
+        case '^': case '$': case '\\': case '.': case '*': case '+':
+        case '?': case '(': case ')': case '[': case ']': case '{':
+        case '}': case '|': case '/':
+            buf[(*len)++] = '\\';
+            *len += hstring::encode_codepoint_cesu8(cp, buf[*len : 6]);
+            return;
+        default: break;
+    }
+
+    // ControlEscape table (ES2026 Table 63).
+    switch (cp) {
+        case 0x09: buf[(*len)++] = '\\'; buf[(*len)++] = 't'; return;
+        case 0x0A: buf[(*len)++] = '\\'; buf[(*len)++] = 'n'; return;
+        case 0x0B: buf[(*len)++] = '\\'; buf[(*len)++] = 'v'; return;
+        case 0x0C: buf[(*len)++] = '\\'; buf[(*len)++] = 'f'; return;
+        case 0x0D: buf[(*len)++] = '\\'; buf[(*len)++] = 'r'; return;
+        default: break;
+    }
+
+    // otherPunctuators, WhiteSpace, LineTerminator, or surrogate code point.
+    bool needs_escape = false;
+    switch (cp) {
+        case 0x2C: case 0x2D: case 0x3D: case 0x3C: case 0x3E: case 0x23:
+        case 0x26: case 0x21: case 0x25: case 0x3A: case 0x3B: case 0x40:
+        case 0x7E: case 0x27: case 0x60: case 0x22:
+            needs_escape = true;
+        default: break;
+    }
+    if (!needs_escape) {
+        // WhiteSpace (ES §12.2, incl. <USP> = Unicode Zs category) and
+        // LineTerminator (ES §12.3) code points.
+        switch (cp) {
+            case 0x09: case 0x0B: case 0x0C: case 0x20: case 0xA0: case 0xFEFF:
+            case 0x1680: case 0x2000: case 0x2001: case 0x2002: case 0x2003:
+            case 0x2004: case 0x2005: case 0x2006: case 0x2007: case 0x2008:
+            case 0x2009: case 0x200A: case 0x202F: case 0x205F: case 0x3000:
+            case 0x0A: case 0x0D: case 0x2028: case 0x2029:
+                needs_escape = true;
+            default: break;
+        }
+    }
+    if (!needs_escape && hstring::is_surrogate(cp)) needs_escape = true;
+
+    if (needs_escape) {
+        if (cp <= 0xFF) {
+            re_escape_append_x(buf, len, cp);
+        } else if (cp >= hstring::ASTRAL_START) {
+            uint high; uint low;
+            hstring::codepoint_to_surrogates(cp, &high, &low);
+            re_escape_append_u(buf, len, high);
+            re_escape_append_u(buf, len, low);
+        } else {
+            re_escape_append_u(buf, len, cp);
+        }
+        return;
+    }
+
+    // Otherwise: the code point itself (UTF16EncodeCodePoint).
+    *len += hstring::encode_codepoint_cesu8(cp, buf[*len : 6]);
+}
+
+/// RegExp.escape ( string ) — ES2026 proposal-regex-escaping.
+/// Escapes `string` for literal use inside a regular expression Pattern.
+fn void builtin_regexp_escape(BuiltinContext* ctx) {
+    if (ctx.argc < 1 || !ctx.regs[ctx.base_reg].is_string() || ctx.regs[ctx.base_reg].get_heapptr() == null) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "RegExp.escape called on non-string");
+        return;
+    }
+    HString* s = (HString*)ctx.regs[ctx.base_reg].get_heapptr();
+    char[] data = s.get_cstr()[:s.blen];
+
+    usz cap = (usz)s.blen * 6 + 16;
+    char* buf = (char*)alloc::malloc_try(mem, (sz)cap) ?? null;
+    if (buf == null) { ctx.result.set_undefined(); return; }
+    usz len = 0;
+
+    uint offset = 0;
+    bool first = true;
+    while ((usz)offset < data.len) {
+        uint seq_len = hstring::utf8_seq_len(data[offset]);
+        uint cp = hstring::decode_codepoint(data, offset);
+        // Combine a high surrogate immediately followed by a low surrogate
+        // into its astral code point (StringToCodePoints semantics).
+        if (hstring::is_high_surrogate(cp) && (usz)(offset + seq_len) < data.len) {
+            uint next_len = hstring::utf8_seq_len(data[offset + seq_len]);
+            uint next_cp = hstring::decode_codepoint(data, offset + seq_len);
+            if (hstring::is_low_surrogate(next_cp)) {
+                cp = hstring::surrogates_to_codepoint(cp, next_cp);
+                seq_len += next_len;
+            }
+        }
+
+        bool leading_digit_or_letter = first &&
+            ((cp >= '0' && cp <= '9') ||
+             (cp >= 'a' && cp <= 'z') ||
+             (cp >= 'A' && cp <= 'Z'));
+        if (leading_digit_or_letter) {
+            re_escape_append_x(buf, &len, cp);
+        } else {
+            re_escape_encode_codepoint(buf, &len, cp);
+        }
+        first = false;
+        offset += seq_len;
+    }
+
+    HString* result = builtin_intern_string(ctx.heap, buf[:len]);
+    mem::free(buf);
+    if (result == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_string(result);
+}
+
 /// Register RegExp.prototype and the RegExp constructor globally.
 fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
     // Create RegExp.prototype (ObjClass.OBJECT per spec — toString gives [object Object])
@@ -2707,6 +2857,9 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
             regexp_obj.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
         }
     }
+
+    // Add RegExp.escape (ES2026 proposal-regex-escaping)
+    if (!register_string_proto_method(regexp_obj, heap, "escape", Builtin.REGEXP_ESCAPE.ordinal)) return false;
 
     // Register RegExp constructor globally as an OBJECT
     uint hash = heap.hash_string("RegExp");

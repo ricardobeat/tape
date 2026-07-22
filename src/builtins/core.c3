@@ -522,6 +522,7 @@ enum Builtin : uint {
     SET_PROTO_ISSUBSETOF,           // Set.prototype.isSubsetOf(other)
     SET_PROTO_ISSUPERSETOF,         // Set.prototype.isSupersetOf(other)
     SET_PROTO_ISDISJOINTFROM,       // Set.prototype.isDisjointFrom(other)
+    REGEXP_ESCAPE, // RegExp.escape(string) (ES2026 proposal-regex-escaping)
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2685,6 +2686,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.SET_PROTO_ISSUBSETOF.ordinal: return { "isSubsetOf", 1 };
         case Builtin.SET_PROTO_ISSUPERSETOF.ordinal: return { "isSupersetOf", 1 };
         case Builtin.SET_PROTO_ISDISJOINTFROM.ordinal: return { "isDisjointFrom", 1 };
+        case Builtin.REGEXP_ESCAPE.ordinal: return { "escape", 1 };
         default: return { "", -1 };
     }
 }
@@ -3607,6 +3609,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.SET_PROTO_ISSUBSETOF.ordinal]          = &builtin_set_proto_isSubsetOf,
     [Builtin.SET_PROTO_ISSUPERSETOF.ordinal]        = &builtin_set_proto_isSupersetOf,
     [Builtin.SET_PROTO_ISDISJOINTFROM.ordinal]      = &builtin_set_proto_isDisjointFrom,
+    [Builtin.REGEXP_ESCAPE.ordinal]                  = &builtin_regexp_escape,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

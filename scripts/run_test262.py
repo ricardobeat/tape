@@ -147,8 +147,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
     r"iterator-sequencing|"
-    r"Math\.sumPrecise|RegExp\.escape|json-parse-with-source|"
-    r"regexp-modifiers|regexp-duplicate-named-groups|"
+    r"Math\.sumPrecise|json-parse-with-source|"
     r"uint8array-base64|Float16Array|resizable-arraybuffer|"
     r"arraybuffer-transfer|immutable-arraybuffer|"
     r"joint-iteration|iterator-helpers|"
@@ -193,11 +192,29 @@ _UNSUPPORTED_FEATURE_RE = re.compile(UNSUPPORTED_PATTERN.pattern.split(r"\b(?:",
 #                                       libregexp.c only implements a
 #                                       subset of the v-flag spec, so
 #                                       some set expressions still fail.
-#   regexp-duplicate-named-groups    - per-alternative scoping compiles;
-#                                       a few tests need the second
-#                                       alternative to win (libregexp
-#                                       bug, fixed in some scenarios but
-#                                       not all).
+#   regexp-duplicate-named-groups    - fixed: the groups-object/indices.groups
+#                                       builders now match quickjs.c's
+#                                       js_regexp_exec semantics (a defined
+#                                       capture value always wins; an
+#                                       undefined one never clobbers a value
+#                                       already set by an earlier alternative).
+#   regexp-modifiers                 - inline flag groups (?i:...)/(?-i:...)/
+#                                       (?ims-ims:...) already work correctly
+#                                       via libregexp at both compile and
+#                                       exec time (verified against every
+#                                       built-ins/RegExp/regexp-modifiers/
+#                                       test). The only failures are
+#                                       language/literals/regexp/early-err-*
+#                                       $DONOTEVALUATE tests, which fail for
+#                                       an unrelated, pre-existing reason:
+#                                       this engine never parse-time-validates
+#                                       regexp literals at all (semantic
+#                                       errors like an unknown modifier
+#                                       letter are only caught if the literal
+#                                       is actually evaluated), and that
+#                                       directory isn't in any PHASES entry
+#                                       so it's outside the "0 fails" surface
+#                                       anyway.
 
 # Glob patterns of test files to skip. Paths are relative to test262/test().
 # Strict-only engine rejects non-strict-only features; tests that explicitly
