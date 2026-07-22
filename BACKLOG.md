@@ -39,7 +39,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 ### Todo — architecture (batch 3)
 
 - [ ] **Async generators** — plan 060 (~2,000 tests, ~3-5 sessions). Until then all four syntactic forms parse-reject; runner skips structurally. for-await-of consumer + AsyncFromSync stay in scope.
-- [>] **Resizable ArrayBuffer** (`resizable-arraybuffer`) — core landed (representation, resize, length-tracking views, OOB semantics, recompute-on-access; fixed-path guarded, benches flat; ~399/473 in-scope). Follow-up agent running on the ~74 residuals: stale len/base across user-code resize + iterator length capture, plus one map/resizable-buffer hang.
+- [>] **Resizable ArrayBuffer** (`resizable-arraybuffer`) — core + resize-during-op fixes landed (145→33 in-scope fails; both hangs were a GENERAL compiler bug: C-style for-let condition temporaries clobbered the loop-var register when the condition had a member expression — fixed via cond_floor clamp in statements.c3). Final agent running on the last ~33: Array generics with TA receivers (writes + every/some callback bug), species-resize interactions, few DataView/Object edges.
 - [ ] **`ArrayBuffer.prototype.transfer`** (`arraybuffer-transfer`).
 - [ ] **`Float16Array`**.
 - [x] **WeakRef / FinalizationRegistry** — API surface landed (74/76; 2 cross-realm), non-weak semantics matching WeakMap policy (cleanup never fires — spec-legal); also fixed internal collection storage leaking through getOwnPropertyNames. TRUE weakness (all four types) remains a GC-integration project, out of parity scope for now.
