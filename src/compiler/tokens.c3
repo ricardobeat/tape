@@ -441,6 +441,36 @@ fn bool CompilerContext.match_static_modifier(&self) {
     return true;  // `static` stays consumed as modifier
 }
 
+/// Detect a class static initialization block (`static { ... }`, ES2022).
+/// `{` can never start a PropertyName, so unlike match_static_modifier there
+/// is no ASI ambiguity to resolve with a same-line check — `static` directly
+/// followed by `{` (on any line) is always the ClassStaticBlock production,
+/// never `static` used as a field/method name. Returns true and consumes the
+/// `static` token if this is a static block; otherwise leaves the input
+/// untouched and returns false.
+fn bool CompilerContext.match_static_block_prefix(&self) {
+    if (self.peek_type() != TokenType.STATIC) return false;
+    Token? cur_opt = self.advance();
+    if (catch _e = cur_opt) return false;
+    Token cur = cur_opt;
+    TokenType next_tt;
+    if (self.pushback_count > 0) {
+        next_tt = self.pushback_stack[self.pushback_count - 1].type;
+    } else {
+        Token? peek_opt = self.lexer.peek();
+        if (catch _e = peek_opt) {
+            self.pushback(cur);
+            return false;
+        }
+        next_tt = peek_opt.type;
+    }
+    if (next_tt != TokenType.LBRACE) {
+        self.pushback(cur);
+        return false;
+    }
+    return true;  // `static` stays consumed as the block prefix
+}
+
 /// Skip tokens from the **lexer** (not the compiler pushback) until a SEMICOLON
 /// or RPAREN is seen at paren/bracket depth 0.  The terminating token is NOT consumed.
 /// Used by loop rotation to skip over the for-loop increment without emitting code.

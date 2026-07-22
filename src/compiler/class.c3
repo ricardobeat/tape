@@ -178,7 +178,7 @@ fn void? CompilerContext.class_declaration(&self, char[]* out_name = null, bool 
     TokenType name_tt = self.peek_type();
     if (name_tt == TokenType.IDENTIFIER) {
         class_name = self.advance()!.str_value;
-    } else if ((name_tt == TokenType.AWAIT && !self.is_module) ||
+    } else if ((name_tt == TokenType.AWAIT && !self.is_module && !self.forbid_await) ||
                (name_tt == TokenType.YIELD && !self.is_generator)) {
         class_name = self.advance()!.str_value;
     } else if (allow_anonymous && (name_tt == TokenType.EXTENDS || name_tt == TokenType.LBRACE)) {
@@ -262,7 +262,7 @@ fn ushort? CompilerContext.class_expression(&self) {
     bool has_name = false;
     TokenType class_name_tt = self.peek_type();
     bool is_valid_class_name = (class_name_tt == TokenType.IDENTIFIER) ||
-        (class_name_tt == TokenType.AWAIT && !self.is_module) ||
+        (class_name_tt == TokenType.AWAIT && !self.is_module && !self.forbid_await) ||
         (class_name_tt == TokenType.YIELD && !self.is_generator);
     if (is_valid_class_name) {
         Token name_tok = self.advance()!;
@@ -473,6 +473,30 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // this iteration's first token (not stale state from the previous
         // element's closing `}`).
         self.lexer.refresh_token_start();
+
+        // Class static initialization block (ES2022 §15.7.11): `static { ... }`.
+        // Checked before match_static_modifier — `{` can never start a
+        // PropertyName, so this is never ambiguous with `static` used as a
+        // field/method name. Compiled as its own zero-arg function (own var/
+        // lex scope, unlike static field initializers which all share
+        // __static_init__), then CLOSURE+CALL'd right here so it interleaves
+        // with static field installs in source order (static-init-sequence).
+        if (self.match_static_block_prefix()) {
+            if (!has_static_init) {
+                has_static_init = true;
+                self.ensure_field_init_ctx(&static_init_ctx, true);
+            }
+            CompiledFunction* block_func = self.compile_static_block()!;
+            uint block_idx = static_init_ctx.add_inner_func(block_func);
+            ushort block_reg = static_init_ctx.alloc_reg();
+            static_init_ctx.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)block_reg, block_idx));
+            ushort block_this_slot = static_init_ctx.alloc_reg();  // must be block_reg + 1
+            static_init_ctx.emit(bytecode::make_a_bc(Opcode.LDTHIS, (uint)block_this_slot, 0));
+            static_init_ctx.emit_abc(Opcode.CALL, (uint)block_reg, (uint)block_reg, 0);
+            static_init_ctx.free_reg(block_this_slot);
+            static_init_ctx.free_reg(block_reg);
+            continue;
+        }
 
         // Check for static modifier — only consume `static` when followed by
         // a method name (identifier, keyword, string, number, `[`, `*`, get/set).

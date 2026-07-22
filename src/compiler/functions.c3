@@ -231,6 +231,7 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
 
         // Property name — per ES2015 §13.3.3.7, may be an IdentifierName
         // (incl. reserved words), a string literal, or a numeric literal.
+        TokenType prop_key_tt = self.peek_type();
         char[] prop_key = self.destructuring_property_key()!;
         uint prop_key_idx = self.add_string_constant(prop_key);
 
@@ -275,7 +276,16 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
                 }
             }
         } else {
-            // Shorthand: {a} — direct child of this destructuring param
+            // Shorthand: {a} — direct child of this destructuring param.
+            // Unlike {key: target}, the property key here IS the binding
+            // identifier, so a class static block's forbid_await gate (ES2022
+            // §15.7.11: BindingIdentifier may not be `await`) applies —
+            // {key: target} form keeps `await` as a plain PropertyName,
+            // which is always allowed (test262 static-init-await-reference
+            // dstr variants use {await} directly, not {await: x}).
+            if (prop_key_tt == TokenType.AWAIT && self.forbid_await) {
+                return self.fail("'await' is not allowed as a binding identifier in a class static block")~;
+            }
             if (*count < binds.len) {
                 binds[*count].name_idx = prop_key_idx;
                 binds[*count].key_idx = prop_key_idx;
@@ -2534,6 +2544,15 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     def_ctx.adopt_private_names(self);
     def_ctx.private_scope_start = self.private_scope_start;
     def_ctx.private_scope_depth = self.private_scope_depth;
+    // A parameter default value is part of the enclosing function/arrow's
+    // own definition site, not a nested function body it "crosses into" —
+    // ContainsAwait/ContainsArguments still apply here when the parameter
+    // list itself sits directly inside a class static block (test262
+    // static-init-await-reference, arrow-function variant: `((x = await)
+    // => 0)` inside `static { }` is a SyntaxError).
+    def_ctx.forbid_arguments = self.forbid_arguments;
+    def_ctx.forbid_await = self.forbid_await;
+    def_ctx.forbid_yield = self.forbid_yield;
 
     // Per ES2015 §13.3.3.7 step 3 (NamedEvaluation), if the default is an
     // anonymous function/arrow/class/generator expression, the resulting
@@ -2599,6 +2618,16 @@ fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
     // in computed property keys (e.g. [yield] inside a generator).
     key_ctx.is_generator = self.is_generator;
     key_ctx.is_async = self.is_async;
+    // Propagate the enclosing element's forbidden-construct gates: a computed
+    // key is evaluated in the ENCLOSING scope (ES2022 §15.7.15 step 6.a.i),
+    // so `arguments`/`return`/`await`/`yield` are still subject to whatever
+    // field-initializer or static-block restrictions apply there (e.g.
+    // `class { static { (class { [arguments]() {} }); } }` — test262
+    // static-init-invalid-arguments).
+    key_ctx.forbid_arguments = self.forbid_arguments;
+    key_ctx.forbid_return = self.forbid_return;
+    key_ctx.forbid_await = self.forbid_await;
+    key_ctx.forbid_yield = self.forbid_yield;
 
     key_ctx.emit_simple(Opcode.PUSH_LEX);
     ushort expr_reg = key_ctx.assignment_expr()!;
@@ -2606,6 +2635,67 @@ fn CompiledFunction*? CompilerContext.compile_key_expr(&self) {
     key_ctx.emit_simple(Opcode.POP_LEX);
 
     CompiledFunction* func = key_ctx.finish()!;
+    return func;
+}
+
+/// Compile a class static initialization block (`static { ... }`, ES2022
+/// §15.7.11) into a zero-arg CompiledFunction. The caller must position the
+/// lexer right at the block's own opening `{` (i.e. `static` already
+/// consumed) and pass a class-enclosing `self` — a fresh CompilerContext is
+/// created here, propagating the class/private-name context the same way
+/// ensure_field_init_ctx does for static field initializers, but each block
+/// gets its OWN function (own var/lex scope, own break/continue/label
+/// space): per test262 static-init-scope-var-*, a `var` declared in one
+/// block is invisible to sibling blocks and the enclosing scope, unlike the
+/// single shared __static_init__ that static field initializers install
+/// into.
+fn CompiledFunction*? CompilerContext.compile_static_block(&self) {
+    CompilerContext block_ctx;
+    block_ctx.init(self.lexer, self.heap);
+    block_ctx.lexer.set_strict(true);
+    block_ctx.in_class_body = self.in_class_body;
+    block_ctx.has_super_binding = self.has_super_binding;
+    block_ctx.super_is_home_object = self.super_is_home_object;
+    // HomeObject for `super.x` inside a static block is always the class
+    // constructor (ES2022 §15.7.11 EvaluateClassStaticBlockBody step 4
+    // MakeMethod(body, F)) — never the prototype, regardless of whether the
+    // block sits among static or instance elements textually.
+    block_ctx.super_is_static_method = true;
+    // super() is forbidden (HasDirectSuper early error) — same mechanism
+    // field/static initializers use to reject it.
+    block_ctx.is_constructable = false;
+    // ClassStaticBlockStatementList is [~Yield, +Await, ~Return] and bans
+    // `arguments` (ContainsArguments early error) — all four gates are
+    // fresh CompilerContext-local flags that do not propagate into nested
+    // function/arrow bodies compiled from within the block.
+    block_ctx.forbid_arguments = true;
+    block_ctx.forbid_return = true;
+    block_ctx.forbid_await = true;
+    block_ctx.forbid_yield = true;
+    block_ctx.adopt_private_names(self);
+    block_ctx.private_scope_start = self.private_scope_start;
+    block_ctx.private_scope_depth = self.private_scope_depth;
+
+    // No parameter list to parse — go straight to the body, same shape as
+    // compile_inner_function's zero-param tail.
+    block_ctx.pre_scan_captures();
+    block_ctx.hoist_decls(false)!;
+    block_ctx.reserved_regs = block_ctx.next_reg;
+    block_ctx.block(true, false)!;
+
+    bool has_return = false;
+    if (block_ctx.code_count > 0) {
+        Opcode last_op = block_ctx.code[block_ctx.code_count - 1].op;
+        if (last_op == Opcode.RET || last_op == Opcode.RETUNDEF) {
+            has_return = true;
+        }
+    }
+    if (!has_return) {
+        block_ctx.emit_simple(Opcode.RETUNDEF);
+    }
+
+    CompiledFunction* func = block_ctx.finish()!;
+    func.flags.is_strict = block_ctx.is_strict;
     return func;
 }
 

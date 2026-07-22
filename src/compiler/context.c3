@@ -381,6 +381,28 @@ struct CompilerContext {
     /// `arguments` is a SyntaxError there (ES2022 §15.7.14): the initializer
     /// is its own function body but has no arguments object of its own.
     bool forbid_arguments;
+    /// True while compiling a class static initialization block body
+    /// (ES2022 §15.7.11 ClassStaticBlockStatementList[~Return]): `return` at
+    /// this function's own top level is a SyntaxError, even though the block
+    /// is otherwise a normal function-like body (nested functions may still
+    /// return from themselves).
+    bool forbid_return;
+    /// True while compiling a class static initialization block body
+    /// (ES2022 §15.7.11: ClassStaticBlockStatementList is [~Yield, +Await]
+    /// unconditionally, unlike field initializers which inherit [?Yield,
+    /// ?Await] from the enclosing context). `await` is always the reserved
+    /// keyword here — never usable as an identifier or BindingIdentifier —
+    /// and the `await` operator itself is a SyntaxError (ContainsAwait early
+    /// error). Like forbid_arguments/forbid_return, nested function/arrow
+    /// bodies get a fresh CompilerContext that does not inherit this flag.
+    bool forbid_await;
+    /// True while compiling a class static initialization block body.
+    /// ClassStaticBlockStatementList is [~Yield], and this strict-only
+    /// engine treats `yield` as a reserved word (not a plain identifier) in
+    /// strict code — so a `yield` reference at the block's own level is a
+    /// SyntaxError. Like forbid_await, resets to false in any nested
+    /// function/arrow body (fresh CompilerContext).
+    bool forbid_yield;
 
     // Generator tracking
     bool is_generator;          // true when compiling a generator function (function*)

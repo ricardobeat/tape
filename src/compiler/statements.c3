@@ -1011,7 +1011,7 @@ fn void? CompilerContext.var_declaration(&self) {
             bool ctx_keyword_ident = false;
             if (next == TokenType.IDENTIFIER) {
                 name_tok = self.advance()!;
-            } else if ((next == TokenType.AWAIT && !self.is_module && !self.is_async) ||
+            } else if ((next == TokenType.AWAIT && !self.is_module && !self.is_async && !self.forbid_await) ||
                        (next == TokenType.YIELD && !self.is_generator)) {
                 name_tok = self.advance()!;
                 ctx_keyword_ident = true;
@@ -3286,6 +3286,15 @@ fn void? CompilerContext.return_statement(&self) {
     // false there), so this only fires for genuinely top-level `return`.
     if (self.is_global) {
         return COMPILE_ERROR~;
+    }
+
+    // ES2022 §15.7.11: a class static block's own StatementList is
+    // ClassStaticBlockStatementList[~Return] — `return` at this level is a
+    // SyntaxError (a nested function/method declared inside the block is
+    // its own CompilerContext with forbid_return left false, so it may
+    // still return from itself).
+    if (self.forbid_return) {
+        return self.fail("return is not allowed in class static block")~;
     }
 
     // Check if there's a return value (not a semicolon or end-of-statement)

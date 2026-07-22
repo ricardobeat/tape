@@ -2914,6 +2914,12 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // Outside generators, `yield` is just an identifier per
                 // ES2024 §13.1.1. Handle it via the standard identifier
                 // path — same pattern as the AWAIT case when !is_async.
+                // A class static block's own statement list is [~Yield]
+                // (ES2022 §15.7.11): `yield` there is a SyntaxError instead,
+                // regardless of the enclosing generator-ness.
+                if (self.forbid_yield) {
+                    return COMPILE_ERROR~;
+                }
                 Token id_tok = self.advance()!;
                 if (self.check(TokenType.ARROW)) {
                     char[][1] params_arr;
@@ -3009,7 +3015,10 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // In a module, `await` is always reserved (ES2024 §13.1.1) —
                 // it is never a plain IdentifierName, even outside an async
                 // function. Reject rather than treating it as an identifier.
-                if (self.is_module) {
+                // A class static block's own statement list is likewise
+                // always [+Await] (ES2022 §15.7.11) regardless of whether it
+                // is lexically nested inside an async function.
+                if (self.is_module || self.forbid_await) {
                     return COMPILE_ERROR~;
                 }
                 Token id_tok = self.advance()!;
