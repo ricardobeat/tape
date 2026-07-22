@@ -29,7 +29,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 - [x] **`change-array-by-copy` un-skip** — fully landed: TypedArray side (incl. with() coercion order) + all 15 Array-side residuals (holes-as-own-props, toSorted via shared array_sort_compare, toSpliced arg/limit semantics); phases 5/6/22 all 0 fails.
 - [x] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`) — 69/71 (2 need immutable-arraybuffer); Uint8Array dir added to phase 22.
-- [ ] **`JSON.parse` source access** (`json-parse-with-source`).
+- [x] **`JSON.parse` source access** (`json-parse-with-source`) — reviver context.source spans + JSON.rawJSON/isRawJSON; 21/22 (last is cross-realm staging); also fixed pre-existing `JSON.parse('{}', reviver)` → undefined (zero-alloc mistaken for OOM).
 - [ ] **`Array.fromAsync`**.
 - [x] **`Math.sumPrecise`** — Shewchuk algorithm ported from quickjs; 10/10.
 - [x] **`Iterator.concat`** (`iterator-sequencing`) — 30/31; the 31st exposed the spread-into-builtin bug below.
@@ -52,6 +52,8 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - **qjs CLI/std/os modules** — not JS-language parity; out of scope.
 
 ## Known bugs (pre-existing, exposed by un-skips)
+
+- [ ] **`test/json_stringify_ext.js` local test fails on main** — regex `lastIndex` in `toJSON`; reproduces before the JSON source-access work (agent-verified). Small standalone fix.
 
 - [ ] **Arrows parse at any precedence level** — `1 + () => 2` and `#f in () => {}` are accepted; ArrowFunction is an AssignmentExpression-level production and must not appear as a binary operand without parens. Fails 2 `expressions/in/private-field-*` negative-parse tests (plus `rhs-yield-absent`, which throws the wrong error kind). General Pratt-parser gap, predates private-in.
 
