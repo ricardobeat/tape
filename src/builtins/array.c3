@@ -1960,9 +1960,18 @@ fn void builtin_array_proto_toReversed(BuiltinContext* ctx) {
     result.prototype = ctx.heap.array_proto;
 
     for (ulong i = 0; i < len; i++) {
-        TVal elem;
-        if (arr_get_elem_vm(obj, len - 1 - i, ctx.heap, ctx, &elem)) {
-            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal elem; elem.set_undefined();
+        bool found = arr_get_elem_vm(obj, len - 1 - i, ctx.heap, ctx, &elem);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        // Always create an own property in result, using the value from Get
+        // (which includes inherited properties). This ensures holes are filled.
+        if (i <= 0xFFFFFFFFUL && elem.is_undefined() && !found) {
+            // Hole: explicitly create an own property with undefined
+            HString* key = ctx.heap.int_to_hstring((long)i);
+            if (key != null) {
+                result.put_prop(key, elem, hobject::PROP_FLAGS_WEC);
+            }
+        } else {
             array_set_elem_ulong(result, i, elem, ctx.heap);
         }
     }
