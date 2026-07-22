@@ -53,7 +53,8 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ## Known bugs (pre-existing, exposed by un-skips)
 
-- [>] **Spread into builtin calls drops the last argument at 5+ args** — `Math.min(...[5,4,3,2,1])` → 2; spread into JS functions is fine; SPREAD_ARG→builtin argc/argv wiring. Found via `Iterator/concat/many-arguments.js`. Agent running.
+- [x] **Spread into builtin calls drops the last argument at 5+ args** — two coupled bugs fixed: the spread count register (CALL_S's nargs source) was allocated INSIDE the argv window and got overwritten at 5+ elements, and SPREAD_ARG stored borrowed refs that call teardown over-decref'd. `begin_spread_args` now reserves both control regs below first_arg; SPREAD_ARG takes owned refs.
+- [ ] **Plain argument AFTER a large spread still miscompiles** — `f(1,...[2,3,4,5],99)` → `1,2,3,4,99,99` (was equally broken pre-fix): the trailing arg's evaluation register lands inside the live spread window. Needs argument-array lowering or a VM-side spread buffer. Not hit by any phase test today.
 
 - [x] **Captured-method aliasing** — NOT REPRODUCIBLE on merged HEAD (dedicated agent exhausted alias/IC/GC variants; coordinator re-confirmed 4 repro shapes clean). The iterator-helpers agent's mid-implementation observation was an artifact of its then-uncommitted state. Reopen only with a repro on current main. Note: the triggering test file is absent from our test262 snapshot.
 
