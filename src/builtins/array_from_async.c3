@@ -428,7 +428,9 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
         TVal? len_opt = builtins_generic_get(array_like, len_key, ctx);
         if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
         if (try lv = len_opt) {
-            double len_d = builtin_to_number_getdouble(ctx, &lv);
+            // ToLength via ToNumber with ToPrimitive: an object-valued
+            // length (observable valueOf) must be coerced, not NaN'd.
+            double len_d = builtin_to_number_vm(ctx, &lv);
             if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
             len = arr_to_length(len_d);
         }
