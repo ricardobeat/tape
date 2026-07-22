@@ -2,6 +2,15 @@
 
 Status: TODO / IN PROGRESS / DONE. Minimum detail to start a task; no results or test summaries.
 
+## QuickJS parity roadmap (goal set 2026-07-22)
+
+Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`). Measured by probe (scratchpad featprobe) + `UNSUPPORTED_PATTERN`-vs-`test262/features.txt` cross-reference. One feature family per agent; each removes only its own flag token from `UNSUPPORTED_PATTERN`.
+
+- [ ] **Batch 1 (agents running 2026-07-22):** class static blocks (`class-static-block`; also fixes the `(class { static { } })` parser HANG); large-string refcount leak; Set methods (`set-methods`); `Promise.withResolvers` + `Promise.try` + `Error.isError`; `Object.groupBy`/`Map.groupBy` + `Map.getOrInsert[Computed]` (`array-grouping`, `upsert`) + `symbols-as-weakmap-keys`; RegExp duplicate-named-groups alternative-resolution fix (11/19 pass on HEAD) + `RegExp.escape` + `regexp-modifiers` assessment; iterator helpers (`iterator-helpers`).
+- [ ] **Batch 2 (small, after batch 1 lands):** `change-array-by-copy` un-skip (toSorted/with already work — likely near-free) · `uint8array-base64` · `json-parse-with-source` · `Array.fromAsync` · `Math.sumPrecise` · `iterator-sequencing` (Iterator.concat) · `#x in obj` (`class-fields-private-in`, parser + brand-check reuse) · Reflect un-skip (surface exists; fix what fails).
+- [ ] **Batch 3 (architecture):** async generators (plan 060, ~2,000 tests) · resizable ArrayBuffer + `arraybuffer-transfer` + `Float16Array` · WeakRef/FinalizationRegistry (needs GC hooks) · Atomics/SharedArrayBuffer + `waitAsync` · `import-attributes` (+ JSON modules).
+- **Parity exceptions (user call needed):** sloppy mode (QuickJS has it; engine strict-only by design). Not JS-feature parity: qjs CLI/std/os modules.
+
 ## Compiler / language
 
 - [ ] **C7a-residual** — `MAX_PRIVATE_NAMES = 64` cap (`src/compiler/context.c3:1527`); heap-allocate or grow-on-demand the private-name table (65+ private fields in one class overflow slot 0).
