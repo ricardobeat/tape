@@ -514,6 +514,14 @@ enum Builtin : uint {
     PROMISE_WITH_RESOLVERS,         // Promise.withResolvers() (ES2024)
     PROMISE_TRY,                    // Promise.try(callbackfn, ...args) (ES2026)
     ERROR_ISERROR,                  // Error.isError(arg) (ES2026)
+    // --- Set methods proposal (ES2025 §24.2.4) ---
+    SET_PROTO_UNION,                // Set.prototype.union(other)
+    SET_PROTO_INTERSECTION,         // Set.prototype.intersection(other)
+    SET_PROTO_DIFFERENCE,           // Set.prototype.difference(other)
+    SET_PROTO_SYMMETRICDIFFERENCE,  // Set.prototype.symmetricDifference(other)
+    SET_PROTO_ISSUBSETOF,           // Set.prototype.isSubsetOf(other)
+    SET_PROTO_ISSUPERSETOF,         // Set.prototype.isSupersetOf(other)
+    SET_PROTO_ISDISJOINTFROM,       // Set.prototype.isDisjointFrom(other)
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2669,6 +2677,14 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.PROMISE_WITH_RESOLVERS.ordinal: return { "withResolvers", 0 };
         case Builtin.PROMISE_TRY.ordinal: return { "try", 1 };
         case Builtin.ERROR_ISERROR.ordinal: return { "isError", 1 };
+        // Set methods proposal
+        case Builtin.SET_PROTO_UNION.ordinal: return { "union", 1 };
+        case Builtin.SET_PROTO_INTERSECTION.ordinal: return { "intersection", 1 };
+        case Builtin.SET_PROTO_DIFFERENCE.ordinal: return { "difference", 1 };
+        case Builtin.SET_PROTO_SYMMETRICDIFFERENCE.ordinal: return { "symmetricDifference", 1 };
+        case Builtin.SET_PROTO_ISSUBSETOF.ordinal: return { "isSubsetOf", 1 };
+        case Builtin.SET_PROTO_ISSUPERSETOF.ordinal: return { "isSupersetOf", 1 };
+        case Builtin.SET_PROTO_ISDISJOINTFROM.ordinal: return { "isDisjointFrom", 1 };
         default: return { "", -1 };
     }
 }
@@ -3584,6 +3600,13 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.PROMISE_WITH_RESOLVERS.ordinal]         = &builtin_promise_with_resolvers,
     [Builtin.PROMISE_TRY.ordinal]                    = &builtin_promise_try,
     [Builtin.ERROR_ISERROR.ordinal]                  = &builtin_error_isError,
+    [Builtin.SET_PROTO_UNION.ordinal]               = &builtin_set_proto_union,
+    [Builtin.SET_PROTO_INTERSECTION.ordinal]        = &builtin_set_proto_intersection,
+    [Builtin.SET_PROTO_DIFFERENCE.ordinal]          = &builtin_set_proto_difference,
+    [Builtin.SET_PROTO_SYMMETRICDIFFERENCE.ordinal] = &builtin_set_proto_symmetricDifference,
+    [Builtin.SET_PROTO_ISSUBSETOF.ordinal]          = &builtin_set_proto_isSubsetOf,
+    [Builtin.SET_PROTO_ISSUPERSETOF.ordinal]        = &builtin_set_proto_isSupersetOf,
+    [Builtin.SET_PROTO_ISDISJOINTFROM.ordinal]      = &builtin_set_proto_isDisjointFrom,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {

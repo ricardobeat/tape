@@ -6,6 +6,8 @@ import duktape::heap;
 import duktape::hobject;
 import duktape::hstring;
 import duktape::env;
+import duktape::vm;
+import std::math;
 
 // ============================================================================
 // Set helpers
@@ -19,6 +21,319 @@ fn HObject* check_set(BuiltinContext* ctx) {
 /// Set entries are stored as [v0, v1, ...] in array_part.
 fn int set_find_value(HObject* set, TVal val) {
     return find_in_array_part(set, val, 1);
+}
+
+/// Counts non-deleted entries — same logic as the .size getter, factored out
+/// for the set-methods algorithms that need this.size as a plain number.
+fn uint set_live_count(HObject* set) {
+    uint count = 0;
+    TVal* arr = set.array_part();
+    if (arr != null) {
+        for (uint i = 0; i < set.array_used; i++) {
+            if (!arr[i].is_deleted()) count++;
+        }
+    }
+    return count;
+}
+
+// ============================================================================
+// Set methods proposal (ES2025 §24.2.4) — shared helpers
+// ============================================================================
+
+/// GetSetRecord(obj) result — ES2025 §24.2.4.1.
+struct SetRecord {
+    TVal set_like;
+    double size;
+    TVal has_fn;
+    TVal keys_fn;
+}
+
+/// GetSetRecord(obj) — ES2025 §24.2.4.1. Validates `obj` is an object with a
+/// numeric, non-NaN `size` and callable `has`/`keys`, in that exact order
+/// (each Get/ToNumber/callability check can throw before the next runs).
+/// Returns a fault on any failure — ctx.should_throw is set by the caller's
+/// standard error paths (builtin_throw / vm_to_number's throw_pending).
+fn SetRecord? get_set_record(BuiltinContext* ctx, TVal obj) {
+    if (!obj.is_object() || obj.get_heapptr() == null) {
+        coll_throw(ctx, "Method Set.prototype method called on incompatible receiver");
+        return hobject::PROP_NOT_FOUND~;
+    }
+    HObject* obj_hobj = (HObject*)obj.get_heapptr();
+
+    HString* size_key = builtin_intern_string(ctx.heap, "size");
+    TVal raw_size;
+    raw_size.set_undefined();
+    if (size_key != null) {
+        if (try s = builtins_generic_get(obj_hobj, size_key, ctx)) { raw_size = s; }
+    }
+    if (ctx.should_throw) return hobject::PROP_NOT_FOUND~;
+
+    Vm* v = (Vm*)ctx.vm;
+    double num_size = vm::vm_to_number(v, &raw_size);
+    if (v.throw_pending) {
+        ctx.should_throw = true;
+        ctx.heap.tval_copy_ref(&ctx.throw_value, &v.throw_value);
+        v.throw_pending = false;
+        return hobject::PROP_NOT_FOUND~;
+    }
+    if (math::is_nan(num_size)) {
+        coll_throw(ctx, "size must be a non-NaN number");
+        return hobject::PROP_NOT_FOUND~;
+    }
+    // ToIntegerOrInfinity(numSize): truncate toward zero; ±Infinity pass through.
+    double int_size = math::is_inf(num_size) ? num_size : math::trunc(num_size);
+    if (int_size < 0.0) {
+        builtin_throw_no_result_change(ctx, ctx.heap.range_err_proto, "size must be a non-negative number");
+        ctx.result.set_undefined();
+        return hobject::PROP_NOT_FOUND~;
+    }
+
+    HString* has_key = builtin_intern_string(ctx.heap, "has");
+    TVal has_fn;
+    has_fn.set_undefined();
+    if (has_key != null) {
+        if (try h = builtins_generic_get(obj_hobj, has_key, ctx)) { has_fn = h; }
+    }
+    if (ctx.should_throw) return hobject::PROP_NOT_FOUND~;
+    if (!tval_is_callable(has_fn)) {
+        coll_throw(ctx, "has is not callable");
+        return hobject::PROP_NOT_FOUND~;
+    }
+
+    HString* keys_key = builtin_intern_string(ctx.heap, "keys");
+    TVal keys_fn;
+    keys_fn.set_undefined();
+    if (keys_key != null) {
+        if (try k = builtins_generic_get(obj_hobj, keys_key, ctx)) { keys_fn = k; }
+    }
+    if (ctx.should_throw) return hobject::PROP_NOT_FOUND~;
+    if (!tval_is_callable(keys_fn)) {
+        coll_throw(ctx, "keys is not callable");
+        return hobject::PROP_NOT_FOUND~;
+    }
+
+    SetRecord rec = { obj, int_size, has_fn, keys_fn };
+    return rec;
+}
+
+/// Call setRecord.[[SetHas]] with `value` (SameValueZero-normalized -0 → +0
+/// is the caller's responsibility per each algorithm's own step). Returns
+/// the ToBoolean of the call result; on error, ctx.should_throw is set and
+/// the return value should be discarded.
+fn bool set_record_has(BuiltinContext* ctx, SetRecord* rec, TVal value) {
+    TVal[1] args = { value };
+    TVal result = ctx.heap.call_fn(ctx.vm, rec.has_fn, &args[0], 1, rec.set_like);
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        return false;
+    }
+    return tval_to_boolean(result);
+}
+
+/// Call setRecord.[[SetKeys]]() and return the resulting iterator object
+/// (does not validate that the return value is an object — GetIteratorFromMethod
+/// callers must check before use, matching how other iterator-consuming
+/// callers in this file behave).
+fn TVal set_record_get_keys_iterator(BuiltinContext* ctx, SetRecord* rec) {
+    TVal result = ctx.heap.call_fn(ctx.vm, rec.keys_fn, null, 0, rec.set_like);
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        result.set_undefined();
+    }
+    return result;
+}
+
+/// ToBoolean — ES2015 §7.1.2.
+fn bool tval_to_boolean(TVal v) {
+    switch (v.get_tag()) {
+        case UNDEFINED: return false;
+        case NULL_VAL:  return false;
+        case BOOLEAN:   return v.get_boolean();
+        case NUMBER:    return v.get_number() != 0.0 && !math::is_nan(v.get_number());
+        case FASTINT:   return v.get_fastint() != 0;
+        case STRING:    return ((HString*)v.get_heapptr()).blen > 0;
+        default:        return true;  // objects, bigints, symbols
+    }
+}
+
+/// GetIteratorFromMethod's [[NextMethod]] slot — read once when the iterator
+/// is obtained (ES2022 §7.4.3 step 3: `Get(iterator, "next")`), not on every
+/// step. Set-like class tests observe a "getting next" log entry exactly
+/// once per keys() call, via a next getter that would fire on every access
+/// if re-fetched per iteration step.
+fn TVal set_iter_get_next_fn(BuiltinContext* ctx, TVal iterator) {
+    TVal next_fn;
+    next_fn.set_undefined();
+    if (!iterator.is_object() || iterator.get_heapptr() == null) return next_fn;
+    HObject* iter_obj = (HObject*)iterator.get_heapptr();
+    HString* next_key = builtin_intern_string(ctx.heap, "next");
+    if (next_key == null) return next_fn;
+    if (try nf = builtins_generic_get(iter_obj, next_key, ctx)) { next_fn = nf; }
+    return next_fn;
+}
+
+/// IteratorStep(iteratorRecord) — ES2022 §7.4.6, poor man's variant for the
+/// set-like's keys() iterator. Calls the cached next_fn, then reads
+/// done/value via accessor-aware Get. On done (or a throw), *out_done is set
+/// true. Returns false only when next() itself throws (ctx.should_throw is
+/// set); callers should still check *out_done on a true return.
+fn bool set_iter_step(BuiltinContext* ctx, TVal iterator, TVal next_fn, TVal* out_value, bool* out_done) {
+    *out_done = true;
+    if (!iterator.is_object() || iterator.get_heapptr() == null) return true;
+    if (!tval_is_callable(next_fn)) {
+        coll_throw(ctx, "iterator.next is not callable");
+        return false;
+    }
+    TVal step = ctx.heap.call_fn(ctx.vm, next_fn, null, 0, iterator);
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        return false;
+    }
+    if (!step.is_object() || step.get_heapptr() == null) {
+        coll_throw(ctx, "iterator result is not an object");
+        return false;
+    }
+    HObject* step_obj = (HObject*)step.get_heapptr();
+    HString* done_key = builtin_intern_string(ctx.heap, "done");
+    TVal done_val;
+    done_val.set_undefined();
+    if (done_key != null) {
+        if (try d = builtins_generic_get(step_obj, done_key, ctx)) { done_val = d; }
+    }
+    if (ctx.should_throw) return false;
+    if (tval_to_boolean(done_val)) { *out_done = true; return true; }
+    *out_done = false;
+
+    HString* value_key = builtin_intern_string(ctx.heap, "value");
+    TVal value_val;
+    value_val.set_undefined();
+    if (value_key != null) {
+        if (try val = builtins_generic_get(step_obj, value_key, ctx)) { value_val = val; }
+    }
+    if (ctx.should_throw) return false;
+    *out_value = value_val;
+    return true;
+}
+
+/// IteratorClose(iterator) for a normal (non-abrupt) early exit — calls
+/// .return() if present and callable, swallowing its result and any error it
+/// raises (the early-exit result already computed takes precedence).
+fn void set_iter_close(BuiltinContext* ctx, TVal iterator) {
+    if (!iterator.is_object() || iterator.get_heapptr() == null) return;
+    HObject* iter_obj = (HObject*)iterator.get_heapptr();
+    HString* return_key = builtin_intern_string(ctx.heap, "return");
+    if (return_key == null) return;
+    TVal return_fn;
+    return_fn.set_undefined();
+    if (try r = builtins_generic_get(iter_obj, return_key, ctx)) { return_fn = r; }
+    ctx.should_throw = false;  // swallow any error from the return getter itself
+    if (return_fn.is_undefined() || return_fn.is_null()) return;
+    if (!tval_is_callable(return_fn)) return;
+    ctx.heap.call_fn(ctx.vm, return_fn, null, 0, iterator);
+    ctx.heap.has_error = false;  // swallow any error from calling return()
+}
+
+/// Normalizes -0 to +0 per each set-methods algorithm's "if nextValue is -0,
+/// set nextValue to +0" step.
+fn TVal set_normalize_neg_zero(TVal v) {
+    if (v.is_number() && v.get_number() == 0.0 && 1.0 / v.get_number() < 0.0) {
+        TVal zero; zero.set_fastint(0);
+        return zero;
+    }
+    return v;
+}
+
+/// Allocates a bare Set object (ObjClass.SET, heap.set_proto) with no entries.
+/// Used to build set-methods results directly via internal Set data, never
+/// via Set.prototype.add (add-not-called.js) or a species constructor
+/// (subclass-symbol-species.js — result is always a plain %Set%).
+fn HObject* set_new_result(BuiltinContext* ctx) {
+    HObject*? result_raw = ctx.heap.alloc_object(hobject::ObjClass.SET);
+    if (catch err = result_raw) return null;
+    HObject* result = result_raw;
+    result.prototype = ctx.heap.set_proto;
+    return result;
+}
+
+/// Appends `value` to a result Set being built directly (bypasses .add and
+/// the has-check other than the caller's own dedup responsibility) — used
+/// when the caller already knows the value isn't a duplicate (union copy,
+/// fresh Set with only unique values found so far).
+fn void set_result_append(HObject* result, TVal value) {
+    uint idx = result.array_used;
+    result.set_array_idx(idx, value);
+    if (result.array_used <= idx) result.array_used = (uint)(idx + 1);
+}
+
+/// Copies every live (non-deleted) entry of `set` into a freshly-allocated
+/// result Set, in insertion order. Used as the starting point for union,
+/// intersection, difference, and symmetricDifference, whose result data is
+/// built directly rather than via .add.
+fn HObject* set_copy_live_entries(BuiltinContext* ctx, HObject* set) {
+    HObject* result = set_new_result(ctx);
+    if (result == null) return null;
+    TVal* arr = set.array_part();
+    uint used = set.array_used;
+    if (arr != null) {
+        for (uint i = 0; i < used; i++) {
+            if (arr[i].is_deleted()) continue;
+            set_result_append(result, arr[i]);
+        }
+    }
+    return result;
+}
+
+/// State for a live-index walk over O.[[SetData]], shared inline by
+/// isSubsetOf, isDisjointFrom's this.size<=other.size branch, and
+/// intersection's this.size<=other.size branch (ES2025 §24.2.4.9/.10/.11):
+/// "Let thisSize be the number of elements in O.[[SetData]]. Let index be 0.
+/// Repeat, while index < thisSize: let e be O.[[SetData]][index]; index +=
+/// 1; if e is not empty, call otherRec.[[Has]] ... thisSize is re-read (as a
+/// live count) after every Has call" — so a hostile has() that mutates `set`
+/// mid-walk is fully observable: growing it extends the walk, shrinking it
+/// can end the walk early, and index always advances over raw (possibly
+/// tombstoned) array_part() slots.
+struct SetLiveWalk {
+    HObject* set;
+    uint index;
+    uint this_size;
+}
+
+/// Initializes a live-index walk (ES2025's "Let thisSize be ...; Let index be 0").
+fn SetLiveWalk set_live_walk_start(HObject* set) {
+    SetLiveWalk w = { set, 0, set_live_count(set) };
+    return w;
+}
+
+/// Advances the walk to the next live element. Returns false when exhausted
+/// (index has reached the live count re-sampled after the caller's last
+/// otherRec.[[Has]] call — the caller must call set_live_walk_resample after
+/// each Has invocation before the next call to this function).
+fn bool set_live_walk_next(SetLiveWalk* w, TVal* out_elem) {
+    while (w.index < w.this_size) {
+        TVal* arr = w.set.array_part();
+        if (arr == null || w.index >= w.set.array_used) return false;
+        TVal e = arr[w.index];
+        w.index++;
+        if (!e.is_deleted()) {
+            *out_elem = e;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Re-reads the live count after a otherRec.[[Has]] call, per the spec's
+/// "NOTE: The number of elements in O.[[SetData]] may have increased ...
+/// Set thisSize to the number of elements in O.[[SetData]]" step.
+fn void set_live_walk_resample(SetLiveWalk* w) {
+    w.this_size = set_live_count(w.set);
 }
 
 // ============================================================================
@@ -292,6 +607,310 @@ fn void builtin_set_species_getter(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Set.prototype.union(other) — ES2025 §24.2.4.16
+// Always iterates other.[[SetKeys]] and appends every not-yet-present value
+// to a copy of this.[[SetData]]; other.[[SetHas]] is never invoked.
+// ============================================================================
+fn void builtin_set_proto_union(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.set_undefined(); return; }
+    TVal other; other.set_undefined();
+    if (ctx.argc >= 1) other = ctx.regs[ctx.base_reg];
+
+    SetRecord? rec_opt = get_set_record(ctx, other);
+    if (catch err = rec_opt) { ctx.result.set_undefined(); return; }
+    SetRecord rec = rec_opt;
+
+    HObject* result = set_copy_live_entries(ctx, set);
+    if (result == null) { ctx.result.set_undefined(); return; }
+
+    TVal iterator = set_record_get_keys_iterator(ctx, &rec);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    TVal next_fn = set_iter_get_next_fn(ctx, iterator);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
+    while (true) {
+        TVal next_value;
+        bool done;
+        if (!set_iter_step(ctx, iterator, next_fn, &next_value, &done)) { ctx.result.set_undefined(); return; }
+        if (done) break;
+        next_value = set_normalize_neg_zero(next_value);
+        if (set_find_value(result, next_value) < 0) {
+            set_result_append(result, next_value);
+        }
+    }
+
+    ctx.result.set_object(result);
+}
+
+// ============================================================================
+// Set.prototype.intersection(other) — ES2025 §24.2.4.9
+// If SetDataSize(this) <= otherRec.size, live-walk this's raw SetData and
+// test each element with otherRec.[[SetHas]] (deduping into result, since a
+// hostile has() can remove-and-re-add an element, causing it to be visited
+// twice); otherwise iterate otherRec.[[SetKeys]] and test each value with
+// this.[[SetHas]] (via find_in_array_part) instead.
+// ============================================================================
+fn void builtin_set_proto_intersection(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.set_undefined(); return; }
+    TVal other; other.set_undefined();
+    if (ctx.argc >= 1) other = ctx.regs[ctx.base_reg];
+
+    SetRecord? rec_opt = get_set_record(ctx, other);
+    if (catch err = rec_opt) { ctx.result.set_undefined(); return; }
+    SetRecord rec = rec_opt;
+
+    HObject* result = set_new_result(ctx);
+    if (result == null) { ctx.result.set_undefined(); return; }
+
+    if ((double)set_live_count(set) <= rec.size) {
+        SetLiveWalk walk = set_live_walk_start(set);
+        TVal elem;
+        while (set_live_walk_next(&walk, &elem)) {
+            bool has = set_record_has(ctx, &rec, elem);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (has && set_find_value(result, elem) < 0) set_result_append(result, elem);
+            set_live_walk_resample(&walk);
+        }
+    } else {
+        TVal iterator = set_record_get_keys_iterator(ctx, &rec);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal next_fn = set_iter_get_next_fn(ctx, iterator);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        while (true) {
+            TVal next_value;
+            bool done;
+            if (!set_iter_step(ctx, iterator, next_fn, &next_value, &done)) { ctx.result.set_undefined(); return; }
+            if (done) break;
+            next_value = set_normalize_neg_zero(next_value);
+            if (set_find_value(set, next_value) >= 0 && set_find_value(result, next_value) < 0) {
+                set_result_append(result, next_value);
+            }
+        }
+    }
+
+    ctx.result.set_object(result);
+}
+
+// ============================================================================
+// Set.prototype.difference(other) — ES2025 §24.2.4.5
+// resultSetData is always a copy of this.[[SetData]] made up front. If
+// SetDataSize(this) <= otherRec.size, walk the *copy* by raw index — up to
+// a thisSize fixed once at branch entry, not resampled — tombstoning each
+// element found via otherRec.[[SetHas]] (this.[[SetHas]] calls only ever
+// observe/mutate the live receiver, never the copy). Otherwise iterate
+// otherRec.[[SetKeys]] and tombstone each matching value in the copy.
+// ============================================================================
+fn void builtin_set_proto_difference(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.set_undefined(); return; }
+    TVal other; other.set_undefined();
+    if (ctx.argc >= 1) other = ctx.regs[ctx.base_reg];
+
+    SetRecord? rec_opt = get_set_record(ctx, other);
+    if (catch err = rec_opt) { ctx.result.set_undefined(); return; }
+    SetRecord rec = rec_opt;
+
+    HObject* result = set_copy_live_entries(ctx, set);
+    if (result == null) { ctx.result.set_undefined(); return; }
+
+    if ((double)set_live_count(set) <= rec.size) {
+        uint this_size = set_live_count(set);
+        uint index = 0;
+        TVal* result_arr = result.array_part();
+        while (index < this_size && index < result.array_used) {
+            TVal e = result_arr[index];
+            if (!e.is_deleted()) {
+                bool has = set_record_has(ctx, &rec, e);
+                if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+                if (has) result_arr[index].set_deleted();
+            }
+            index++;
+        }
+        ctx.result.set_object(result);
+    } else {
+        TVal iterator = set_record_get_keys_iterator(ctx, &rec);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal next_fn = set_iter_get_next_fn(ctx, iterator);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        while (true) {
+            TVal next_value;
+            bool done;
+            if (!set_iter_step(ctx, iterator, next_fn, &next_value, &done)) { ctx.result.set_undefined(); return; }
+            if (done) break;
+            next_value = set_normalize_neg_zero(next_value);
+            int found = set_find_value(result, next_value);
+            if (found >= 0) result.array_part()[(uint)found].set_deleted();
+        }
+        ctx.result.set_object(result);
+    }
+}
+
+// ============================================================================
+// Set.prototype.symmetricDifference(other) — ES2025 §24.2.4.15
+// Copies this once up front, then iterates otherRec.[[SetKeys]]: for each
+// value, whether it is a live member of the *original* `this` (not the
+// running copy) decides remove-vs-add — a value already shared with this
+// is removed from the copy (if still present there), one not shared with
+// this is added to the copy (if not already added by an earlier duplicate
+// from the other's iterator). other.[[SetHas]] is never invoked.
+// ============================================================================
+fn void builtin_set_proto_symmetricDifference(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.set_undefined(); return; }
+    TVal other; other.set_undefined();
+    if (ctx.argc >= 1) other = ctx.regs[ctx.base_reg];
+
+    SetRecord? rec_opt = get_set_record(ctx, other);
+    if (catch err = rec_opt) { ctx.result.set_undefined(); return; }
+    SetRecord rec = rec_opt;
+
+    HObject* result = set_copy_live_entries(ctx, set);
+    if (result == null) { ctx.result.set_undefined(); return; }
+
+    TVal iterator = set_record_get_keys_iterator(ctx, &rec);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    TVal next_fn = set_iter_get_next_fn(ctx, iterator);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
+    while (true) {
+        TVal next_value;
+        bool done;
+        if (!set_iter_step(ctx, iterator, next_fn, &next_value, &done)) { ctx.result.set_undefined(); return; }
+        if (done) break;
+        next_value = set_normalize_neg_zero(next_value);
+        int found = set_find_value(result, next_value);
+        if (set_find_value(set, next_value) >= 0) {
+            if (found >= 0) result.array_part()[(uint)found].set_deleted();
+        } else {
+            if (found < 0) set_result_append(result, next_value);
+        }
+    }
+
+    ctx.result.set_object(result);
+}
+
+// ============================================================================
+// Set.prototype.isSubsetOf(other) — ES2025 §24.2.4.11
+// If SetDataSize(this) > otherRec.size, return false without any iteration.
+// Otherwise live-walk this's raw SetData, testing every element with
+// otherRec.[[SetHas]] — a hostile has() may mutate `this` mid-walk (see
+// set_live_walk's doc comment).
+// ============================================================================
+fn void builtin_set_proto_isSubsetOf(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.set_undefined(); return; }
+    TVal other; other.set_undefined();
+    if (ctx.argc >= 1) other = ctx.regs[ctx.base_reg];
+
+    SetRecord? rec_opt = get_set_record(ctx, other);
+    if (catch err = rec_opt) { ctx.result.set_undefined(); return; }
+    SetRecord rec = rec_opt;
+
+    if ((double)set_live_count(set) > rec.size) { ctx.result.set_boolean(false); return; }
+
+    SetLiveWalk walk = set_live_walk_start(set);
+    TVal elem;
+    while (set_live_walk_next(&walk, &elem)) {
+        bool has = set_record_has(ctx, &rec, elem);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (!has) { ctx.result.set_boolean(false); return; }
+        set_live_walk_resample(&walk);
+    }
+    ctx.result.set_boolean(true);
+}
+
+// ============================================================================
+// Set.prototype.isSupersetOf(other) — ES2025 §24.2.4.12
+// If this.size < otherRec.size, return false without any iteration. Otherwise
+// iterate otherRec.[[SetKeys]] and test each value against this via
+// find_in_array_part, stopping (and closing the iterator) as soon as a value
+// is missing from this.
+// ============================================================================
+fn void builtin_set_proto_isSupersetOf(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.set_undefined(); return; }
+    TVal other; other.set_undefined();
+    if (ctx.argc >= 1) other = ctx.regs[ctx.base_reg];
+
+    SetRecord? rec_opt = get_set_record(ctx, other);
+    if (catch err = rec_opt) { ctx.result.set_undefined(); return; }
+    SetRecord rec = rec_opt;
+
+    double this_size = (double)set_live_count(set);
+    if (this_size < rec.size) { ctx.result.set_boolean(false); return; }
+
+    TVal iterator = set_record_get_keys_iterator(ctx, &rec);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+    TVal next_fn = set_iter_get_next_fn(ctx, iterator);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
+    while (true) {
+        TVal next_value;
+        bool done;
+        if (!set_iter_step(ctx, iterator, next_fn, &next_value, &done)) { ctx.result.set_undefined(); return; }
+        if (done) break;
+        next_value = set_normalize_neg_zero(next_value);
+        if (set_find_value(set, next_value) < 0) {
+            set_iter_close(ctx, iterator);
+            ctx.result.set_boolean(false);
+            return;
+        }
+    }
+    ctx.result.set_boolean(true);
+}
+
+// ============================================================================
+// Set.prototype.isDisjointFrom(other) — ES2025 §24.2.4.10
+// If SetDataSize(this) <= otherRec.size, live-walk this's raw SetData and
+// test each element with otherRec.[[SetHas]]; otherwise iterate
+// otherRec.[[SetKeys]] and test each value against this via find_in_array_part.
+// Stops (closing the set-like's iterator if one was obtained) at the first
+// shared value found.
+// ============================================================================
+fn void builtin_set_proto_isDisjointFrom(BuiltinContext* ctx) {
+    HObject* set = check_set(ctx);
+    if (set == null) { ctx.result.set_undefined(); return; }
+    TVal other; other.set_undefined();
+    if (ctx.argc >= 1) other = ctx.regs[ctx.base_reg];
+
+    SetRecord? rec_opt = get_set_record(ctx, other);
+    if (catch err = rec_opt) { ctx.result.set_undefined(); return; }
+    SetRecord rec = rec_opt;
+
+    if ((double)set_live_count(set) <= rec.size) {
+        SetLiveWalk walk = set_live_walk_start(set);
+        TVal elem;
+        while (set_live_walk_next(&walk, &elem)) {
+            bool has = set_record_has(ctx, &rec, elem);
+            if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+            if (has) { ctx.result.set_boolean(false); return; }
+            set_live_walk_resample(&walk);
+        }
+        ctx.result.set_boolean(true);
+    } else {
+        TVal iterator = set_record_get_keys_iterator(ctx, &rec);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        TVal next_fn = set_iter_get_next_fn(ctx, iterator);
+        if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        while (true) {
+            TVal next_value;
+            bool done;
+            if (!set_iter_step(ctx, iterator, next_fn, &next_value, &done)) { ctx.result.set_undefined(); return; }
+            if (done) break;
+            next_value = set_normalize_neg_zero(next_value);
+            if (set_find_value(set, next_value) >= 0) {
+                set_iter_close(ctx, iterator);
+                ctx.result.set_boolean(false);
+                return;
+            }
+        }
+        ctx.result.set_boolean(true);
+    }
+}
+
+// ============================================================================
 // Set constructor registration
 // ============================================================================
 
@@ -330,6 +949,14 @@ fn bool register_set_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "entries", Builtin.SET_PROTO_ENTRIES.ordinal)) return false;
     // Add .forEach() method
     if (!register_string_proto_method(proto, heap, "forEach", Builtin.SET_PROTO_FOREACH.ordinal)) return false;
+    // Set methods proposal (ES2025 §24.2.4)
+    if (!register_string_proto_method(proto, heap, "union", Builtin.SET_PROTO_UNION.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "intersection", Builtin.SET_PROTO_INTERSECTION.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "difference", Builtin.SET_PROTO_DIFFERENCE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "symmetricDifference", Builtin.SET_PROTO_SYMMETRICDIFFERENCE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "isSubsetOf", Builtin.SET_PROTO_ISSUBSETOF.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "isSupersetOf", Builtin.SET_PROTO_ISSUPERSETOF.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "isDisjointFrom", Builtin.SET_PROTO_ISDISJOINTFROM.ordinal)) return false;
     // Set.prototype[Symbol.iterator] must be the *same function object* as
     // .values (ES6 §23.2.3.11), not merely an equivalent implementation.
     {
