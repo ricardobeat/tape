@@ -23,16 +23,16 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ### In progress
 
-- [>] **Iterator helpers** (`iterator-helpers`) — Iterator global, Iterator.from, lazy map/filter/take/drop/flatMap, eager reduce/toArray/forEach/some/every/find.
+- [x] **Iterator helpers** (`iterator-helpers`) — Iterator global, Iterator.from, lazy+eager methods, %MapIteratorPrototype%/%SetIteratorPrototype%/%StringIteratorPrototype% sub-layers; 538/540 in-scope (2 residuals: cross-realm; captured-method aliasing bug below).
 
 ### Todo — small (batch 2, one agent each)
 
-- [ ] **`change-array-by-copy` un-skip** — toSorted/with already work; un-skip and fix residuals (toReversed/toSpliced, TypedArray variants).
+- [>] **`change-array-by-copy` un-skip** — toSorted/with already work; un-skip and fix residuals (toReversed/toSpliced, TypedArray variants).
 - [ ] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`).
 - [ ] **`JSON.parse` source access** (`json-parse-with-source`).
 - [ ] **`Array.fromAsync`**.
-- [ ] **`Math.sumPrecise`**.
-- [ ] **`Iterator.concat`** (`iterator-sequencing`).
+- [>] **`Math.sumPrecise`**.
+- [>] **`Iterator.concat`** (`iterator-sequencing`).
 - [ ] **`#x in obj`** (`class-fields-private-in`, plan 054 P6) — parser + existing brand-check reuse.
 - [ ] **Reflect un-skip** — surface implemented (A9); un-skip and fix what fails.
 
@@ -53,11 +53,13 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ## Known bugs (pre-existing, exposed by un-skips)
 
+- [>] **Captured-method aliasing** — `var x = obj.method; obj.method = newFn;` corrupts `x` (register-aliasing/refcount in GETPROP-then-PUTPROP; found via `Iterator/from/return-method-calls-base-return-method.js`, reproduces with plain objects). Agent running.
+
 - [ ] **Getter/setter methods never create `arguments`** — `{get x(){ arguments }}` fails standalone; `static-init-arguments-methods.js`.
 - [ ] **`let x; var x;` redeclaration not rejected** — no conflict detection anywhere; `static-init-invalid-lex-var.js`.
-- [ ] **`await` as BindingIdentifier in nested-function positions** — function-decl name, catch param, generator/accessor param names, `{await}` shorthand, arrow param-default; 9 tests, no class involvement.
-- [ ] **`new Set(string)` throws** — `coll_construct` checks is-object before the iterable protocol; affects the whole keyed-collection constructor family.
-- [ ] **`Array.from` primitive-wrapper prototype** — writes a named `"prototype"` property instead of the wrapper's [[Prototype]]; masked by the array-like fallback. Port the corrected pattern from `group_by_shared` (core.c3).
+- [>] **`await` as BindingIdentifier in nested-function positions** — function-decl name, catch param, generator/accessor param names, `{await}` shorthand, arrow param-default; 9 tests, no class involvement; one (`generators/static-init-await-binding.js`) now shows as the suite's only CE:unexpected. Agent running.
+- [>] **`new Set(string)` throws** — `coll_construct` checks is-object before the iterable protocol; affects the whole keyed-collection constructor family.
+- [x] **`Array.from` primitive-wrapper prototype** — fixed by the iterator-helpers agent (real [[Prototype]] set; numbers/booleans/bigints handled too).
 - [>] **Large-string refcount leak** — >256-byte (`MAX_INTERN_BYTES`) non-interned strings from fromCodePoint/concat never decref'd (~5-7 MB/property-escapes test); only matters in long single-process runs. Agent running.
 - [ ] **`RegExp.prototype.compile` missing entirely** — Annex B method; invisible today (annexB dir excluded), blocks 1 duplicate-named-groups test.
 - [ ] **Regexp literals never parse-time-validated** — only `new RegExp(str)` runs `re_compile`, so `/(?g:a)/`-style early SyntaxErrors are silently accepted in literal form; fails 80 `language/literals/regexp/early-err-*` `$DONOTEVALUATE` tests (outside the phase scoring surface). Compiler-wide change; will bite any future "new regexp syntax with early error" feature.
