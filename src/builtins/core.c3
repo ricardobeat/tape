@@ -1239,10 +1239,33 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
     if (ctx.argc >= 1) {
         TVal arg = ctx.regs[ctx.base_reg];
         if (!arg.is_null() && !arg.is_undefined()) {
-            if (!arg.is_object()) {
-                coll_throw(ctx, arg_not_object_msg);
-                return;
+            // Wrap primitives in a throwaway object whose [[Prototype]] is the
+            // matching wrapper prototype, so the @@iterator lookup walks the
+            // real prototype chain. This matches group_by_shared's pattern.
+            HObject* iterable_obj = null;
+            if (arg.is_object() && arg.get_heapptr() != null) {
+                iterable_obj = (HObject*)arg.get_heapptr();
+            } else {
+                HObject*? wrapped = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
+                if (catch err = wrapped) {
+                    ctx.result.set_undefined();
+                    return;
+                }
+                iterable_obj = wrapped;
+                if (is_symbol_val(arg)) {
+                    iterable_obj.prototype = ctx.heap.symbol_proto;
+                } else if (arg.is_string()) {
+                    (*iterable_obj.extra_ptr()).prim.primitive_value = arg;
+                    iterable_obj.prototype = ctx.heap.string_proto;
+                } else if (arg.is_boolean()) {
+                    iterable_obj.prototype = ctx.heap.bool_proto;
+                } else if (arg.is_number() || arg.is_fastint()) {
+                    iterable_obj.prototype = ctx.heap.number_proto;
+                } else if (arg.is_bigint()) {
+                    iterable_obj.prototype = ctx.heap.bigint_proto;
+                }
             }
+
             // Get(coll, adder_name); must throw/return abruptly per spec.
             // builtins_generic_get invokes prototype accessors correctly
             // (ES5 §8.12.3 / ES2020 §10.1.8.1 OrdinaryGet) and propagates
@@ -1266,12 +1289,11 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
                 coll_throw(ctx, adder_not_callable_msg);
                 return;
             }
-            HObject* iterable = (HObject*)arg.get_heapptr();
             HString* iter_sym = ensure_iterator_symbol(ctx.heap);
             if (iter_sym == null) { ctx.result.set_undefined(); return; }
             TVal iter_fn;
             iter_fn.set_undefined();
-            if (try found_iter_fn = iterable.get_prop_proto(iter_sym)) { iter_fn = found_iter_fn; }
+            if (try found_iter_fn = iterable_obj.get_prop_proto(iter_sym)) { iter_fn = found_iter_fn; }
             bool iter_callable = iter_fn.is_lightfunc() ||
                 (iter_fn.is_object() && iter_fn.get_heapptr() != null &&
                  ((HObject*)iter_fn.get_heapptr()).is_callable());
@@ -1285,9 +1307,9 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
                 }
                 // Fall back to simple array-like iteration. Per ES6 §23.1.1.2 SetStatus
                 // step 6: k = Get(next, "key"); v = Get(next, "value"); status = Call(adder, M, k, v).
-                uint len = array_get_length(iterable, ctx.heap);
+                uint len = array_get_length(iterable_obj, ctx.heap);
                 for (uint i = 0; i < len; i++) {
-                    TVal elem = array_get_elem(iterable, i, ctx.heap);
+                    TVal elem = array_get_elem(iterable_obj, i, ctx.heap);
                     if (is_pair) {
                         if (elem.is_object() && elem.get_heapptr() != null) {
                             HObject* pair_obj = (HObject*)elem.get_heapptr();
