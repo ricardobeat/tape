@@ -303,6 +303,11 @@ struct CompilerContext {
     /// Set to MAX_REGISTERS when not in a property call.
     ushort call_prop_obj_reg;
 
+    /// Spread call: a scratch register (below first_arg) that a plain argument
+    /// following a spread is copied into before its PUTARG, so the value survives
+    /// an unbounded spread. Set by begin_spread_args, consumed by PUTARG emission.
+    ushort spread_val_reg;
+
     // Global scope flag: when true, all var decls use environment only (no register cache)
     bool is_global;
 

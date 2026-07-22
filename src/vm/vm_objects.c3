@@ -811,7 +811,14 @@ fn TVal? dispatch_objects(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc,
                 }
                 if (value_found2) {
                     TVal* dest_slot = ds.regs_base + dest_start + k;
-                    *dest_slot = value_val2;
+                    // Own the argument reference: the element is borrowed from the
+                    // iterable, but the call frame's teardown (decref_callee_regs)
+                    // will decref every argument slot. tval_copy_ref increfs it so
+                    // that decref is balanced and the iterable's element survives
+                    // — matching FWD_ARGS and ordinary (GETVAR/etc.) argument
+                    // evaluation, which also leave owned refs in the arg registers.
+                    vm.heap.tval_copy_ref(dest_slot, &value_val2);
+                    track_heap_store(ds.act, dest_slot, dest_start + k);
                     k++;
                 } else { break; }
             }

@@ -1596,6 +1596,17 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
         for (;;) {
             // Check for spread argument
             if (self.match(TokenType.ELLIPSIS)) {
+                if (!has_spread) {
+                    has_spread = true;
+                    // Shift the callee frame up by one and place the running-total
+                    // register (SPREAD_ARG/PUTARG's B field, CALL_S's nargs source)
+                    // in the freed low slot, below first_arg — so an unbounded
+                    // spread cannot overwrite it or the arguments. Updates
+                    // callee_reg / first_arg in place.
+                    total_count_reg = self.begin_spread_args(&callee_reg, &first_arg, arg_count);
+                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
+                }
+
                 // Ensure the destination area doesn't overlap with the
                 // register that will hold the spread expression result.
                 ushort dest_start = first_arg + arg_count;
@@ -1611,15 +1622,6 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
                     self.emit_abc(Opcode.LDREG, (uint)safe_reg, (uint)spread_reg, 0);
                     self.free_reg(spread_reg);
                     spread_reg = safe_reg;
-                }
-
-                if (!has_spread) {
-                    has_spread = true;
-                    // Allocate the running-total register (in/out for SPREAD_ARG
-                    // and the base offset for PUTARG). Initialize with the count
-                    // of plain args emitted before the first spread.
-                    total_count_reg = self.alloc_reg();
-                    self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
                 }
 
                 // SPREAD_ARG: A=first_arg base reg, B=running-total reg (in/out;
@@ -1642,9 +1644,12 @@ fn ushort? CompilerContext.emit_call(&self, ushort callee_reg) {
                     // slot depends on the runtime spread count held in
                     // total_count_reg. The new PUTARG opcode writes the
                     // value at regs[first_arg + total_count] and
-                    // increments total_count.
-                    self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
+                    // increments total_count. Copy the value into the
+                    // below-first_arg scratch so a large spread cannot
+                    // overwrite it before PUTARG reads it.
+                    self.emit_abc(Opcode.LDREG, (uint)self.spread_val_reg, (uint)arg_reg, 0);
                     self.free_reg(arg_reg);
+                    self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)self.spread_val_reg);
                 } else {
                     // Ensure the argument is in the expected consecutive register
                     ushort expected = first_arg + arg_count;
@@ -1994,6 +1999,14 @@ fn ushort? CompilerContext.new_expr(&self) {
             if (!self.check(TokenType.RPAREN)) {
                 for (;;) {
                     if (self.match(TokenType.ELLIPSIS)) {
+                        if (!has_spread) {
+                            has_spread = true;
+                            // See begin_spread_args: relocate the ctor frame up
+                            // and place the count register below first_arg so an
+                            // unbounded spread cannot corrupt the argument slots.
+                            total_count_reg = self.begin_spread_args(&ctor_reg, &first_arg, arg_count);
+                            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
+                        }
                         ushort dest_start = first_arg + arg_count;
                         if (self.next_reg <= dest_start + 1) {
                             self.next_reg = dest_start + 2;
@@ -2005,11 +2018,6 @@ fn ushort? CompilerContext.new_expr(&self) {
                             self.free_reg(spread_reg);
                             spread_reg = safe_reg;
                         }
-                        if (!has_spread) {
-                            has_spread = true;
-                            total_count_reg = self.alloc_reg();
-                            self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
-                        }
                         self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
                         self.free_reg(spread_reg);
                         if (self.next_reg <= dest_start + 1) {
@@ -2018,8 +2026,11 @@ fn ushort? CompilerContext.new_expr(&self) {
                     } else {
                         ushort arg_reg = self.assignment_expr()!;
                         if (has_spread) {
-                            self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
+                            // Copy into the below-first_arg scratch so a large
+                            // spread cannot overwrite the value before PUTARG.
+                            self.emit_abc(Opcode.LDREG, (uint)self.spread_val_reg, (uint)arg_reg, 0);
                             self.free_reg(arg_reg);
+                            self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)self.spread_val_reg);
                         } else {
                             ushort expected = first_arg + arg_count;
                             if (arg_reg != expected) {
@@ -3132,6 +3143,14 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         // Spread argument: super(...iterable) — same lowering
                         // as emit_call (SPREAD_ARG + runtime count register).
                         if (self.match(TokenType.ELLIPSIS)) {
+                            if (!has_spread) {
+                                has_spread = true;
+                                // See begin_spread_args: relocate the super frame
+                                // up and place the count register below first_arg
+                                // so an unbounded spread cannot corrupt the args.
+                                total_count_reg = self.begin_spread_args(&super_reg, &first_arg, arg_count);
+                                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
+                            }
                             ushort dest_start = first_arg + arg_count;
                             if (self.next_reg <= dest_start + 1) {
                                 self.next_reg = dest_start + 2;
@@ -3143,11 +3162,6 @@ fn ushort? CompilerContext.primary_expr(&self) {
                                 self.free_reg(spread_reg);
                                 spread_reg = safe_reg;
                             }
-                            if (!has_spread) {
-                                has_spread = true;
-                                total_count_reg = self.alloc_reg();
-                                self.emit(bytecode::make_a_sbx(Opcode.LDINT, (uint)total_count_reg, (int)arg_count));
-                            }
                             self.emit_abc(Opcode.SPREAD_ARG, (uint)first_arg, (uint)total_count_reg, (uint)spread_reg);
                             self.free_reg(spread_reg);
                             if (self.next_reg <= dest_start + 1) {
@@ -3156,9 +3170,12 @@ fn ushort? CompilerContext.primary_expr(&self) {
                         } else {
                             ushort arg_reg = self.assignment_expr()!;
                             if (has_spread) {
-                                // Slot depends on the runtime spread count.
-                                self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)arg_reg);
+                                // Slot depends on the runtime spread count; copy
+                                // the value into the below-first_arg scratch so a
+                                // large spread cannot overwrite it before PUTARG.
+                                self.emit_abc(Opcode.LDREG, (uint)self.spread_val_reg, (uint)arg_reg, 0);
                                 self.free_reg(arg_reg);
+                                self.emit_abc(Opcode.PUTARG, (uint)first_arg, (uint)total_count_reg, (uint)self.spread_val_reg);
                             } else {
                                 ushort expected = first_arg + arg_count;
                                 if (arg_reg != expected) {

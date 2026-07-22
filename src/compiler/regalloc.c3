@@ -129,3 +129,50 @@ fn void CompilerContext.reserve_call_frame(&self, ushort callee_reg, ushort narg
 fn ushort CompilerContext.alloc_persistent_reg(&self) {
     return self.alloc_reg();
 }
+
+/// Set up the running-argument-count register for a spread call and shift the
+/// callee frame up by one register to make room below it.
+///
+/// A spread produces an unbounded number of arguments at runtime, written to
+/// `[first_arg, first_arg + count)`. The count register (SPREAD_ARG/PUTARG's B
+/// field, also CALL_S's nargs source) must therefore live *below* `first_arg`,
+/// or a large enough spread overwrites it with an argument value — and the
+/// post-spread count store then clobbers a real argument slot (see plan on
+/// spread-into-call arity). The only registers below `first_arg` are the callee
+/// and `this` slots, which the call still needs. So we relocate the callee,
+/// `this`, and the `arg_count` plain arguments already emitted up by one
+/// register and hand the freed low slot back as the count register — placing it
+/// below the new `first_arg` where it survives the spread and the call.
+///
+/// A plain argument that follows a spread (`f(...a, x)`) is emitted with PUTARG,
+/// which writes `x` at the runtime slot `first_arg + count`. Its value operand
+/// must likewise live below `first_arg`, or a large spread overwrites the value
+/// register before PUTARG reads it. So the frame is shifted up by *two*
+/// registers: the lower freed slot becomes the count register, the next one a
+/// scratch (`spread_val_reg`) that trailing PUTARG args are copied into before
+/// emission. `spread_val_reg` is stored on the context (reused across PUTARGs).
+///
+/// `callee_reg`, `first_arg`, and `arg_count` are updated in place. Returns the
+/// count register (initialized to `arg_count` by the caller via LDINT).
+fn ushort CompilerContext.begin_spread_args(&self, ushort* callee_reg, ushort* first_arg, ushort arg_count) {
+    ushort old_callee = *callee_reg;
+    ushort count_reg = old_callee;
+    self.spread_val_reg = old_callee + 1;
+    ushort new_callee = old_callee + 2;
+    // Shift callee, this, and the plain args already emitted up by two, from the
+    // top down so overlapping source/dest registers are not clobbered.
+    for (int i = (int)arg_count + 1; i >= 0; i--) {
+        self.emit_abc(Opcode.LDREG, (uint)(old_callee + 2 + i), (uint)(old_callee + i), 0);
+    }
+    *callee_reg = new_callee;
+    *first_arg = new_callee + 2;
+    // Keep the allocator above the shifted frame so later temps don't land in it.
+    ushort frame_top = *first_arg + arg_count;
+    if (self.next_reg < frame_top) {
+        self.next_reg = frame_top;
+    }
+    if (self.next_reg > self.max_reg) {
+        self.max_reg = self.next_reg;
+    }
+    return count_reg;
+}
