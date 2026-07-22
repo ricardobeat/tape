@@ -646,13 +646,6 @@ fn uint CompilerContext.pre_scan_var_decls(&self, NameSpan* spans, uint capacity
 
     uint count           = 0;
     uint brace_depth     = 0;
-    // Stack of nested function/class scopes to skip. Pushed when entering a
-    // `function`/`function*`/`async function`/named `class` declaration; we
-    // bump scope_depth on LBRACE after them and decrement on the matching
-    // RBRACE. While inside one of these scopes, `var` names belong to the
-    // nested function/class, not this block's VarDeclaredNames.
-    int[16] skip_stack;
-    int skip_top = 0;
 
     while (count < capacity) {
         Token? tok_opt = self.lexer.next_token();
@@ -669,75 +662,63 @@ fn uint CompilerContext.pre_scan_var_decls(&self, NameSpan* spans, uint capacity
         if (tt == TokenType.RBRACE) {
             if (brace_depth == 0) break;
             brace_depth--;
-            if (skip_top > 0 && skip_stack[skip_top - 1] == (int)brace_depth) skip_top--;
             continue;
         }
 
-        // Skip var names while we're inside a nested function/class body.
-        bool in_nested_scope = skip_top > 0 && (int)brace_depth > skip_stack[skip_top - 1];
-
-        // function / function* / async function — find the body and mark
-        // its LBRACE as a scope boundary. The function's parameter list
-        // `(...)` opens its own RPAREN-balanced nested scope; we tolerate
-        // arbitrary token types between `function` and the body's `{`.
-        if (tt == TokenType.FUNCTION) {
-            // Skip ahead until matching RBRACE at the function body level.
-            // Naive but bounded: walk tokens until we see `{` at brace_depth+1,
-            // push that depth onto skip_stack, then keep scanning until RBRACE.
-            int depth = (int)brace_depth;
-            int body_lbrace = -1;
+        // function / function* / async function / class — consume the whole
+        // nested body inline: its `var` names belong to that nested scope's
+        // VarDeclaredNames, not this block's. The inner walk swallows every
+        // token through the body's closing RBRACE, so the outer loop resumes
+        // cleanly at the next statement with brace_depth untouched.
+        if (tt == TokenType.FUNCTION || tt == TokenType.CLASS) {
+            int depth = 0;
+            bool seen_body = false;
             while (true) {
                 Token? t_opt = self.lexer.next_token();
                 if (catch _e = t_opt) break;
                 Token t = t_opt;
+                if (t.type == TokenType.EOF_TOKEN) break;
                 if (t.type == TokenType.LBRACE) {
                     depth++;
-                    if (body_lbrace < 0 && depth == (int)brace_depth + 1) body_lbrace = depth;
+                    seen_body = true;
                 } else if (t.type == TokenType.RBRACE) {
-                    if (body_lbrace >= 0 && depth == body_lbrace) {
-                        // The function body's closing RBRACE — pop the skip
-                        // marker and stop scanning the function.
-                        if (skip_top < 16) skip_stack[skip_top++] = body_lbrace;
-                        // We've now consumed the closing RBRACE ourselves; let
-                        // the outer loop's brace bookkeeping handle it via the
-                        // break below by treating this as "skip rest of body".
-                        // Simpler: re-push the RBRACE for the outer loop and
-                        // break. Use pushback.
-                        self.lexer.pushback(t);
-                        break;
-                    }
+                    depth--;
+                    if (seen_body && depth == 0) break;
+                }
+            }
+            continue;
+        }
+
+        // Arrow with a block body: `=> { ... }` is its own VarDeclaredNames
+        // scope too. Expression-bodied arrows have no braces of their own,
+        // and object literals after `=>` can't contain `var`, so only the
+        // LBRACE-immediately-after-ARROW shape needs consuming.
+        if (tt == TokenType.ARROW) {
+            Token? body_opt = self.lexer.next_token();
+            if (catch _e = body_opt) break;
+            Token body_tok = body_opt;
+            if (body_tok.type != TokenType.LBRACE) {
+                self.lexer.pushback(body_tok);
+                continue;
+            }
+            int depth = 1;
+            while (depth > 0) {
+                Token? t_opt = self.lexer.next_token();
+                if (catch _e2 = t_opt) break;
+                Token t = t_opt;
+                if (t.type == TokenType.EOF_TOKEN) break;
+                if (t.type == TokenType.LBRACE) {
+                    depth++;
+                } else if (t.type == TokenType.RBRACE) {
                     depth--;
                 }
             }
             continue;
         }
 
-        // class { ... } — same treatment for the class body.
-        if (tt == TokenType.CLASS) {
-            int depth = (int)brace_depth;
-            int body_lbrace = -1;
-            while (true) {
-                Token? t_opt = self.lexer.next_token();
-                if (catch _e = t_opt) break;
-                Token t = t_opt;
-                if (t.type == TokenType.LBRACE) {
-                    depth++;
-                    if (body_lbrace < 0 && depth == (int)brace_depth + 1) body_lbrace = depth;
-                } else if (t.type == TokenType.RBRACE) {
-                    if (body_lbrace >= 0 && depth == body_lbrace) {
-                        if (skip_top < 16) skip_stack[skip_top++] = body_lbrace;
-                        self.lexer.pushback(t);
-                        break;
-                    }
-                    depth--;
-                }
-            }
-            continue;
-        }
-
-        // Collect var declarators anywhere inside this block, except inside
-        // a nested function/class body that has its own VarDeclaredNames scope.
-        if (!in_nested_scope && tt == TokenType.VAR) {
+        // Collect var declarators anywhere inside this block; nested
+        // function/class bodies were consumed above.
+        if (tt == TokenType.VAR) {
             for (;;) {
                 Token? name_opt = self.lexer.next_token();
                 if (catch _err2 = name_opt) break;
