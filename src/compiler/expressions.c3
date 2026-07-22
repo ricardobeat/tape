@@ -13,8 +13,21 @@ import std::io;
 // Expression parsing
 // ============================================================================
 
+/// Fail if the previous RHS expression was an ArrowFunction — ArrowFunction
+/// is AssignmentExpression-level and must not appear as a binary operand
+/// (`1 + () => 2`, `#x in () => {}`, ES §13.16, §13.15).
+macro CompilerContext.check_no_arrow_rhs(&self) {
+    if (self.last_was_arrow_expr) {
+        self.last_was_arrow_expr = false;
+        self.fail("arrow function in expression position not allowed");
+    }
+}
+
 /// Parse a full expression (comma operator at lowest precedence).
 fn ushort? CompilerContext.expression(&self) {
+    // Reset the arrow-returned marker so each operand of a comma list (and
+    // each `(` grouping / conditional / assignment RHS) parses in isolation.
+    self.last_was_arrow_expr = false;
     ushort result = self.assignment_expr()!;
 
     // Handle comma operator: evaluate each, keep last
@@ -57,6 +70,8 @@ fn void CompilerContext.save_lhs_ident_name(&self, char[] name) {
 
 /// Parse an assignment expression.
 fn ushort? CompilerContext.assignment_expr(&self) {
+    // Reset so a parenthesized arrow LHS doesn't survive past the destructure check.
+    self.last_was_arrow_expr = false;
     // Check for destructuring assignment: [a, b] = expr or {x, y} = expr
     TokenType first_tt = self.peek_type();
     if (first_tt == TokenType.LBRACKET || first_tt == TokenType.LBRACE) {
@@ -586,6 +601,9 @@ fn ushort? CompilerContext.assignment_expr(&self) {
 
 /// Parse a conditional (ternary) expression: expr ? expr : expr
 fn ushort? CompilerContext.conditional_expr(&self) {
+    // Reset so an arrow that came in as the condition doesn't trip the binary
+    // operator check on the operator that follows the conditional.
+    self.last_was_arrow_expr = false;
     ushort result = self.binary_expr(PREC_NULLISH)!;
 
     if (self.match(TokenType.QUESTION)) {
@@ -622,6 +640,9 @@ fn ushort? CompilerContext.conditional_expr(&self) {
 /// Parse binary expressions using a Pratt parser with precedence climbing.
 fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
     self.last_was_local_var = false;
+    // Clear any arrow marker from an enclosing binary_expr so the initial
+    // LHS capture below is authoritative.
+    self.last_was_arrow_expr = false;
 
     // ES2022 class-fields-private-in: `[+In] PrivateIdentifier in ShiftExpression`.
     // The grammar gives the PrivateIdentifier as a standalone LHS of the `in`
@@ -647,6 +668,7 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
             // Parse RHS with precedence above IN so relational ops don't
             // chain into the probe's object operand.
             ushort rhs = self.binary_expr(get_binary_precedence(TokenType.IN) + 1)!;
+            self.check_no_arrow_rhs();
 
             // HAS_BRAND: A=dst, B=object, C=brand register. 8-bit register
             // fields, same layout and register-budget constraint as the
@@ -666,6 +688,9 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         left = self.unary_expr()!;
     }
     bool left_is_local = self.last_was_local_var;
+    // Do NOT clear self.last_was_arrow_expr here — the recursive RHS call
+    // clears it on its own entry, parses its LHS, and the inner's flag
+    // survives to the post-RHS check_no_arrow_rhs() in the outer for-loop.
 
     for (;;) {
         self.last_was_local_var = false;
@@ -675,7 +700,6 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         if (prec < min_prec) {
             break;
         }
-
         // Handle short-circuit operators specially
         if (tt == TokenType.LOG_AND) {
             self.advance()!;
@@ -692,6 +716,7 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
             uint skip_jump = self.emit_cond_jump(Opcode.IF_FALSE, (uint)left);
 
             ushort right = self.binary_expr(prec + 1)!;
+            self.check_no_arrow_rhs();
             self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
             self.free_reg(right);
 
@@ -712,6 +737,7 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
             uint skip_jump = self.emit_cond_jump(Opcode.IF_TRUE, (uint)left);
 
             ushort right = self.binary_expr(prec + 1)!;
+            self.check_no_arrow_rhs();
             self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
             self.free_reg(right);
 
@@ -750,6 +776,7 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
             self.patch_jump(undef_jump);
 
             ushort right = self.binary_expr(prec + 1)!;
+            self.check_no_arrow_rhs();
             self.emit_abc(Opcode.LDREG, (uint)left, (uint)right, 0);
             self.free_reg(right);
 
@@ -767,6 +794,7 @@ fn ushort? CompilerContext.binary_expr(&self, int min_prec) {
         }
 
         ushort right = self.binary_expr(next_prec)!;
+        self.check_no_arrow_rhs();
         bool right_is_local = self.last_was_local_var;
 
         // Determine opcode

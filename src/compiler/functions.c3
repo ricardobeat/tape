@@ -3368,6 +3368,7 @@ fn ushort? CompilerContext.parse_arrow_function_reparse(&self, uint src_start = 
 
     ushort result = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
+    self.last_was_arrow_expr = true;
     return result;
 }
 
@@ -3902,6 +3903,7 @@ fn ushort? CompilerContext.parse_arrow_function(&self, char[]* params, ushort pa
 
     ushort result = self.alloc_reg();
     self.emit(bytecode::make_a_bc(Opcode.CLOSURE, (uint)result, inner_idx));
+    self.last_was_arrow_expr = true;
     return result;
 }
 

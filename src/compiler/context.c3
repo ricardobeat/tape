@@ -240,6 +240,12 @@ struct CompilerContext {
     // Track last identifier resolved via GETVAR (for assignment write-back)
     bool last_was_getvar;
     uint last_getvar_name_idx;
+    /// Set when the last primary_expr returned an ArrowFunction. The Pratt parser
+    /// uses this to reject `1 + () => 2`, `#x in () => {}`, etc. — ArrowFunction
+    /// is an AssignmentExpression-level production and must not appear as a
+    /// binary operand without parentheses (ES §13.16, §13.15). Cleared by
+    /// binary_expr once the unary_expr return is consumed.
+    bool last_was_arrow_expr;
     /// Set when the last primary_expr returned a live local variable register directly.
     bool last_was_local_var;
     ushort last_local_var_reg;
