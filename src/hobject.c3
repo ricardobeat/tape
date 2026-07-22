@@ -233,6 +233,10 @@ bitstruct ObjFlags : uint {
     /// truth for [[Writable]] of length (ES6 §9.4.2.1 / §10.4.2.1). Set
     /// false by Object.freeze and Object.defineProperty(arr,"length",{writable:false}).
     bool array_len_writable : 25;
+    /// [[IsRawJSON]] internal slot — set on objects returned by JSON.rawJSON.
+    /// JSON.isRawJSON tests it; JSON.stringify embeds the "rawJSON" property
+    /// verbatim when serialising such an object.
+    bool is_raw_json        : 26;
 }
 
 // ============================================================================

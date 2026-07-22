@@ -562,6 +562,8 @@ enum Builtin : uint {
     WRAP_FOR_VALID_ITERATOR_RETURN,
     ITERATOR_HELPER_NEXT,
     ITERATOR_HELPER_RETURN,
+    JSON_RAW_JSON,
+    JSON_IS_RAW_JSON,
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2422,6 +2424,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.EVAL.ordinal: return { "eval", 1 };
         case Builtin.JSON_PARSE.ordinal: return { "parse", 2 };
         case Builtin.JSON_STRINGIFY.ordinal: return { "stringify", 3 };
+        case Builtin.JSON_RAW_JSON.ordinal: return { "rawJSON", 1 };
+        case Builtin.JSON_IS_RAW_JSON.ordinal: return { "isRawJSON", 1 };
         case Builtin.DATE.ordinal: return { "Date", 7 };
         case Builtin.DATE_NOW.ordinal: return { "now", 0 };
         case Builtin.DATE_UTC.ordinal: return { "UTC", 7 };
@@ -3360,6 +3364,8 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ITERATOR_PROTO_SYMBOL_ITER.ordinal] = &builtin_iterator_proto_symbol_iter,
     [Builtin.JSON_PARSE.ordinal] = &builtin_json_parse,
     [Builtin.JSON_STRINGIFY.ordinal] = &builtin_json_stringify,
+    [Builtin.JSON_RAW_JSON.ordinal] = &builtin_json_raw_json,
+    [Builtin.JSON_IS_RAW_JSON.ordinal] = &builtin_json_is_raw_json,
     [Builtin.MAP.ordinal] = &builtin_map,
     [Builtin.MAP_GROUPBY.ordinal] = &builtin_map_groupBy,
     [Builtin.MAP_ITERATOR_NEXT.ordinal] = &builtin_map_iterator_next,
