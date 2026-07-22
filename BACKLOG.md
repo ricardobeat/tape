@@ -31,7 +31,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [ ] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`).
 - [ ] **`JSON.parse` source access** (`json-parse-with-source`).
 - [ ] **`Array.fromAsync`**.
-- [>] **`Math.sumPrecise`**.
+- [x] **`Math.sumPrecise`** — Shewchuk algorithm ported from quickjs; 10/10.
 - [>] **`Iterator.concat`** (`iterator-sequencing`).
 - [ ] **`#x in obj`** (`class-fields-private-in`, plan 054 P6) — parser + existing brand-check reuse.
 - [ ] **Reflect un-skip** — surface implemented (A9); un-skip and fix what fails.
