@@ -168,10 +168,19 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     if (target.get_class() == hobject::ObjClass.ARRAY) {
         len = (long)*target.array_len_ptr();
     } else if (is_typed_array_class(target.get_class())) {
+        // %ArrayIteratorPrototype%.next re-validates the TypedArray each step
+        // (spec: TypedArrayLength on the with-buffer-witness record). A view that
+        // has gone out of bounds — e.g. a fixed-length view whose resizable
+        // buffer shrank past it mid-iteration — throws a TypeError. A
+        // length-tracking view is never OOB from a shrink; its element count
+        // simply decreases and iteration ends.
+        if (view_is_out_of_bounds(target)) {
+            arraybuffer_throw_type_error(ctx, "TypedArray is out of bounds");
+            ctx.result.set_undefined();
+            return;
+        }
         // Re-derive the element count on every next(): length-tracking views
-        // over a resizable buffer change length when the buffer is resized, and
-        // a fixed view goes out of bounds (count 0) when the buffer shrinks past
-        // it. ta_element_count handles detach/OOB and floors to whole elements.
+        // over a resizable buffer change length when the buffer is resized.
         len = (long)ta_element_count(target);
     } else {
         TVal? len_val = target.get_prop_proto((HString*)heap.strs[heap::BuiltinStr.LENGTH]);

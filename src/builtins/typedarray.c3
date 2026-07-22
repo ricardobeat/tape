@@ -958,6 +958,16 @@ fn bool ta_is_detached(HObject* obj) {
     return view_is_out_of_bounds(obj);
 }
 
+/// True only when the backing buffer is genuinely detached (freed), NOT merely
+/// out of bounds after a shrink. Some spec algorithms (indexOf/lastIndexOf/
+/// includes after fromIndex coercion) short-circuit on real detach but keep
+/// iterating an OOB view, reading each index as undefined.
+fn bool ta_buffer_truly_detached(HObject* obj) {
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    if (buf == null) return true;
+    return (*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu;
+}
+
 /// Element count ([[ArrayLength]]) of a live TypedArray — 0 when detached
 /// or out of bounds.
 fn uint ta_element_count(HObject* obj) {
@@ -1773,13 +1783,11 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
         double from_d = ta_val_to_number(&from_arg, ctx);
         if (ctx.should_throw) return;
-        // Spec §23.2.3.14 step 8: re-derive length after coercing fromIndex, as
-        // its valueOf may have resized the backing buffer. A shrink to OOB makes
-        // the search vacuous; re-fetch the data pointer for the realloc case.
-        if (ta_is_detached(obj)) { ctx.result.set_fastint(-1); return; }
-        len = ta_element_count(obj);
-        base = (*buf.extra_ptr()).ab.data + byte_off;
-        if (len == 0) { ctx.result.set_fastint(-1); return; }
+        // Spec §23.2.3.13: the length is captured BEFORE fromIndex coercion and
+        // is NOT re-derived — a grow adds elements we never look at, and a shrink
+        // makes the tail read as undefined (handled by ta_read_element_checked).
+        // Only detach short-circuits to -1.
+        if (ta_buffer_truly_detached(obj)) { ctx.result.set_fastint(-1); return; }
         if (from_d >= (double)len) { ctx.result.set_fastint(-1); return; }
         if (from_d < 0.0) {
             double v = (double)len + from_d;
@@ -1794,7 +1802,7 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
     // BigInt arrays. A search value that can't === any element simply never
     // matches; NaN/-0/mismatched-type all fall out of strict_eq naturally.
     for (uint i = from; i < len; i++) {
-        TVal elem = ta_load_element(ctx.heap, base, cls, i);
+        TVal elem = ta_read_element_checked(ctx.heap, obj, i);
         if (vm::strict_eq(&search_arg, &elem)) {
             ctx.result.set_fastint((long)i);
             return;
@@ -1826,11 +1834,9 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
         double from_d = ta_val_to_number(&from_arg, ctx);
         if (ctx.should_throw) return;
-        // Re-derive length/pointer after coercing fromIndex (valueOf may resize).
-        if (ta_is_detached(obj)) { ctx.result.set_fastint(-1); return; }
-        len = ta_element_count(obj);
-        base = (*buf.extra_ptr()).ab.data + byte_off;
-        if (len == 0) { ctx.result.set_fastint(-1); return; }
+        // Length is captured before fromIndex coercion and NOT re-derived (spec
+        // §23.2.3.17); only detach short-circuits. Shrunk indices read undefined.
+        if (ta_buffer_truly_detached(obj)) { ctx.result.set_fastint(-1); return; }
         if (from_d < 0.0) {
             from = (long)len + (long)from_d;
         } else {
@@ -1841,7 +1847,7 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
 
     // IsStrictlyEqual on TVals — correct for numeric and BigInt arrays alike.
     for (long i = from; i >= 0; i--) {
-        TVal elem = ta_load_element(ctx.heap, base, cls, (uint)i);
+        TVal elem = ta_read_element_checked(ctx.heap, obj, (uint)i);
         if (vm::strict_eq(&search_arg, &elem)) {
             ctx.result.set_fastint(i);
             return;
@@ -1875,11 +1881,10 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
         double from_d = ta_val_to_number(&from_arg, ctx);
         if (ctx.should_throw) return;
-        // Re-derive length/pointer after coercing fromIndex (valueOf may resize).
-        if (ta_is_detached(obj)) { ctx.result.set_boolean(false); return; }
-        len = ta_element_count(obj);
-        base = (*buf.extra_ptr()).ab.data + byte_off;
-        if (len == 0) { ctx.result.set_boolean(false); return; }
+        // Length captured before fromIndex coercion, NOT re-derived (spec
+        // §23.2.3.14). A shrink turns tail elements into undefined, which
+        // SameValueZero matches when searching for undefined.
+        if (ta_buffer_truly_detached(obj)) { ctx.result.set_boolean(false); return; }
         if (from_d >= (double)len) { ctx.result.set_boolean(false); return; }
         if (from_d < 0.0) {
             double v = (double)len + from_d;
@@ -1892,7 +1897,7 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
     // SameValueZero on TVals — NaN matches NaN, +0 matches -0, and BigInt
     // matches BigInt; the numeric/BigInt split is handled inside same_value_zero.
     for (uint i = from; i < len; i++) {
-        TVal elem = ta_load_element(ctx.heap, base, cls, i);
+        TVal elem = ta_read_element_checked(ctx.heap, obj, i);
         if (same_value_zero(search_arg, elem)) { ctx.result.set_boolean(true); return; }
     }
     ctx.result.set_boolean(false);
@@ -2022,14 +2027,11 @@ fn void builtin_ta_proto_forEach(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        // Spec: if buffer was detached by a previous callback, element reads
-        // yield undefined (do NOT break — the loop runs for the full original length).
-        TVal elem;
-        if (ta_is_detached(obj)) {
-            elem.set_undefined();
-        } else {
-            elem = ta_load_element(ctx.heap, base, cls, i);
-        }
+        // Spec: a callback may have resized/detached the buffer; element reads at
+        // now-invalid indices yield undefined (do NOT break — the loop runs for
+        // the full original length). ta_read_element_checked re-derives the data
+        // pointer each read so a realloc from a grow is followed correctly.
+        TVal elem = ta_read_element_checked(ctx.heap, obj, i);
         ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
     }
@@ -2876,7 +2878,20 @@ fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
 
     uint done = 0;
     for (uint i = 0; i < len; i++) {
-        TVal num_val = ta_load_element(ctx.heap, base, cls, i);
+        // A prior element's toLocaleString may have resized the buffer; re-derive
+        // the pointer each read and yield undefined for now-out-of-bounds indices
+        // (spec §23.2.3.30 reads via Get over the original length).
+        TVal num_val = ta_read_element_checked(ctx.heap, obj, i);
+
+        // Out-of-bounds index: element is undefined. Per spec the empty string is
+        // used and toLocaleString is NOT invoked on it.
+        if (num_val.is_undefined()) {
+            HString* empty = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
+            ((types::HeapHeader*)empty).incref();
+            elem_strs[done] = empty;
+            done++;
+            continue;
+        }
 
         // Invoke toLocaleString on the numeric value — wrap it in a Number object,
         // look up toLocaleString on the Number prototype, and call it with num_val as this.
