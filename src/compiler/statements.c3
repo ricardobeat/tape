@@ -2448,6 +2448,14 @@ fn void? CompilerContext.for_statement(&self) {
         self.expect(TokenType.SEMICOLON)!;
     }
 
+    // Register floor for the re-compiled condition and increment. Lexical
+    // (let/const) for-init variables stay live in registers allocated ABOVE
+    // saved_reg for the whole loop, so the condition/increment temporaries must
+    // allocate above them — not at saved_reg, which sits below the loop var and
+    // would let e.g. the GETPROP key of `i < obj.length` clobber `i`.
+    ushort cond_floor = self.next_reg;
+    if (cond_floor < saved_reg) cond_floor = saved_reg;
+
     // --- Rotated for-loop layout ---
     // Avoid running the condition before the first body iteration by rotating:
     //
@@ -2669,10 +2677,11 @@ fn void? CompilerContext.for_statement(&self) {
         // The loop body may have dropped next_reg below the for-statement's
         // high-water mark (e.g. expression_statement frees the result register
         // of an assignment whose target is the topmost live local).  Restore to
-        // saved_reg so the increment and condition compile into fresh temporaries
-        // above all live locals, not into registers that belong to live variables.
-        if (self.next_reg < saved_reg) {
-            self.next_reg = saved_reg;
+        // cond_floor so the increment and condition compile into fresh temporaries
+        // above all live locals (including the lexical loop var), not into
+        // registers that belong to live variables.
+        if (self.next_reg < cond_floor) {
+            self.next_reg = cond_floor;
         }
         ushort incr_reg = self.expression()!;
         self.free_reg(incr_reg);
@@ -2742,9 +2751,10 @@ fn void? CompilerContext.for_statement(&self) {
             // Compile condition temporaries above all live locals.  The body may
             // have lowered next_reg (freeing the result register of a top-of-stack
             // assignment), which would otherwise let the condition allocate into a
-            // register still owned by a live variable such as the for-init var.
-            if (self.next_reg < saved_reg) {
-                self.next_reg = saved_reg;
+            // register still owned by a live variable such as the for-init var
+            // (cond_floor sits above any lexical loop variable).
+            if (self.next_reg < cond_floor) {
+                self.next_reg = cond_floor;
             }
             ushort cond_reg = self.expression()!;
             self.expect(TokenType.SEMICOLON)!;

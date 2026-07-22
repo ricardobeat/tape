@@ -1925,6 +1925,7 @@ fn void builtin_ta_proto_join(BuiltinContext* ctx) {
         }
     }
 
+
     if (len == 0) {
         if (sep_hs != null) heap.decref((types::HeapHeader*)sep_hs);
         HString* empty = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
@@ -1950,10 +1951,20 @@ fn void builtin_ta_proto_join(BuiltinContext* ctx) {
 
     usz total_len = 0;
     for (uint i = 0; i < len; i++) {
-        TVal elem = ta_load_element(ctx.heap, base, cls, i);
-        // ToString on the element TVal — numeric kinds format as numbers,
-        // BigInt kinds as their decimal string (§builtin_to_string BIGINT case).
-        HString* es = builtin_to_string(heap, &elem);
+        // Iterate the ORIGINAL length (spec §23.2.3.16 step 4). A separator
+        // coercion may have shrunk the buffer; indices now out of bounds read
+        // as undefined and join them as the empty string.
+        HString* es;
+        if (ta_is_valid_integer_index(obj, (double)i)) {
+            HObject* cur_buf = (*obj.extra_ptr()).view.buffer;
+            char* cur_base = (*cur_buf.extra_ptr()).ab.data + byte_off;
+            TVal elem = ta_load_element(ctx.heap, cur_base, cls, i);
+            // ToString on the element TVal — numeric kinds format as numbers,
+            // BigInt kinds as their decimal string (§builtin_to_string BIGINT case).
+            es = builtin_to_string(heap, &elem);
+        } else {
+            es = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
+        }
         if (es == null) es = (HString*)heap.strs[heap::BuiltinStr.EMPTY];
         ((types::HeapHeader*)es).incref();
         elem_strs[i] = es;
@@ -2432,7 +2443,7 @@ fn void builtin_ta_proto_reverse(BuiltinContext* ctx) {
     uint elem_sz = ta_elem_size(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length / elem_sz;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     // Swap element pairs using a byte-level buffer.
@@ -2503,8 +2514,11 @@ fn void builtin_ta_proto_at(BuiltinContext* ctx) {
     }
 
     if (idx < 0) idx = (long)len + idx;
-    if (idx < 0 || (uint)idx >= len) { ctx.result.set_undefined(); return; }
-    (*ctx.result) = ta_load_element(ctx.heap, base, cls, (uint)idx);
+    if (idx < 0) { ctx.result.set_undefined(); return; }
+    // Validate against the CURRENT length (the index coercion may have resized
+    // the buffer) and read through the re-derived pointer. Negative indices are
+    // still normalized against the pre-coercion length per spec §23.2.3.1.
+    (*ctx.result) = ta_read_element_checked(ctx.heap, obj, (uint)idx);
 }
 
 /// Numeric comparator for TA sort (spec §23.2.3.29.1).
@@ -2778,8 +2792,11 @@ fn void builtin_ta_proto_with(BuiltinContext* ctx) {
     TAScalar scalar = ta_coerce_element(cls, &new_val, ctx);
     if (ctx.should_throw) return;
 
-    // Check if index is in range
-    if (actual_index < 0 || actual_index >= (long)len) {
+    // Spec §23.2.3.35 step 8: validate the index against the CURRENT length
+    // (the value coercion above may have resized the buffer via user code).
+    // The result length, however, is the length captured BEFORE coercion (step
+    // 3 / step 10 both use that `len`), so it is left unchanged here.
+    if (actual_index < 0 || !ta_is_valid_integer_index(obj, (double)actual_index)) {
         arraybuffer_throw_range_error(ctx, "Invalid index for with()");
         return;
     }
@@ -2802,9 +2819,14 @@ fn void builtin_ta_proto_with(BuiltinContext* ctx) {
     // Copy all elements
     if (len > 0) mem::copy(dst, src, (sz)((usz)(len * elem_sz)));
 
-    // Set the modified element
-    char* dp = dst + ((uint)actual_index << shift);
-    ta_store_scalar(dp, cls, &scalar);
+    // Set the modified element — only when the index falls within the result
+    // (whose length is the pre-coercion `len`). If the buffer grew during
+    // coercion, a now-valid index beyond `len` simply isn't reflected in the
+    // shorter result copy (spec §23.2.3.35: the k-loop runs 0..len).
+    if ((uint)actual_index < len) {
+        char* dp = dst + ((uint)actual_index << shift);
+        ta_store_scalar(dp, cls, &scalar);
+    }
 
     ctx.result.set_object(result);
 }
