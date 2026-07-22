@@ -1934,6 +1934,127 @@ fn void builtin_promise_reject(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Promise.withResolvers() — ES2024 §27.2.4.8
+// ============================================================================
+
+fn void builtin_promise_with_resolvers(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    // Step 1: Let C be the this value.
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+
+    // Step 2: NewPromiseCapability(C) — this throws TypeError itself when C
+    // is not an object or not a constructor, so validate that first.
+    if (!this_ctor_val.is_object() || this_ctor_val.get_heapptr() == null) {
+        promise_throw_typeerror(ctx, "Promise.withResolvers called on non-object");
+        return;
+    }
+    HObject* ctor_obj = (HObject*)this_ctor_val.get_heapptr();
+    if (!ctor_obj.flags.constructable) {
+        promise_throw_typeerror(ctx, "Promise.withResolvers called on non-constructor");
+        return;
+    }
+
+    HObject*? hole_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err_h = hole_raw) { ctx.result.set_undefined(); return; }
+    HObject* hole = hole_raw;
+    hole.prototype = heap.object_proto;
+    if (!promise_new_capability_full(heap, ctx.vm, this_ctor_val, hole)) {
+        promise_throw_capability_failure(ctx, hole);
+        return;
+    }
+    TVal cap_resolve_tv = promise_hole_get_resolve(heap, hole);
+    TVal cap_reject_tv  = promise_hole_get_reject(heap, hole);
+    TVal cap_promise_tv = promise_hole_get_promise(heap, hole);
+
+    // Step 3: Let obj be OrdinaryObjectCreate(%Object.prototype%).
+    // Steps 4-6: CreateDataPropertyOrThrow "promise"/"resolve"/"reject".
+    HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err_o = obj_raw) { ctx.result.set_undefined(); return; }
+    HObject* obj = obj_raw;
+    obj.prototype = heap.object_proto;
+
+    HString* promise_key = builtin_intern_string(heap, "promise");
+    HString* resolve_key = builtin_intern_string(heap, "resolve");
+    HString* reject_key  = builtin_intern_string(heap, "reject");
+    if (promise_key != null) obj.put_prop(promise_key, cap_promise_tv, hobject::PROP_FLAGS_WEC);
+    if (resolve_key != null) obj.put_prop(resolve_key, cap_resolve_tv, hobject::PROP_FLAGS_WEC);
+    if (reject_key  != null) obj.put_prop(reject_key,  cap_reject_tv,  hobject::PROP_FLAGS_WEC);
+
+    ctx.result.set_object(obj);
+}
+
+// ============================================================================
+// Promise.try(callbackfn, ...args) — ES2026 §27.2.4.8 (Promise.try proposal)
+// ============================================================================
+
+fn void builtin_promise_try(BuiltinContext* ctx) {
+    Heap* heap = ctx.heap;
+
+    // Step 1: Let C be the this value.
+    TVal this_ctor_val = ctx.regs[ctx.base_reg - 1];
+    if (!this_ctor_val.is_object() || this_ctor_val.get_heapptr() == null) {
+        promise_throw_typeerror(ctx, "Promise.try called on non-object");
+        return;
+    }
+    HObject* ctor_obj = (HObject*)this_ctor_val.get_heapptr();
+    if (!ctor_obj.flags.constructable) {
+        promise_throw_typeerror(ctx, "Promise.try called on non-constructor");
+        return;
+    }
+
+    // Step 2: NewPromiseCapability(C)
+    HObject*? hole_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err_h = hole_raw) { ctx.result.set_undefined(); return; }
+    HObject* hole = hole_raw;
+    hole.prototype = heap.object_proto;
+    if (!promise_new_capability_full(heap, ctx.vm, this_ctor_val, hole)) {
+        promise_throw_capability_failure(ctx, hole);
+        return;
+    }
+    TVal cap_resolve_tv = promise_hole_get_resolve(heap, hole);
+    TVal cap_reject_tv  = promise_hole_get_reject(heap, hole);
+    TVal cap_promise_tv = promise_hole_get_promise(heap, hole);
+
+    // Step 3: callbackfn = first argument.
+    TVal callback;
+    callback.set_undefined();
+    if (ctx.argc >= 1) callback = ctx.regs[ctx.base_reg];
+
+    // Steps 4-6: Let status be Completion(Call(callbackfn, undefined, args))
+    // where args are the remaining arguments. On success, Call the capability's
+    // resolve with the result; on abrupt completion, Call reject with the error.
+    uint fwd_argc = ctx.argc > 1 ? (uint)(ctx.argc - 1) : 0;
+    TVal* fwd_args = fwd_argc > 0 ? &ctx.regs[ctx.base_reg + 1] : null;
+    TVal undef; undef.set_undefined();
+
+    if (heap.call_fn == null || ctx.vm == null) {
+        promise_throw_typeerror(ctx, "Promise.try requires a callable function");
+        return;
+    }
+    TVal status = heap.call_fn(ctx.vm, callback, fwd_args, fwd_argc, undef);
+    if (heap.has_error) {
+        TVal err_val = heap.error_value;
+        promise_clear_error_channels(heap, ctx.vm);
+        promise_combinator_reject(heap, ctx.vm, cap_reject_tv, &err_val);
+        *ctx.result = cap_promise_tv;
+        return;
+    }
+
+    TVal r_args = status;
+    if (heap.call_fn != null && ctx.vm != null) {
+        heap.call_fn(ctx.vm, cap_resolve_tv, &r_args, 1, undef);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return;
+        }
+    }
+    *ctx.result = cap_promise_tv;
+}
+
+// ============================================================================
 // Thenable coercion — ES6 Promise Resolution Procedure
 // ============================================================================
 
@@ -4243,6 +4364,16 @@ fn bool register_promise_constructor(EnvRecord* global_env, Heap* heap) {
     TVal any_tv;
     any_tv.set_lightfunc((void*)(usz)Builtin.PROMISE_ANY.ordinal);
     ctor.put_prop(any_key, any_tv, hobject::PROP_FLAGS_WC);
+
+    HString* with_resolvers_key = builtin_intern_string(heap, "withResolvers");
+    TVal with_resolvers_tv;
+    with_resolvers_tv.set_lightfunc((void*)(usz)Builtin.PROMISE_WITH_RESOLVERS.ordinal);
+    ctor.put_prop(with_resolvers_key, with_resolvers_tv, hobject::PROP_FLAGS_WC);
+
+    HString* try_key = builtin_intern_string(heap, "try");
+    TVal try_tv;
+    try_tv.set_lightfunc((void*)(usz)Builtin.PROMISE_TRY.ordinal);
+    ctor.put_prop(try_key, try_tv, hobject::PROP_FLAGS_WC);
 
     uint hash = heap.hash_string("Promise");
     HString* existing = heap.str_table_lookup("Promise", hash);

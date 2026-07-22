@@ -146,14 +146,14 @@ UNSUPPORTED_PATTERN = re.compile(
     r"import-defer|export-defer|import-attributes|import-text|import-bytes|"
     r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
-    r"promise-try|iterator-sequencing|Error\.isError|upsert|array-grouping|"
+    r"iterator-sequencing|upsert|array-grouping|"
     r"Math\.sumPrecise|RegExp\.escape|json-parse-with-source|"
     r"regexp-modifiers|regexp-duplicate-named-groups|"
     r"uint8array-base64|Float16Array|resizable-arraybuffer|"
     r"arraybuffer-transfer|immutable-arraybuffer|"
     r"joint-iteration|iterator-helpers|"
     # ES2024+ features (implement later)
-    r"Array\.fromAsync|set-methods|promise-with-resolvers|"
+    r"Array\.fromAsync|set-methods|"
     r"symbols-as-weakmap-keys|change-array-by-copy|Atomics\.waitAsync|"
     # Complex features deferred.  (BigInt is implemented — plan 056 — so it is
     # no longer filtered here; BigInt64Array/BigUint64Array + DataView BigInt64

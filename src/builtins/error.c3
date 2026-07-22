@@ -338,6 +338,25 @@ fn void builtin_error_captureStackTrace(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Error.isError — ES2026 §20.5.2.2
+// ============================================================================
+
+/// Error.isError(arg) — true iff arg is an object carrying the [[ErrorData]]
+/// internal slot. We key this on ObjClass.ERROR (the tag every Error/NativeError
+/// constructor allocates its instances with) rather than the prototype chain,
+/// so it's cross-realm safe and returns false for objects that merely look
+/// like errors (e.g. `{ __proto__: Error.prototype }`).
+fn void builtin_error_isError(BuiltinContext* ctx) {
+    TVal arg;
+    arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+
+    bool is_error = arg.is_object() && arg.get_heapptr() != null &&
+        ((HObject*)arg.get_heapptr()).get_class() == hobject::ObjClass.ERROR;
+    ctx.result.set_boolean(is_error);
+}
+
+// ============================================================================
 // Error built-in registration
 // ============================================================================
 
@@ -446,6 +465,14 @@ fn bool register_error_builtins(EnvRecord* global_env, Heap* heap) {
         TVal capture_tv;
         capture_tv.set_lightfunc((void*)(usz)Builtin.ERROR_CAPTURE_STACK_TRACE.ordinal);
         err_ctor.put_prop(capture_key, capture_tv, hobject::PROP_FLAGS_WC);
+    }
+
+    // Register static method: Error.isError
+    {
+        HString* iserror_key = builtin_intern_string(heap, "isError");
+        TVal iserror_tv;
+        iserror_tv.set_lightfunc((void*)(usz)Builtin.ERROR_ISERROR.ordinal);
+        err_ctor.put_prop(iserror_key, iserror_tv, hobject::PROP_FLAGS_WC);
     }
 
     // Register Error in global environment

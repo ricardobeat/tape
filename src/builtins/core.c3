@@ -505,6 +505,9 @@ enum Builtin : uint {
     ASYNC_FROM_SYNC_THROW,          // %AsyncFromSyncIteratorPrototype%.throw(value)
     ASYNC_FROM_SYNC_VALUE_UNWRAP,   // native fulfill reaction: builds {value, done}
     ASYNC_FROM_SYNC_REJECT_FORWARD, // native reject reaction: forwards rejection
+    PROMISE_WITH_RESOLVERS,         // Promise.withResolvers() (ES2024)
+    PROMISE_TRY,                    // Promise.try(callbackfn, ...args) (ES2026)
+    ERROR_ISERROR,                  // Error.isError(arg) (ES2026)
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2259,6 +2262,9 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.ASYNC_FROM_SYNC_THROW.ordinal: return { "throw", 1 };
         case Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal: return { "", 1 };
         case Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal: return { "", 1 };
+        case Builtin.PROMISE_WITH_RESOLVERS.ordinal: return { "withResolvers", 0 };
+        case Builtin.PROMISE_TRY.ordinal: return { "try", 1 };
+        case Builtin.ERROR_ISERROR.ordinal: return { "isError", 1 };
         default: return { "", -1 };
     }
 }
@@ -3165,6 +3171,9 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ASYNC_FROM_SYNC_THROW.ordinal]          = &builtin_async_from_sync_throw,
     [Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal]   = &builtin_async_from_sync_value_unwrap,
     [Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal] = &builtin_async_from_sync_reject_forward,
+    [Builtin.PROMISE_WITH_RESOLVERS.ordinal]         = &builtin_promise_with_resolvers,
+    [Builtin.PROMISE_TRY.ordinal]                    = &builtin_promise_try,
+    [Builtin.ERROR_ISERROR.ordinal]                  = &builtin_error_isError,
 };
 
 fn void dispatch_builtin(uint fn_index, BuiltinContext* ctx) {
