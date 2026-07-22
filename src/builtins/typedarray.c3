@@ -1801,7 +1801,11 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
     // boxes BigInt kinds), so the same code path is correct for numeric and
     // BigInt arrays. A search value that can't === any element simply never
     // matches; NaN/-0/mismatched-type all fall out of strict_eq naturally.
+    // Out-of-bounds indices (buffer shrank during fromIndex coercion) are NOT
+    // present — skip them so a search for undefined never spuriously matches
+    // (spec §23.2.3.13 accesses the element only via IsValidIntegerIndex).
     for (uint i = from; i < len; i++) {
+        if (!ta_is_valid_integer_index(obj, (double)i)) continue;
         TVal elem = ta_read_element_checked(ctx.heap, obj, i);
         if (vm::strict_eq(&search_arg, &elem)) {
             ctx.result.set_fastint((long)i);
@@ -1846,7 +1850,10 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
     }
 
     // IsStrictlyEqual on TVals — correct for numeric and BigInt arrays alike.
+    // Skip out-of-bounds indices (buffer shrank during fromIndex coercion) so a
+    // search for undefined never matches a no-longer-present slot.
     for (long i = from; i >= 0; i--) {
+        if (!ta_is_valid_integer_index(obj, (double)i)) continue;
         TVal elem = ta_read_element_checked(ctx.heap, obj, (uint)i);
         if (vm::strict_eq(&search_arg, &elem)) {
             ctx.result.set_fastint(i);
