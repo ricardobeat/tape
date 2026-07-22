@@ -176,6 +176,8 @@ enum Builtin : uint {
     ARRAY_PROTO_VALUES,
     ARRAY_PROTO_ENTRIES,
     OBJECT_FROMENTRIES,
+    OBJECT_GROUPBY,
+    MAP_GROUPBY,
     REGEXP_PROTO_GET_FLAGS,
     REGEXP_PROTO_GET_SOURCE,
     REGEXP_PROTO_GET_GLOBAL,
@@ -337,6 +339,8 @@ enum Builtin : uint {
     MAP_PROTO_VALUES,
     MAP_PROTO_ENTRIES,
     MAP_PROTO_FOREACH,
+    MAP_PROTO_GETORINSERT,
+    MAP_PROTO_GETORINSERTCOMPUTED,
     SET,
     SET_PROTO_ADD,
     SET_PROTO_HAS,
@@ -350,6 +354,8 @@ enum Builtin : uint {
     WEAKMAP_PROTO_GET,
     WEAKMAP_PROTO_HAS,
     WEAKMAP_PROTO_DELETE,
+    WEAKMAP_PROTO_GETORINSERT,
+    WEAKMAP_PROTO_GETORINSERTCOMPUTED,
     WEAKSET,
     WEAKSET_PROTO_ADD,
     WEAKSET_PROTO_HAS,
@@ -1094,6 +1100,23 @@ fn HObject* check_collection_class(BuiltinContext* ctx, hobject::ObjClass want, 
 }
 
 // ============================================================================
+// CanBeHeldWeakly (ES2023 §7.2.11) — shared by WeakMap key / WeakSet value /
+// WeakRef target / FinalizationRegistry target+token checks.
+// ============================================================================
+
+/// True if `val` is an object, or a Symbol that is not in the global Symbol
+/// registry (i.e. not created via Symbol.for — well-known symbols like
+/// Symbol.iterator are fine, since only Symbol.for results are registered).
+fn bool can_be_held_weakly(Heap* heap, TVal val) {
+    if (val.is_object() && val.get_heapptr() != null) return true;
+    if (is_symbol_val(val)) {
+        HString* sym = (HString*)val.get_heapptr();
+        return symbol_registry_get_key(heap, sym) == null;
+    }
+    return false;
+}
+
+// ============================================================================
 // Array part search helper (shared by Map, Set, WeakMap, WeakSet)
 // ============================================================================
 
@@ -1399,15 +1422,20 @@ fn void coll_construct(BuiltinContext* ctx, hobject::ObjClass obj_class, HObject
 
 /// Shared body for Map.prototype.set / WeakMap.prototype.set (ES6 §23.1.3.9 / §23.3.3.5).
 /// require_object_key: true for WeakMap (throws "Invalid value used as weak map key"
-/// if the key is not an object), false for Map (any key allowed).
+/// unless CanBeHeldWeakly(key) — object or non-registered symbol), false for Map
+/// (any key allowed).
 /// grow_hwm: true for Map (array_used is a high-water mark that must include slots
-/// with undefined keys/values for iteration), false for WeakMap (not iterable, so
-/// set_array_idx's own count is enough — matches original WeakMap behavior exactly).
+/// with undefined keys/values for iteration), false for WeakMap (not iterable).
+/// array_used is always widened to include the value slot regardless of
+/// grow_hwm — set_array_idx only tracks non-undefined writes, so a value of
+/// undefined (a valid Map/WeakMap value) would otherwise leave array_used
+/// short of the slot just written, corrupting find_in_array_part's scan
+/// bound for every later insert.
 fn void coll_set_entry(BuiltinContext* ctx, HObject* coll, uint stride, bool require_object_key,
                         char[] invalid_key_msg, bool grow_hwm) {
     if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
     TVal key = ctx.regs[ctx.base_reg];
-    if (require_object_key && (!key.is_object() || key.get_heapptr() == null)) {
+    if (require_object_key && !can_be_held_weakly(ctx.heap, key)) {
         builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, invalid_key_msg);
         ctx.result.set_undefined();
         return;
@@ -1422,23 +1450,131 @@ fn void coll_set_entry(BuiltinContext* ctx, HObject* coll, uint stride, bool req
         uint cnt = coll.array_used;
         coll.set_array_idx(cnt, key);
         coll.set_array_idx(cnt + 1, value);
-        if (grow_hwm && coll.array_used <= cnt + 1) {
+        if (coll.array_used <= cnt + 1) {
             coll.array_used = (uint)(cnt + 2);
         }
     }
     ctx.result.set_object(coll);
 }
 
+/// CanonicalizeKeyedCollectionKey (ES2025 §24.1.1.3): -0 -> +0, otherwise unchanged.
+fn TVal canonicalize_keyed_collection_key(TVal key) {
+    if (key.is_number() && key.get_number() == 0.0) {
+        TVal out; out.set_fastint(0);
+        return out;
+    }
+    if (key.is_fastint() && key.get_fastint() == 0) {
+        TVal out; out.set_fastint(0);
+        return out;
+    }
+    return key;
+}
+
+/// Shared body for Map.prototype.getOrInsert / WeakMap.prototype.getOrInsert
+/// (ES2025 §24.1.3.9 / §24.3.3.6). require_weak_key: true for WeakMap (throws
+/// unless CanBeHeldWeakly(key)), false for Map. grow_hwm: see coll_set_entry.
+fn void coll_get_or_insert(BuiltinContext* ctx, HObject* coll, bool require_weak_key,
+                            char[] invalid_key_msg, bool grow_hwm) {
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
+    TVal key = ctx.regs[ctx.base_reg];
+    if (require_weak_key && !can_be_held_weakly(ctx.heap, key)) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, invalid_key_msg);
+        return;
+    }
+    key = canonicalize_keyed_collection_key(key);
+    TVal value = ctx.regs[ctx.base_reg + 1];  // undefined if not provided
+
+    int found = find_in_array_part(coll, key, 2);
+    if (found >= 0) {
+        *ctx.result = coll.array_part()[(uint)found + 1];
+        return;
+    }
+    uint cnt = coll.array_used;
+    coll.set_array_idx(cnt, key);
+    coll.set_array_idx(cnt + 1, value);
+    if (coll.array_used <= cnt + 1) {
+        coll.array_used = (uint)(cnt + 2);
+    }
+    *ctx.result = value;
+}
+
+/// Shared body for Map.prototype.getOrInsertComputed / WeakMap.prototype.
+/// getOrInsertComputed (ES2025 §24.1.3.10 / §24.3.3.7). callbackfn is called
+/// with `key` as its sole argument and `undefined` as `this`, ONLY when the
+/// key was absent beforehand. After the callback returns, the map is
+/// re-searched for `key`: if present (whether because the callback itself
+/// inserted it, or it was already there), its value is overwritten with the
+/// callback's result and that value is returned; otherwise a new entry is
+/// appended. A throwing callback inserts nothing and propagates the throw.
+fn void coll_get_or_insert_computed(BuiltinContext* ctx, HObject* coll, bool require_weak_key,
+                                     char[] invalid_key_msg, char[] not_callable_msg, bool grow_hwm) {
+    if (ctx.argc < 1) { ctx.result.set_undefined(); return; }
+    TVal key = ctx.regs[ctx.base_reg];
+    if (require_weak_key && !can_be_held_weakly(ctx.heap, key)) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, invalid_key_msg);
+        return;
+    }
+    key = canonicalize_keyed_collection_key(key);
+
+    TVal callback;
+    if (ctx.argc >= 2) { callback = ctx.regs[ctx.base_reg + 1]; } else { callback.set_undefined(); }
+    bool callback_callable = callback.is_lightfunc() ||
+        (callback.is_object() && callback.get_heapptr() != null &&
+         ((HObject*)callback.get_heapptr()).is_callable());
+    if (!callback_callable) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, not_callable_msg);
+        return;
+    }
+
+    int found = find_in_array_part(coll, key, 2);
+    if (found >= 0) {
+        *ctx.result = coll.array_part()[(uint)found + 1];
+        return;
+    }
+
+    if (ctx.heap.call_fn == null || ctx.vm == null) { ctx.result.set_undefined(); return; }
+    TVal[1] cb_args;
+    cb_args[0] = key;
+    TVal undef_this; undef_this.set_undefined();
+    TVal value = ctx.heap.call_fn(ctx.vm, callback, &cb_args[0], 1, undef_this);
+    if (ctx.heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = ctx.heap.error_value;
+        ctx.heap.has_error = false;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // Re-search: the callback may have inserted `key` itself (overwrites-
+    // mutation-from-callbackfn test262 semantics) or another concurrent
+    // mutation may have added it.
+    int found2 = find_in_array_part(coll, key, 2);
+    if (found2 >= 0) {
+        TVal* v_slot = &coll.array_part()[(uint)found2 + 1];
+        if (grow_hwm && v_slot.is_string()) ctx.heap.decref_tval(v_slot);
+        *v_slot = value;
+    } else {
+        uint cnt = coll.array_used;
+        coll.set_array_idx(cnt, key);
+        coll.set_array_idx(cnt + 1, value);
+        if (coll.array_used <= cnt + 1) {
+            coll.array_used = (uint)(cnt + 2);
+        }
+    }
+    *ctx.result = value;
+}
+
 /// Shared body for Set.prototype.add / WeakSet.prototype.add (ES6 §23.2.3.1 / §23.4.3.1).
-/// require_object_value: true for WeakSet (throws "Invalid value used in weak set" if
-/// the value is not an object), false for Set (any value allowed).
+/// require_object_value: true for WeakSet (throws "Invalid value used in weak set"
+/// unless CanBeHeldWeakly(value) — object or non-registered symbol), false for Set
+/// (any value allowed).
 /// grow_hwm: true for Set (array_used high-water mark must include undefined slots
 /// for iteration), false for WeakSet (not iterable).
 fn void coll_add_value(BuiltinContext* ctx, HObject* coll, bool require_object_value,
                         char[] invalid_value_msg, bool grow_hwm) {
     TVal value; value.set_undefined();
     if (ctx.argc >= 1) value = ctx.regs[ctx.base_reg];
-    if (require_object_value && (!value.is_object() || value.get_heapptr() == null)) {
+    if (require_object_value && !can_be_held_weakly(ctx.heap, value)) {
         builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, invalid_value_msg);
         ctx.result.set_undefined();
         return;
@@ -1479,6 +1615,268 @@ fn void coll_delete(BuiltinContext* ctx, HObject* coll, TVal key, uint stride, b
         coll.array_used = (uint)(cnt - stride);
     }
     ctx.result.set_boolean(true);
+}
+
+// ============================================================================
+// GroupBy shared driver (ES2024 §23.1.2.1 Object.groupBy / §24.1.2.1 Map.groupBy)
+// ============================================================================
+
+/// Append `value` to the group array for `key` in `groups_obj`, creating a new
+/// single-element Array the first time `key` is seen. `groups_obj` already has
+/// its final [[Prototype]] set by the caller (null for Object.groupBy).
+fn bool group_by_append_object(BuiltinContext* ctx, HObject* groups_obj, HString* key, TVal value) {
+    HObject* group_arr = null;
+    PropValue*? existing = groups_obj.find_prop(key);
+    if (try ex = existing) {
+        if (ex.is_object() && ex.get_heapptr() != null) {
+            group_arr = (HObject*)ex.get_heapptr();
+        }
+    }
+    if (group_arr == null) {
+        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = arr_raw) return false;
+        group_arr = arr_raw;
+        group_arr.prototype = ctx.heap.array_proto;
+        TVal arr_tv; arr_tv.set_object(group_arr);
+        groups_obj.put_prop(key, arr_tv, hobject::PROP_FLAGS_WEC);
+    }
+    uint idx = *group_arr.array_len_ptr();
+    group_arr.set_array_idx(idx, value);
+    array_set_length(group_arr, idx + 1, ctx.heap);
+    return true;
+}
+
+/// Append `value` to the group array for `key` (SameValueZero) in `map`,
+/// creating a new single-element Array the first time `key` is seen.
+fn bool group_by_append_map(BuiltinContext* ctx, HObject* map, TVal key, TVal value) {
+    int found = map_find_key(map, key);
+    HObject* group_arr = null;
+    if (found >= 0) {
+        TVal existing = map.array_part()[(uint)found + 1];
+        if (existing.is_object() && existing.get_heapptr() != null) {
+            group_arr = (HObject*)existing.get_heapptr();
+        }
+    }
+    if (group_arr == null) {
+        HObject*? arr_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAY);
+        if (catch err = arr_raw) return false;
+        group_arr = arr_raw;
+        group_arr.prototype = ctx.heap.array_proto;
+        TVal arr_tv; arr_tv.set_object(group_arr);
+        if (found >= 0) {
+            TVal* v_slot = &map.array_part()[(uint)found + 1];
+            *v_slot = arr_tv;
+        } else {
+            uint cnt = map.array_used;
+            map.set_array_idx(cnt, key);
+            map.set_array_idx(cnt + 1, arr_tv);
+            if (map.array_used <= cnt + 1) {
+                map.array_used = (uint)(cnt + 2);
+            }
+        }
+    }
+    uint idx = *group_arr.array_len_ptr();
+    group_arr.set_array_idx(idx, value);
+    array_set_length(group_arr, idx + 1, ctx.heap);
+    return true;
+}
+
+/// GroupBy ( items, callbackfn, coercion ) — ES2024 §23.1.2.1.
+/// `into_map`: false stores groups as data properties of a null-prototype
+/// object (Object.groupBy), true stores groups keyed by SameValueZero in a
+/// fresh Map (Map.groupBy, key -0 normalized to +0 per CanonicalizeKeyedCollectionKey).
+/// `result` receives the produced Object/Map on success, or null on failure —
+/// callers should check ctx.should_throw afterward to distinguish an in-band
+/// TypeError from ctx.result being validly unset.
+fn HObject* group_by_shared(BuiltinContext* ctx, bool into_map) {
+    Heap* heap = ctx.heap;
+    if (ctx.argc < 2) {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "callback function is not callable");
+        return null;
+    }
+    TVal items = ctx.regs[ctx.base_reg];
+    TVal callback = ctx.regs[ctx.base_reg + 1];
+    bool callback_callable = callback.is_lightfunc() ||
+        (callback.is_object() && callback.get_heapptr() != null &&
+         ((HObject*)callback.get_heapptr()).is_callable());
+    if (!callback_callable) {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "callback function is not callable");
+        return null;
+    }
+    if (heap.call_fn == null || ctx.vm == null) return null;
+
+    // GetIterator(items) — must be an object/primitive with a callable
+    // @@iterator; undefined/null @@iterator is a TypeError (no fallback).
+    // Primitives are wrapped in a throwaway object whose [[Prototype]] is the
+    // matching wrapper prototype, so the @@iterator lookup below walks the
+    // real prototype chain (must set items_obj.prototype directly — a named
+    // "prototype" data property is not consulted by get_prop_or_accessor_proto).
+    HObject* items_obj = null;
+    if (items.is_object() && items.get_heapptr() != null) {
+        items_obj = (HObject*)items.get_heapptr();
+    } else if (!items.is_undefined() && !items.is_null()) {
+        HObject*? wrapped = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (try w = wrapped) {
+            items_obj = w;
+            if (is_symbol_val(items)) {
+                items_obj.prototype = heap.symbol_proto;
+            } else if (items.is_string()) {
+                (*items_obj.extra_ptr()).prim.primitive_value = items;
+                items_obj.prototype = heap.string_proto;
+            } else if (items.is_boolean()) {
+                items_obj.prototype = heap.bool_proto;
+            } else if (items.is_number() || items.is_fastint()) {
+                items_obj.prototype = heap.number_proto;
+            } else if (items.is_bigint()) {
+                items_obj.prototype = heap.bigint_proto;
+            }
+        }
+    } else {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "items is null or undefined");
+        return null;
+    }
+
+    HString* iter_sym = ensure_iterator_symbol(heap);
+    if (iter_sym == null) return null;
+    TVal? iter_method_opt = builtins_generic_get(items_obj, iter_sym, ctx);
+    if (ctx.should_throw) return null;
+    TVal iter_method;
+    if (try im = iter_method_opt) { iter_method = im; } else { iter_method.set_undefined(); }
+    if (iter_method.is_undefined() || iter_method.is_null()) {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "items is not iterable");
+        return null;
+    }
+    bool iter_method_callable = iter_method.is_lightfunc() ||
+        (iter_method.is_object() && iter_method.get_heapptr() != null &&
+         ((HObject*)iter_method.get_heapptr()).is_callable());
+    if (!iter_method_callable) {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "Symbol.iterator method is not callable");
+        return null;
+    }
+
+    TVal iterator = heap.call_fn(ctx.vm, iter_method, null, 0, items);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        return null;
+    }
+    if (!iterator.is_object() || iterator.get_heapptr() == null) {
+        builtin_throw_no_result_change(ctx, heap.type_err_proto, "Result of the Symbol.iterator method is not an object");
+        return null;
+    }
+    HObject* iter_obj = (HObject*)iterator.get_heapptr();
+
+    // Result container: a null-prototype ordinary object (Object.groupBy) or
+    // a freshly constructed Map (Map.groupBy) — created before iteration.
+    HObject* groups;
+    if (into_map) {
+        HObject*? map_raw = heap.alloc_object(hobject::ObjClass.MAP);
+        if (catch err = map_raw) return null;
+        groups = map_raw;
+        groups.prototype = heap.map_proto;
+    } else {
+        HObject*? obj_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+        if (catch err = obj_raw) return null;
+        groups = obj_raw;
+        groups.prototype = null;
+    }
+
+    HString* next_key = builtin_intern_string(heap, "next");
+    HString* done_key = builtin_intern_string(heap, "done");
+    HString* value_key = builtin_intern_string(heap, "value");
+
+    ulong k = 0;
+    while (true) {
+        TVal? next_method_opt = builtins_generic_get(iter_obj, next_key, ctx);
+        if (ctx.should_throw) return null;
+        TVal next_method;
+        if (try nm = next_method_opt) { next_method = nm; } else { break; }
+        bool next_callable = next_method.is_lightfunc() ||
+            (next_method.is_object() && next_method.get_heapptr() != null &&
+             ((HObject*)next_method.get_heapptr()).is_callable());
+        if (!next_callable) {
+            builtin_throw_no_result_change(ctx, heap.type_err_proto, "iterator.next is not callable");
+            return null;
+        }
+
+        TVal step_result = heap.call_fn(ctx.vm, next_method, null, 0, iterator);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            return null;
+        }
+        if (!step_result.is_object() || step_result.get_heapptr() == null) {
+            builtin_throw_no_result_change(ctx, heap.type_err_proto, "Iterator result is not an object");
+            return null;
+        }
+        HObject* result_obj = (HObject*)step_result.get_heapptr();
+
+        TVal? done_opt = builtins_generic_get(result_obj, done_key, ctx);
+        if (ctx.should_throw) return null;
+        bool done = false;
+        if (try dv = done_opt) { done = builtin_to_boolean(&dv); }
+        if (done) break;
+
+        TVal? value_opt = builtins_generic_get(result_obj, value_key, ctx);
+        if (ctx.should_throw) {
+            arr_iterator_close_after_throw(ctx, iterator);
+            return null;
+        }
+        TVal next_value;
+        if (try vv = value_opt) { next_value = vv; } else { next_value.set_undefined(); }
+
+        // ES2024 §23.1.2.1 GroupBy step 6.e: 𝔽(k) as the index arg — beyond
+        // 2^53-1 keys the spec has already thrown RangeError (step 6.d), which
+        // cannot occur in practice (would require exhausting all safe integers).
+        TVal[2] cb_args;
+        cb_args[0] = next_value;
+        TVal k_tv;
+        if (k <= (ulong)types::FASTINT_MAX) { k_tv.set_fastint((long)k); } else { k_tv.set_number((double)k); }
+        cb_args[1] = k_tv;
+        TVal undef_this; undef_this.set_undefined();
+        TVal key_result = heap.call_fn(ctx.vm, callback, &cb_args[0], 2, undef_this);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            arr_iterator_close_after_throw(ctx, iterator);
+            return null;
+        }
+
+        if (into_map) {
+            // CanonicalizeKeyedCollectionKey: -0 -> +0.
+            TVal norm_key = key_result;
+            if (norm_key.is_number() && norm_key.get_number() == 0.0) {
+                norm_key.set_fastint(0);
+            } else if (norm_key.is_fastint() && norm_key.get_fastint() == 0) {
+                norm_key.set_fastint(0);
+            }
+            if (!group_by_append_map(ctx, groups, norm_key, next_value)) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                return null;
+            }
+        } else {
+            HString* prop_key = builtin_to_property_key_vm(ctx, &key_result);
+            if (ctx.should_throw) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                return null;
+            }
+            if (prop_key == null) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                return null;
+            }
+            if (!group_by_append_object(ctx, groups, prop_key, next_value)) {
+                arr_iterator_close_after_throw(ctx, iterator);
+                return null;
+            }
+        }
+
+        k++;
+    }
+
+    return groups;
 }
 
 // ============================================================================
@@ -1982,6 +2380,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.MAP_PROTO_VALUES.ordinal: return { "values", 0 };
         case Builtin.MAP_PROTO_ENTRIES.ordinal: return { "entries", 0 };
         case Builtin.MAP_PROTO_FOREACH.ordinal: return { "forEach", 1 };
+        case Builtin.MAP_PROTO_GETORINSERT.ordinal: return { "getOrInsert", 2 };
+        case Builtin.MAP_PROTO_GETORINSERTCOMPUTED.ordinal: return { "getOrInsertComputed", 2 };
         case Builtin.SET.ordinal: return { "Set", 0 };
         case Builtin.SET_PROTO_ADD.ordinal: return { "add", 1 };
         case Builtin.SET_PROTO_HAS.ordinal: return { "has", 1 };
@@ -1995,6 +2395,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.WEAKMAP_PROTO_GET.ordinal: return { "get", 1 };
         case Builtin.WEAKMAP_PROTO_HAS.ordinal: return { "has", 1 };
         case Builtin.WEAKMAP_PROTO_DELETE.ordinal: return { "delete", 1 };
+        case Builtin.WEAKMAP_PROTO_GETORINSERT.ordinal: return { "getOrInsert", 2 };
+        case Builtin.WEAKMAP_PROTO_GETORINSERTCOMPUTED.ordinal: return { "getOrInsertComputed", 2 };
         case Builtin.WEAKSET.ordinal: return { "WeakSet", 0 };
         case Builtin.WEAKSET_PROTO_ADD.ordinal: return { "add", 1 };
         case Builtin.WEAKSET_PROTO_HAS.ordinal: return { "has", 1 };
@@ -2227,6 +2629,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.TA_PROTO_TO_STRING.ordinal: return { "toString", 0 };
         case Builtin.TA_PROTO_TO_LOCALE_STRING.ordinal: return { "toLocaleString", 0 };
         case Builtin.OBJECT_FROMENTRIES.ordinal: return { "fromEntries", 1 };
+        case Builtin.OBJECT_GROUPBY.ordinal: return { "groupBy", 2 };
+        case Builtin.MAP_GROUPBY.ordinal: return { "groupBy", 2 };
         // %TypedArray% intrinsic statics
         case Builtin.TA_OF.ordinal: return { "of", 0 };
         case Builtin.TA_FROM.ordinal: return { "from", 1 };
@@ -2833,12 +3237,15 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.JSON_PARSE.ordinal] = &builtin_json_parse,
     [Builtin.JSON_STRINGIFY.ordinal] = &builtin_json_stringify,
     [Builtin.MAP.ordinal] = &builtin_map,
+    [Builtin.MAP_GROUPBY.ordinal] = &builtin_map_groupBy,
     [Builtin.MAP_ITERATOR_NEXT.ordinal] = &builtin_map_iterator_next,
     [Builtin.MAP_PROTO_CLEAR.ordinal] = &builtin_map_proto_clear,
     [Builtin.MAP_PROTO_DELETE.ordinal] = &builtin_map_proto_delete,
     [Builtin.MAP_PROTO_ENTRIES.ordinal] = &builtin_map_proto_entries,
     [Builtin.MAP_PROTO_FOREACH.ordinal] = &builtin_map_proto_forEach,
     [Builtin.MAP_PROTO_GET.ordinal] = &builtin_map_proto_get,
+    [Builtin.MAP_PROTO_GETORINSERT.ordinal] = &builtin_map_proto_getOrInsert,
+    [Builtin.MAP_PROTO_GETORINSERTCOMPUTED.ordinal] = &builtin_map_proto_getOrInsertComputed,
     [Builtin.MAP_PROTO_HAS.ordinal] = &builtin_map_proto_has,
     [Builtin.MAP_PROTO_KEYS.ordinal] = &builtin_map_proto_keys,
     [Builtin.MAP_PROTO_SET.ordinal] = &builtin_map_proto_set,
@@ -2901,6 +3308,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.OBJECT_GETOWNPROPERTYNAMES.ordinal] = &builtin_object_getOwnPropertyNames,
     [Builtin.OBJECT_GETOWNPROPERTYSYMBOLS.ordinal] = &builtin_object_getOwnPropertySymbols,
     [Builtin.OBJECT_GETPROTOTYPEOF.ordinal] = &builtin_object_getPrototypeOf,
+    [Builtin.OBJECT_GROUPBY.ordinal] = &builtin_object_groupBy,
     [Builtin.OBJECT_HASOWN.ordinal] = &builtin_object_hasOwn,
     [Builtin.OBJECT_IS.ordinal] = &builtin_object_is,
     [Builtin.OBJECT_ISEXTENSIBLE.ordinal] = &builtin_object_isExtensible,
@@ -3036,6 +3444,8 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.WEAKMAP.ordinal] = &builtin_weakmap,
     [Builtin.WEAKMAP_PROTO_DELETE.ordinal] = &builtin_weakmap_proto_delete,
     [Builtin.WEAKMAP_PROTO_GET.ordinal] = &builtin_weakmap_proto_get,
+    [Builtin.WEAKMAP_PROTO_GETORINSERT.ordinal] = &builtin_weakmap_proto_getOrInsert,
+    [Builtin.WEAKMAP_PROTO_GETORINSERTCOMPUTED.ordinal] = &builtin_weakmap_proto_getOrInsertComputed,
     [Builtin.WEAKMAP_PROTO_HAS.ordinal] = &builtin_weakmap_proto_has,
     [Builtin.WEAKMAP_PROTO_SET.ordinal] = &builtin_weakmap_proto_set,
     [Builtin.WEAKSET.ordinal] = &builtin_weakset,

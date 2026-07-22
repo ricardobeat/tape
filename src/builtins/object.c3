@@ -4580,6 +4580,15 @@ fn void builtin_object_fromEntries(BuiltinContext* ctx) {
     ctx.result.set_object(obj);
 }
 
+// ============================================================================
+// Object.groupBy — ES2024 §23.1.2.1
+// ============================================================================
+fn void builtin_object_groupBy(BuiltinContext* ctx) {
+    HObject* groups = group_by_shared(ctx, false);
+    if (groups == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_object(groups);
+}
+
 /// Convert a TVal to a property key (HString*) for use in Object.fromEntries.
 /// Per ES2019 §19.1.2.5, this performs ToPropertyKey on the entry's "0" element.
 /// Uses builtin_to_string_vm for object values (calls toString/valueOf via ToPrimitive),
@@ -5549,6 +5558,13 @@ fn bool register_object_constructor(EnvRecord* global_env, Heap* heap) {
     TVal fromentries_tv;
     fromentries_tv.set_lightfunc((void*)(usz)Builtin.OBJECT_FROMENTRIES.ordinal);
     obj.put_prop(fromentries_key, fromentries_tv, hobject::PROP_FLAGS_WC);
+
+    // Object.groupBy — ES2024 §23.1.2.1
+    HString* groupby_key = builtin_intern_string(heap, "groupBy");
+    if (groupby_key == null) return false;
+    TVal groupby_tv;
+    groupby_tv.set_lightfunc((void*)(usz)Builtin.OBJECT_GROUPBY.ordinal);
+    obj.put_prop(groupby_key, groupby_tv, hobject::PROP_FLAGS_WC);
 
     // Register Object constructor globally as an OBJECT (not LIGHTFUNC)
     uint hash = heap.hash_string("Object");

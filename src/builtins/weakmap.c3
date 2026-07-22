@@ -43,6 +43,24 @@ fn void builtin_weakmap_proto_set(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// WeakMap.prototype.getOrInsert(key, value) — ES2025 §24.3.3.6
+// ============================================================================
+fn void builtin_weakmap_proto_getOrInsert(BuiltinContext* ctx) {
+    HObject* wm = check_weakmap(ctx);
+    if (wm == null) { ctx.result.set_undefined(); return; }
+    coll_get_or_insert(ctx, wm, true, "Invalid value used as weak map key", false);
+}
+
+// ============================================================================
+// WeakMap.prototype.getOrInsertComputed(key, callbackfn) — ES2025 §24.3.3.7
+// ============================================================================
+fn void builtin_weakmap_proto_getOrInsertComputed(BuiltinContext* ctx) {
+    HObject* wm = check_weakmap(ctx);
+    if (wm == null) { ctx.result.set_undefined(); return; }
+    coll_get_or_insert_computed(ctx, wm, true, "Invalid value used as weak map key", "callback function is not callable", false);
+}
+
+// ============================================================================
 // WeakMap.prototype.get(key) — ES6 §23.3.3.3
 // ============================================================================
 fn void builtin_weakmap_proto_get(BuiltinContext* ctx) {
@@ -100,6 +118,10 @@ fn bool register_weakmap_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "get", Builtin.WEAKMAP_PROTO_GET.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "has", Builtin.WEAKMAP_PROTO_HAS.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "delete", Builtin.WEAKMAP_PROTO_DELETE.ordinal)) return false;
+    // Add .getOrInsert(key, value) method — ES2025 §24.3.3.6
+    if (!register_string_proto_method(proto, heap, "getOrInsert", Builtin.WEAKMAP_PROTO_GETORINSERT.ordinal)) return false;
+    // Add .getOrInsertComputed(key, callbackfn) method — ES2025 §24.3.3.7
+    if (!register_string_proto_method(proto, heap, "getOrInsertComputed", Builtin.WEAKMAP_PROTO_GETORINSERTCOMPUTED.ordinal)) return false;
 
     // Set @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);

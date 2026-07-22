@@ -106,6 +106,24 @@ fn void builtin_map_proto_set(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Map.prototype.getOrInsert(key, value) — ES2025 §24.1.3.9
+// ============================================================================
+fn void builtin_map_proto_getOrInsert(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.set_undefined(); return; }
+    coll_get_or_insert(ctx, map, false, "", true);
+}
+
+// ============================================================================
+// Map.prototype.getOrInsertComputed(key, callbackfn) — ES2025 §24.1.3.10
+// ============================================================================
+fn void builtin_map_proto_getOrInsertComputed(BuiltinContext* ctx) {
+    HObject* map = check_map(ctx);
+    if (map == null) { ctx.result.set_undefined(); return; }
+    coll_get_or_insert_computed(ctx, map, false, "", "callback function is not callable", true);
+}
+
+// ============================================================================
 // Map.prototype.size getter — ES6 §23.1.3.10
 // Counts non-deleted entries (deleted slots use TAG_DELETED sentinel).
 // ============================================================================
@@ -398,6 +416,15 @@ fn void builtin_map_species_getter(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// Map.groupBy — ES2024 §24.1.2.1
+// ============================================================================
+fn void builtin_map_groupBy(BuiltinContext* ctx) {
+    HObject* groups = group_by_shared(ctx, true);
+    if (groups == null) { ctx.result.set_undefined(); return; }
+    ctx.result.set_object(groups);
+}
+
+// ============================================================================
 // Map constructor registration
 // ============================================================================
 
@@ -429,6 +456,10 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "entries", Builtin.MAP_PROTO_ENTRIES.ordinal)) return false;
     // Add .forEach() method
     if (!register_string_proto_method(proto, heap, "forEach", Builtin.MAP_PROTO_FOREACH.ordinal)) return false;
+    // Add .getOrInsert(key, value) method — ES2025 §24.1.3.9
+    if (!register_string_proto_method(proto, heap, "getOrInsert", Builtin.MAP_PROTO_GETORINSERT.ordinal)) return false;
+    // Add .getOrInsertComputed(key, callbackfn) method — ES2025 §24.1.3.10
+    if (!register_string_proto_method(proto, heap, "getOrInsertComputed", Builtin.MAP_PROTO_GETORINSERTCOMPUTED.ordinal)) return false;
     // Map.prototype[Symbol.iterator] must be the *same function object* as
     // .entries (ES6 §23.1.3.10), not merely an equivalent implementation.
     {
@@ -550,6 +581,13 @@ fn bool register_map_constructor(EnvRecord* global_env, Heap* heap) {
             }
         }
     }
+
+    // Map.groupBy — ES2024 §24.1.2.1
+    HString* groupby_key = builtin_intern_string(heap, "groupBy");
+    if (groupby_key == null) return false;
+    TVal groupby_tv;
+    groupby_tv.set_lightfunc((void*)(usz)Builtin.MAP_GROUPBY.ordinal);
+    ctor.put_prop(groupby_key, groupby_tv, hobject::PROP_FLAGS_WC);
 
     // Map.prototype's [[Prototype]] is set later (to Object.prototype)
 

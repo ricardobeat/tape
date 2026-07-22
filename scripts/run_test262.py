@@ -146,7 +146,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"import-defer|export-defer|import-attributes|import-text|import-bytes|"
     r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
-    r"iterator-sequencing|upsert|array-grouping|"
+    r"iterator-sequencing|"
     r"Math\.sumPrecise|RegExp\.escape|json-parse-with-source|"
     r"regexp-modifiers|regexp-duplicate-named-groups|"
     r"uint8array-base64|Float16Array|resizable-arraybuffer|"
@@ -154,7 +154,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"joint-iteration|iterator-helpers|"
     # ES2024+ features (implement later)
     r"Array\.fromAsync|set-methods|"
-    r"symbols-as-weakmap-keys|change-array-by-copy|Atomics\.waitAsync|"
+    r"change-array-by-copy|Atomics\.waitAsync|"
     # Complex features deferred.  (BigInt is implemented — plan 056 — so it is
     # no longer filtered here; BigInt64Array/BigUint64Array + DataView BigInt64
     # tests still fail until Phase 3/4 land, but they run rather than skip.)
