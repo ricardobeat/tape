@@ -50,7 +50,10 @@ assertEq(_key, "key", "toJSON key should be property name");
 assertEq(JSON.stringify({toJSON: null}), '{"toJSON":null}', "toJSON null");
 assertEq(JSON.stringify({toJSON: false}), '{"toJSON":false}', "toJSON false");
 assertEq(JSON.stringify({toJSON: []}), '{"toJSON":[]}', "toJSON array");
-assertEq(JSON.stringify({toJSON: /re/}), '{"toJSON":{"lastIndex":0}}', "toJSON regex");
+// RegExp value: only its own enumerable properties are serialized;
+// `lastIndex` is non-enumerable (WEC, WENC) on the instance, so the
+// result is an empty object — matches Node 24, QuickJS, and SpiderMonkey.
+assertEq(JSON.stringify({toJSON: /re/}), '{"toJSON":{}}', "toJSON regex");
 
 // toJSON abrupt completion
 var caught = false;
