@@ -28,7 +28,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 ### Todo — small (batch 2, one agent each)
 
 - [x] **`change-array-by-copy` un-skip** — fully landed: TypedArray side (incl. with() coercion order) + all 15 Array-side residuals (holes-as-own-props, toSorted via shared array_sort_compare, toSpliced arg/limit semantics); phases 5/6/22 all 0 fails.
-- [ ] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`).
+- [x] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`) — 69/71 (2 need immutable-arraybuffer); Uint8Array dir added to phase 22.
 - [ ] **`JSON.parse` source access** (`json-parse-with-source`).
 - [ ] **`Array.fromAsync`**.
 - [x] **`Math.sumPrecise`** — Shewchuk algorithm ported from quickjs; 10/10.
