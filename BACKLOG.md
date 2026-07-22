@@ -32,7 +32,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [ ] **`JSON.parse` source access** (`json-parse-with-source`).
 - [ ] **`Array.fromAsync`**.
 - [x] **`Math.sumPrecise`** — Shewchuk algorithm ported from quickjs; 10/10.
-- [>] **`Iterator.concat`** (`iterator-sequencing`).
+- [x] **`Iterator.concat`** (`iterator-sequencing`) — 30/31; the 31st exposed the spread-into-builtin bug below.
 - [ ] **`#x in obj`** (`class-fields-private-in`, plan 054 P6) — parser + existing brand-check reuse.
 - [ ] **Reflect un-skip** — surface implemented (A9); un-skip and fix what fails.
 
@@ -53,11 +53,13 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ## Known bugs (pre-existing, exposed by un-skips)
 
+- [>] **Spread into builtin calls drops the last argument at 5+ args** — `Math.min(...[5,4,3,2,1])` → 2; spread into JS functions is fine; SPREAD_ARG→builtin argc/argv wiring. Found via `Iterator/concat/many-arguments.js`. Agent running.
+
 - [x] **Captured-method aliasing** — NOT REPRODUCIBLE on merged HEAD (dedicated agent exhausted alias/IC/GC variants; coordinator re-confirmed 4 repro shapes clean). The iterator-helpers agent's mid-implementation observation was an artifact of its then-uncommitted state. Reopen only with a repro on current main. Note: the triggering test file is absent from our test262 snapshot.
 
 - [ ] **Getter/setter methods never create `arguments`** — `{get x(){ arguments }}` fails standalone; `static-init-arguments-methods.js`.
 - [ ] **`let x; var x;` redeclaration not rejected** — no conflict detection anywhere; `static-init-invalid-lex-var.js`.
-- [>] **`await` as BindingIdentifier in nested-function positions** — function-decl name, catch param, generator/accessor param names, `{await}` shorthand, arrow param-default; 9 tests, no class involvement; one (`generators/static-init-await-binding.js`) now shows as the suite's only CE:unexpected. Agent running.
+- [x] **`await` as BindingIdentifier in nested-function positions** — fixed via shared `expect_binding_identifier()` honoring [Await]/[Yield] boundaries (arrow params inherit, bodies reset); 9/10, CE:unexpected back to 0; the 10th needs `using` (explicit-resource-management, unimplemented).
 - [x] **`new Set(string)` throws** — fixed: `coll_construct` wraps primitives (correct [[Prototype]]) before the iterable check; `new Map("ab")` correctly TypeErrors on non-object entries.
 - [x] **`Array.from` primitive-wrapper prototype** — fixed by the iterator-helpers agent (real [[Prototype]] set; numbers/booleans/bigints handled too).
 - [>] **Large-string refcount leak** — >256-byte (`MAX_INTERN_BYTES`) non-interned strings from fromCodePoint/concat never decref'd (~5-7 MB/property-escapes test); only matters in long single-process runs. First agent stopped by user mid-investigation; its worktree (agent-a178867b5c7d24326) holds an UNVERIFIED ~157-line uncommitted diff exploring DECLVAR-ownership — treat as notes, not a fix (agent itself doubted it). Restart fresh with a tighter scope when picked up.
