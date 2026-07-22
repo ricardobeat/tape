@@ -251,6 +251,8 @@ struct Heap {
     HObject* set_proto;
     HObject* weakmap_proto;
     HObject* weakset_proto;
+    HObject* weakref_proto;
+    HObject* finalization_registry_proto;
     HObject* symbol_proto;
     HObject* bigint_proto;
     HObject* promise_proto;
@@ -1193,6 +1195,8 @@ fn void Heap.reset(&self) {
     self.set_proto        = null;
     self.weakmap_proto    = null;
     self.weakset_proto    = null;
+    self.weakref_proto    = null;
+    self.finalization_registry_proto = null;
     self.symbol_proto     = null;
     self.bigint_proto     = null;
     self.promise_proto    = null;
@@ -1967,6 +1971,8 @@ fn void Heap.mark_roots(&self) {
     if (self.set_proto != null) { self.mark_hobject(self.set_proto); }
     if (self.weakmap_proto != null) { self.mark_hobject(self.weakmap_proto); }
     if (self.weakset_proto != null) { self.mark_hobject(self.weakset_proto); }
+    if (self.weakref_proto != null) { self.mark_hobject(self.weakref_proto); }
+    if (self.finalization_registry_proto != null) { self.mark_hobject(self.finalization_registry_proto); }
     if (self.symbol_proto != null) { self.mark_hobject(self.symbol_proto); }
     if (self.bigint_proto != null) { self.mark_hobject(self.bigint_proto); }
     if (self.promise_proto != null) { self.mark_hobject(self.promise_proto); }

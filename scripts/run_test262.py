@@ -123,8 +123,6 @@ SKIP_DIRS = {
     "built-ins/AbstractModuleSource",  # 8     — Stage 3
     "built-ins/SharedArrayBuffer",     # 104   — platform-dependent
     "built-ins/Atomics",               # 390   — platform-dependent
-    "built-ins/WeakRef",               # 29    — GC-dependent
-    "built-ins/FinalizationRegistry",  # 47    — GC-dependent
     # built-ins/BigInt: now implemented (plan 056, fixed-width int128).  130/136
     # pass; the rest are out of scope: arbitrary-precision literals (>2^127),
     # Reflect.construct-based is-a-constructor, and $262 cross-realm.
@@ -155,7 +153,7 @@ UNSUPPORTED_PATTERN = re.compile(
     # Complex features deferred.  (BigInt is implemented — plan 056 — so it is
     # no longer filtered here; BigInt64Array/BigUint64Array + DataView BigInt64
     # tests still fail until Phase 3/4 land, but they run rather than skip.)
-    r"SharedArrayBuffer|Atomics|WeakRef|FinalizationRegistry|"
+    r"SharedArrayBuffer|Atomics|"
     r"structured-clone|import\.meta|dynamic-import|"
     # Async generators deferred (plan 057 implements the for-await-of *consumer*
     # + Symbol.asyncIterator, but NOT `async function*`). for-await-of tests whose
@@ -254,6 +252,13 @@ SKIP_GLOBS = {
     "built-ins/AsyncFromSyncIteratorPrototype/*",
 }
 SKIP_FILES = {
+    # Map/Set key/value tests that use a BigInt literal far beyond 2^127
+    # (~10^80). Arbitrary-precision BigInt is out of scope (plan 056, fixed-width
+    # int128); these previously skipped via the WeakRef feature token (used here
+    # only incidentally) and surface the known precision limit now that WeakRef
+    # runs. Not a WeakRef defect.
+    "built-ins/Map/valid-keys.js",
+    "built-ins/Set/valid-values.js",
     # Async-generator SYNTAX present incidentally (case lists / fixtures) in
     # tests whose names don't match the async-gen globs above. The engine
     # parse-rejects `async function*` (non-goal until plan 060), so these
@@ -778,12 +783,13 @@ PHASES = [
         ],
     },
     {
-        "label": "Phase 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet",
+        "label": "Phase 17-20: Map/Set/Symbol/Promise/WeakMap/WeakSet/WeakRef/FinalizationRegistry",
         "dirs": [
             "built-ins/Map", "built-ins/Set",
             "built-ins/Symbol",
             "built-ins/Promise",
             "built-ins/WeakMap", "built-ins/WeakSet",
+            "built-ins/WeakRef", "built-ins/FinalizationRegistry",
         ],
     },
     {

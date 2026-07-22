@@ -333,7 +333,11 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
         }
         // Count dense array indices that are not also in the named property table
         uint dense_int_count = 0;
-        if (obj.array_size > 0) {
+        // Only ARRAY exotics surface array_part as indexed own properties.
+        // Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep their
+        // entries in array_part as internal storage (mirroring get_prop, which
+        // only consults array_part for exotic_array objects).
+        if (obj.array_size > 0 && obj.flags.exotic_array) {
             for (uint i = 0; i < obj.array_size; i++) {
                 if (!obj.array_part()[i].is_undefined()) {
                     HString* ki = ctx.heap.int_to_hstring((long)i);
@@ -363,7 +367,7 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
                     }
                 }
                 // Add dense array indices (not already in named props)
-                for (uint i = 0; i < obj.array_size; i++) {
+                for (uint i = 0; obj.flags.exotic_array && i < obj.array_size; i++) {
                     if (!obj.array_part()[i].is_undefined()) {
                         HString* ki = ctx.heap.int_to_hstring((long)i);
                         if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
@@ -641,7 +645,11 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
         // Count dense array indices not in named property table
         uint dense_int_count = 0;
-        if (obj.array_size > 0) {
+        // Only ARRAY exotics surface array_part as indexed own properties.
+        // Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep their
+        // entries in array_part as internal storage (mirroring get_prop, which
+        // only consults array_part for exotic_array objects).
+        if (obj.array_size > 0 && obj.flags.exotic_array) {
             for (uint i = 0; i < obj.array_size; i++) {
                 if (!obj.array_part()[i].is_undefined()) {
                     HString* ki = ctx.heap.int_to_hstring((long)i);
@@ -669,7 +677,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
                     }
                 }
                 // Add dense array indices
-                for (uint i = 0; i < obj.array_size; i++) {
+                for (uint i = 0; obj.flags.exotic_array && i < obj.array_size; i++) {
                     if (!obj.array_part()[i].is_undefined()) {
                         HString* ki = ctx.heap.int_to_hstring((long)i);
                         if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
@@ -889,7 +897,11 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
             }
         }
         uint dense_int_count = 0;
-        if (obj.array_size > 0) {
+        // Only ARRAY exotics surface array_part as indexed own properties.
+        // Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep their
+        // entries in array_part as internal storage (mirroring get_prop, which
+        // only consults array_part for exotic_array objects).
+        if (obj.array_size > 0 && obj.flags.exotic_array) {
             for (uint i = 0; i < obj.array_size; i++) {
                 if (!obj.array_part()[i].is_undefined()) {
                     HString* ki = ctx.heap.int_to_hstring((long)i);
@@ -915,7 +927,7 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
                         }
                     }
                 }
-                for (uint i = 0; i < obj.array_size; i++) {
+                for (uint i = 0; obj.flags.exotic_array && i < obj.array_size; i++) {
                     if (!obj.array_part()[i].is_undefined()) {
                         HString* ki = ctx.heap.int_to_hstring((long)i);
                         if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;

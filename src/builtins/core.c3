@@ -375,6 +375,11 @@ enum Builtin : uint {
     WEAKSET_PROTO_ADD,
     WEAKSET_PROTO_HAS,
     WEAKSET_PROTO_DELETE,
+    WEAKREF,
+    WEAKREF_PROTO_DEREF,
+    FINALIZATION_REGISTRY,
+    FINALIZATION_REGISTRY_PROTO_REGISTER,
+    FINALIZATION_REGISTRY_PROTO_UNREGISTER,
     SYMBOL,
     SYMBOL_FOR,
     SYMBOL_KEYFOR,
@@ -2487,6 +2492,11 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.WEAKSET_PROTO_ADD.ordinal: return { "add", 1 };
         case Builtin.WEAKSET_PROTO_HAS.ordinal: return { "has", 1 };
         case Builtin.WEAKSET_PROTO_DELETE.ordinal: return { "delete", 1 };
+        case Builtin.WEAKREF.ordinal: return { "WeakRef", 1 };
+        case Builtin.WEAKREF_PROTO_DEREF.ordinal: return { "deref", 0 };
+        case Builtin.FINALIZATION_REGISTRY.ordinal: return { "FinalizationRegistry", 1 };
+        case Builtin.FINALIZATION_REGISTRY_PROTO_REGISTER.ordinal: return { "register", 2 };
+        case Builtin.FINALIZATION_REGISTRY_PROTO_UNREGISTER.ordinal: return { "unregister", 1 };
         case Builtin.SYMBOL.ordinal: return { "Symbol", 1 };
         case Builtin.SYMBOL_FOR.ordinal: return { "for", 1 };
         case Builtin.SYMBOL_KEYFOR.ordinal: return { "keyFor", 1 };
@@ -3593,6 +3603,11 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.WEAKSET_PROTO_ADD.ordinal] = &builtin_weakset_proto_add,
     [Builtin.WEAKSET_PROTO_DELETE.ordinal] = &builtin_weakset_proto_delete,
     [Builtin.WEAKSET_PROTO_HAS.ordinal] = &builtin_weakset_proto_has,
+    [Builtin.WEAKREF.ordinal] = &builtin_weakref,
+    [Builtin.WEAKREF_PROTO_DEREF.ordinal] = &builtin_weakref_proto_deref,
+    [Builtin.FINALIZATION_REGISTRY.ordinal] = &builtin_finalization_registry,
+    [Builtin.FINALIZATION_REGISTRY_PROTO_REGISTER.ordinal] = &builtin_finalization_registry_proto_register,
+    [Builtin.FINALIZATION_REGISTRY_PROTO_UNREGISTER.ordinal] = &builtin_finalization_registry_proto_unregister,
     // TypedArray constructors
     [Builtin.INT8ARRAY.ordinal] = &builtin_int8array,
     [Builtin.UINT8ARRAY.ordinal] = &builtin_uint8array,
@@ -4060,6 +4075,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register WeakSet constructor and prototype
     if (!register_weakset_constructor(global_env, heap)) return false;
+
+    // Register WeakRef constructor and prototype
+    if (!register_weakref_constructor(global_env, heap)) return false;
+
+    // Register FinalizationRegistry constructor and prototype
+    if (!register_finalization_registry_constructor(global_env, heap)) return false;
 
     // Register Symbol constructor and prototype
     if (!register_symbol_constructor(global_env, heap)) return false;

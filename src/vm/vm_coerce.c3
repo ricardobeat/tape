@@ -303,6 +303,8 @@ fn HObject* lightfunc_get_proto(Vm* vm, uint fn_idx) {
         case builtins::Builtin.SET.ordinal:             return vm.heap.set_proto;
         case builtins::Builtin.WEAKMAP.ordinal:         return vm.heap.weakmap_proto;
         case builtins::Builtin.WEAKSET.ordinal:         return vm.heap.weakset_proto;
+        case builtins::Builtin.WEAKREF.ordinal:         return vm.heap.weakref_proto;
+        case builtins::Builtin.FINALIZATION_REGISTRY.ordinal: return vm.heap.finalization_registry_proto;
         case builtins::Builtin.SYMBOL.ordinal:          return vm.heap.symbol_proto;
         case builtins::Builtin.PROMISE.ordinal:         return vm.heap.promise_proto;
         case builtins::Builtin.GENERATOR_FUNCTION.ordinal: return vm.heap.generator_proto;

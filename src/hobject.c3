@@ -144,6 +144,8 @@ enum ObjClass : char {
     SET,
     WEAKMAP,
     WEAKSET,
+    WEAKREF,
+    FINALIZATION_REGISTRY,
     PROMISE,
     GENERATOR,
     ARRAY_ITERATOR,
