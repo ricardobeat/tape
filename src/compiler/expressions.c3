@@ -3591,10 +3591,19 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // this lexer (resolved to literals by string comparison at
                 // the primary-expression level) but are reserved words per
                 // spec and cannot be used as an IdentifierReference.
-                is_shorthand_key = key_tt == TokenType.IDENTIFIER
-                    && !str_eq(key_tok.str_value, "true")
-                    && !str_eq(key_tok.str_value, "false")
-                    && !str_eq(key_tok.str_value, "null");
+                // `{ await }` / `{ yield }` shorthand is a valid
+                // IdentifierReference where the context permits the keyword as
+                // an identifier — outside a module/async fn for `await`, outside
+                // a generator for `yield` (a class static block's forbid flags
+                // reset in a nested non-async function/arrow, so this is how the
+                // static-init-await object-shorthand test compiles). The keyword
+                // token's str_value already carries the name for resolve_var.
+                is_shorthand_key = (key_tt == TokenType.IDENTIFIER
+                        && !str_eq(key_tok.str_value, "true")
+                        && !str_eq(key_tok.str_value, "false")
+                        && !str_eq(key_tok.str_value, "null"))
+                    || (key_tt == TokenType.AWAIT && !self.is_module && !self.is_async && !self.forbid_await)
+                    || (key_tt == TokenType.YIELD && !self.is_generator && !self.forbid_yield);
 
                 // Check for getter/setter: `get prop() {}` / `set prop(v) {}`
                 // If key is "get" or "set" AND next token is a property key (not `:` or `(`)

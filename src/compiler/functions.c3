@@ -153,8 +153,8 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
 
         // Rest element: {...rest}
         if (self.match(TokenType.ELLIPSIS)) {
-            Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(rest_tok.str_value)) {
+            Token rest_tok = self.expect_binding_identifier()!;
+            if (rest_tok.type == TokenType.IDENTIFIER && is_restricted_name(rest_tok.str_value)) {
                 return COMPILE_ERROR~;
             }
             if (*count < binds.len) {
@@ -207,8 +207,8 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
                     self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
                 }
             } else {
-                Token bind = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(bind.str_value)) return COMPILE_ERROR~;
+                Token bind = self.expect_binding_identifier()!;
+                if (bind.type == TokenType.IDENTIFIER && is_restricted_name(bind.str_value)) return COMPILE_ERROR~;
                 if (*count < binds.len) {
                     binds[*count].name_idx = self.add_string_constant(bind.str_value);
                     binds[*count].is_computed_key = true;
@@ -259,8 +259,8 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
                     self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
                 }
             } else {
-                Token bind = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(bind.str_value)) {
+                Token bind = self.expect_binding_identifier()!;
+                if (bind.type == TokenType.IDENTIFIER && is_restricted_name(bind.str_value)) {
                     return COMPILE_ERROR~;
                 }
                 if (*count < binds.len) {
@@ -380,8 +380,8 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
                     self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
                 }
             } else {
-                Token rest_tok = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(rest_tok.str_value)) {
+                Token rest_tok = self.expect_binding_identifier()!;
+                if (rest_tok.type == TokenType.IDENTIFIER && is_restricted_name(rest_tok.str_value)) {
                     return COMPILE_ERROR~;
                 }
                 if (*count < binds.len) {
@@ -423,8 +423,8 @@ fn void? CompilerContext.collect_arr_param_binds(&self,
                 self.collect_arr_param_binds(binds, count, src_reg, synth_idx)!;
             }
         } else {
-            Token bind = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(bind.str_value)) {
+            Token bind = self.expect_binding_identifier()!;
+            if (bind.type == TokenType.IDENTIFIER && is_restricted_name(bind.str_value)) {
                 return COMPILE_ERROR~;
             }
             if (*count < binds.len) {
@@ -2271,8 +2271,8 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 continue;
             }
 
-            Token param = self.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(param.str_value)) {
+            Token param = self.expect_binding_identifier()!;
+            if (param.type == TokenType.IDENTIFIER && is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
             }
             if (check_dup_param(param.str_value, seen_param_names[..], seen_param_lens[..], seen_param_count)) {
@@ -2859,8 +2859,13 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
                 continue;
             }
 
-            Token param = inner_ctx.expect(TokenType.IDENTIFIER)!;
-            if (is_restricted_name(param.str_value)) {
+            // FormalParameters are BindingIdentifier[?Yield, ?Await] of THIS
+            // function (inner_ctx's flags), so `await`/`yield` are valid param
+            // names for a plain function/method even when the enclosing scope is
+            // a class static block — inner_ctx does not inherit forbid_await.
+            Token param = inner_ctx.expect_binding_identifier()!;
+            bool param_ctx_keyword = param.type != TokenType.IDENTIFIER;
+            if (!param_ctx_keyword && is_restricted_name(param.str_value)) {
                 return COMPILE_ERROR~;
             }
             if (check_dup_param(param.str_value, inner_seen_names[..], inner_seen_lens[..], inner_seen_count)) {
@@ -3234,7 +3239,19 @@ fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
     char[] name;
     bool has_name = false;
     bool name_is_explicit = false;
-    if (self.check(TokenType.IDENTIFIER)) {
+    // A function-expression name's [Yield]/[Await] grammar params are FIXED by
+    // the kind of expression, not inherited from the enclosing context, so an
+    // enclosing static block's forbid_await/forbid_yield do NOT apply here:
+    //   FunctionExpression        name is [~Yield, ~Await] — both allowed
+    //   GeneratorExpression       name is [+Yield, ~Await] — `yield` reserved
+    //   AsyncFunctionExpression   name is [~Yield, +Await] — `await` reserved
+    // self.is_generator/self.is_async already reflect this expression's own
+    // generator/async-ness (set just above from the `function*`/`async`
+    // prefixes), so `(function* await(){})` and `function await(){}` are valid
+    // even inside a class static block, but `async function await(){}` is not.
+    if (self.check(TokenType.IDENTIFIER) ||
+        (self.check(TokenType.AWAIT) && !self.is_module && !self.is_async) ||
+        (self.check(TokenType.YIELD) && !self.is_generator)) {
         Token name_tok = self.advance()!;
         name = name_tok.str_value;
         has_name = true;
@@ -3383,6 +3400,24 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
     // is a SyntaxError even though the arrow doesn't have its own [[NewTarget]].
     arrow_ctx.eval_mode = self.eval_mode;
     arrow_ctx.eval_direct_in_function = self.eval_direct_in_function;
+
+    // Unlike a regular function/method (whose [Yield]/[Await] grammar params
+    // are re-fixed at the boundary), an ArrowFunction's ArrowParameters inherit
+    // the enclosing [Yield]/[Await] — a class static block's ContainsAwait early
+    // error DOES reach into arrow parameter default expressions. So a nested
+    // arrow's PARAMETERS keep the enclosing forbid_await/forbid_yield
+    // (`((x = await) => 0)` in a static block is a SyntaxError), but the arrow
+    // BODY resets them below after `=>` (`(() => ({ await }))` is valid). A
+    // non-async arrow inside an async fn also correctly keeps await reserved in
+    // its params via this inheritance.
+    // `await` is reserved in the arrow params iff the enclosing context
+    // reserved it (module, async fn, or static-block forbid_await); likewise
+    // `yield` for a generator. arrow_ctx.is_async/is_generator are the arrow's
+    // OWN flags (false for a plain arrow), so fold the enclosing reservation
+    // into forbid_await/forbid_yield, which expect_binding_identifier and the
+    // shorthand/name checks consult.
+    arrow_ctx.forbid_await = self.forbid_await || self.is_module || self.is_async;
+    arrow_ctx.forbid_yield = self.forbid_yield || self.is_generator;
 
     // The arrow's own function scope. Arrows have no call-time var_env of
     // their own (they run in the captured lexical environment), so without
@@ -3544,6 +3579,14 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
 
     // Consume the => token
     arrow_ctx.expect(TokenType.ARROW)!;
+
+    // The arrow BODY is a fresh [Await]/[Yield] boundary for the static-block
+    // ContainsAwait early error: `(() => ({ await }))` and
+    // `(() => { function await(){} })` inside a static block are valid even
+    // though the params above kept the enclosing reservation. (An async arrow
+    // still reserves `await` as the operator via arrow_ctx.is_async.)
+    arrow_ctx.forbid_await = false;
+    arrow_ctx.forbid_yield = false;
 
     // Push a function-level lexical scope
     bool has_func_lex = arrow_ctx.default_count > 0;

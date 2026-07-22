@@ -3448,8 +3448,14 @@ fn void? CompilerContext.try_statement(&self) {
                 self.expect(TokenType.RPAREN)!;
                 self.free_reg(catch_val_reg);
             } else {
-                Token catch_param = self.expect(TokenType.IDENTIFIER)!;
-                if (is_restricted_name(catch_param.str_value)) {
+                // CatchParameter's BindingIdentifier is [?Yield, ?Await], so
+                // `await`/`yield` are valid names where the context permits
+                // (e.g. inside a non-async arrow nested in a static block). The
+                // context-blind is_restricted_name check below must not
+                // re-reject a keyword the helper already vetted for this context.
+                Token catch_param = self.expect_binding_identifier()!;
+                bool catch_ctx_keyword = catch_param.type != TokenType.IDENTIFIER;
+                if (!catch_ctx_keyword && is_restricted_name(catch_param.str_value)) {
                     return self.fail("reserved word cannot be used as a catch parameter")~;
                 }
                 self.expect(TokenType.RPAREN)!;
@@ -4107,7 +4113,7 @@ fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false)
         self.is_constructable = false;
     }
 
-    Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+    Token name_tok = self.expect_binding_identifier()!;
     ushort func_reg = self.declare_var(name_tok.str_value, VAR);
 
     // Compile the function into a nested CompiledFunction with the
