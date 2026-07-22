@@ -1107,7 +1107,6 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     entry_act.lex_env = vm.global_lex_env != null ? vm.global_lex_env : vm.global_env;
     entry_act.cat = null;
     entry_act.curr_pc = func.code;  // Points into bytecode
-    entry_act.bottom = vm.valstack;
     entry_act.retval = null;
     entry_act.flags = 0;
     if (func.has_direct_eval()) {
@@ -1133,6 +1132,10 @@ fn TVal? Vm.execute(Vm* vm, CompiledFunction* func) {
     for (uint i = 0; i < nregs; i++) {
         vm.valstack[i].set_undefined();
     }
+    // Set after ensure_valstack: a growing realloc may have moved vm.valstack,
+    // so capturing entry_act.bottom beforehand would leave it pointing into
+    // the freed buffer.
+    entry_act.bottom = vm.valstack;
     vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
     vm.valstack_bottom = vm.valstack;
     // The top-level activation has no caller, but caller_valstack_top must be
@@ -1163,7 +1166,6 @@ fn TVal? Vm.execute_in_env(Vm* vm, CompiledFunction* func, EnvRecord* env) {
     entry_act.lex_env = env;
     entry_act.cat = null;
     entry_act.curr_pc = func.code;
-    entry_act.bottom = vm.valstack;
     entry_act.retval = null;
     entry_act.flags = 0;
     if (func.has_direct_eval()) {
@@ -1186,6 +1188,10 @@ fn TVal? Vm.execute_in_env(Vm* vm, CompiledFunction* func, EnvRecord* env) {
     for (uint i = 0; i < nregs; i++) {
         vm.valstack[i].set_undefined();
     }
+    // Set after ensure_valstack: a growing realloc may have moved vm.valstack,
+    // so capturing entry_act.bottom beforehand would leave it pointing into
+    // the freed buffer.
+    entry_act.bottom = vm.valstack;
     vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
     vm.valstack_bottom = vm.valstack;
     entry_act.caller_valstack_top = vm.valstack_top;
@@ -1231,7 +1237,6 @@ fn bool? Vm.execute_module_async(Vm* vm, CompiledFunction* func, EnvRecord* env)
     entry_act.lex_env = env;
     entry_act.cat = null;
     entry_act.curr_pc = func.code;
-    entry_act.bottom = vm.valstack;
     entry_act.retval = null;
     entry_act.flags = ACT_FLAG_ASYNC;
     if (func.has_direct_eval()) {
@@ -1256,6 +1261,10 @@ fn bool? Vm.execute_module_async(Vm* vm, CompiledFunction* func, EnvRecord* env)
     for (uint i = 0; i < nregs; i++) {
         vm.valstack[i].set_undefined();
     }
+    // Set after ensure_valstack: a growing realloc may have moved vm.valstack,
+    // so capturing entry_act.bottom beforehand would leave it pointing into
+    // the freed buffer.
+    entry_act.bottom = vm.valstack;
     vm.valstack_top = (TVal*)((usz)vm.valstack + (usz)nregs * TVal::size);
     vm.valstack_bottom = vm.valstack;
     entry_act.caller_valstack_top = vm.valstack_top;

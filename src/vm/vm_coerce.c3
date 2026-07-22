@@ -205,12 +205,19 @@ fn bool ensure_valstack_grow(Vm* vm, uint needed) {
     vm.valstack_end = (TVal*)((char*)new_base + (usz)(new_size * TVal::size));
     vm.valstack_bottom = (TVal*)((char*)vm.valstack_bottom + diff);
 
-    // Relocate all activation bottom/retval pointers (they point into the old buffer)
+    // Relocate all activation bottom/retval/caller_valstack_top pointers (they
+    // point into the old buffer). caller_valstack_top is restored into
+    // vm.valstack_top on RET, so a stale entry here would desync
+    // vm.valstack_top from vm.valstack on the very next call after this one
+    // returns.
     for (uint i = 0; i < vm.activation_count; i++) {
         Activation* a = &vm.activations[i];
         a.bottom = (TVal*)((char*)a.bottom + diff);
         if (a.retval != null) {
             a.retval = (TVal*)((char*)a.retval + diff);
+        }
+        if (a.caller_valstack_top != null) {
+            a.caller_valstack_top = (TVal*)((char*)a.caller_valstack_top + diff);
         }
     }
 
