@@ -53,6 +53,8 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ## Known bugs (pre-existing, exposed by un-skips)
 
+- [ ] **Arrows parse at any precedence level** — `1 + () => 2` and `#f in () => {}` are accepted; ArrowFunction is an AssignmentExpression-level production and must not appear as a binary operand without parens. Fails 2 `expressions/in/private-field-*` negative-parse tests (plus `rhs-yield-absent`, which throws the wrong error kind). General Pratt-parser gap, predates private-in.
+
 - [x] **Spread into builtin calls drops the last argument at 5+ args** — two coupled bugs fixed: the spread count register (CALL_S's nargs source) was allocated INSIDE the argv window and got overwritten at 5+ elements, and SPREAD_ARG stored borrowed refs that call teardown over-decref'd. `begin_spread_args` now reserves both control regs below first_arg; SPREAD_ARG takes owned refs.
 - [ ] **Plain argument AFTER a large spread still miscompiles** — `f(1,...[2,3,4,5],99)` → `1,2,3,4,99,99` (was equally broken pre-fix): the trailing arg's evaluation register lands inside the live spread window. Needs argument-array lowering or a VM-side spread buffer. Not hit by any phase test today.
 
