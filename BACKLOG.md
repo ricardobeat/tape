@@ -42,7 +42,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [ ] **Resizable ArrayBuffer** (`resizable-arraybuffer`).
 - [ ] **`ArrayBuffer.prototype.transfer`** (`arraybuffer-transfer`).
 - [ ] **`Float16Array`**.
-- [ ] **WeakRef / FinalizationRegistry** — needs GC hooks; WeakMap/WeakSet are also not truly weak today (plain storage, no GC integration).
+- [x] **WeakRef / FinalizationRegistry** — API surface landed (74/76; 2 cross-realm), non-weak semantics matching WeakMap policy (cleanup never fires — spec-legal); also fixed internal collection storage leaking through getOwnPropertyNames. TRUE weakness (all four types) remains a GC-integration project, out of parity scope for now.
 - [ ] **Atomics / SharedArrayBuffer** (+ `Atomics.waitAsync`).
 - [ ] **Import attributes + JSON modules** (`import-attributes`).
 
