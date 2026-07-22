@@ -2378,7 +2378,10 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
         ushort ai = 0;
         while (ai < first_default_idx) {
             uint ni = param_name_indices[ai];
-            self.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            // Source register is the param's own slot (params occupy r0..rN in
+            // declaration order); using r0 unconditionally would copy the first
+            // param's value into every lex binding.
+            self.emit_a_bc(Opcode.PUTLEX, (uint)ai, ni);
             ai++;
         }
 
@@ -2451,7 +2454,9 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 }
             }
             if (!is_default_param) {
-                self.emit_a_bc(Opcode.PUTLEX, 0, ni);
+                // Source register is the param's own slot (see note above);
+                // r0 unconditionally would alias the first param's value.
+                self.emit_a_bc(Opcode.PUTLEX, (uint)ai, ni);
             }
             ai++;
         }
@@ -2961,7 +2966,10 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
         ushort ai = 0;
         while (ai < first_default_idx) {
             uint ni = param_name_indices[ai];
-            inner_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            // Source register is the param's own slot (params occupy r0..rN in
+            // declaration order); using r0 unconditionally would copy the first
+            // param's value into every lex binding.
+            inner_ctx.emit_a_bc(Opcode.PUTLEX, (uint)ai, ni);
             ai++;
         }
 
@@ -3032,7 +3040,9 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
                 }
             }
             if (!is_default_param) {
-                inner_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+                // Source register is the param's own slot (see note above);
+                // r0 unconditionally would alias the first param's value.
+                inner_ctx.emit_a_bc(Opcode.PUTLEX, (uint)ai, ni);
             }
             ai++;
         }
@@ -3606,7 +3616,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
         ushort ai = 0;
         while (ai < first_default_idx) {
             uint ni = param_name_indices[ai];
-            arrow_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+            // Source register is the param's own slot (params occupy r0..rN in
+            // declaration order); using r0 unconditionally would copy the first
+            // param's value into every lex binding.
+            arrow_ctx.emit_a_bc(Opcode.PUTLEX, (uint)ai, ni);
             ai++;
         }
 
@@ -3675,7 +3688,9 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
                 }
             }
             if (!is_default_param) {
-                arrow_ctx.emit_a_bc(Opcode.PUTLEX, 0, ni);
+                // Source register is the param's own slot (see note above);
+                // r0 unconditionally would alias the first param's value.
+                arrow_ctx.emit_a_bc(Opcode.PUTLEX, (uint)ai, ni);
             }
             ai++;
         }
