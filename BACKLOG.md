@@ -34,7 +34,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [x] **`Math.sumPrecise`** — Shewchuk algorithm ported from quickjs; 10/10.
 - [x] **`Iterator.concat`** (`iterator-sequencing`) — 30/31; the 31st exposed the spread-into-builtin bug below.
 - [x] **`#x in obj`** (`class-fields-private-in`, plan 054 P6) — cherry-picked from `console` branch: new `HAS_BRAND` opcode (boolean own-property brand probe, TypeError on non-object RHS), `binary_expr` peek for `HASH_IDENT in`.
-- [ ] **Reflect un-skip** — surface implemented (A9); un-skip and fix what fails.
+- [x] **Reflect** — already un-skipped 2026-07-16 (commit 6bdb0e7); verified 153/153 test262 pass. (The 'runner skips Reflect' memory was stale and has been deleted.)
 
 ### Todo — architecture (batch 3)
 
