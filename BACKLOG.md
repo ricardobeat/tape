@@ -53,7 +53,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ## Known bugs (pre-existing, exposed by un-skips)
 
-- [>] **Captured-method aliasing** — `var x = obj.method; obj.method = newFn;` corrupts `x` (register-aliasing/refcount in GETPROP-then-PUTPROP; found via `Iterator/from/return-method-calls-base-return-method.js`, reproduces with plain objects). Agent running.
+- [x] **Captured-method aliasing** — NOT REPRODUCIBLE on merged HEAD (dedicated agent exhausted alias/IC/GC variants; coordinator re-confirmed 4 repro shapes clean). The iterator-helpers agent's mid-implementation observation was an artifact of its then-uncommitted state. Reopen only with a repro on current main. Note: the triggering test file is absent from our test262 snapshot.
 
 - [ ] **Getter/setter methods never create `arguments`** — `{get x(){ arguments }}` fails standalone; `static-init-arguments-methods.js`.
 - [ ] **`let x; var x;` redeclaration not rejected** — no conflict detection anywhere; `static-init-invalid-lex-var.js`.
