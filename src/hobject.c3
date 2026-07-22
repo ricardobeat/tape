@@ -613,18 +613,31 @@ struct HObjectGetterSetter {
 /// ArrayBuffer backing store. Active when obj_class == ARRAYBUFFER.
 /// Detach sentinel: byte_length == 0xFFFFFFFF (UINT32_MAX) marks a detached buffer.
 /// A live zero-length buffer has data==null and byte_length==0.
+///
+/// Resizable buffers (ES2024): `resizable` is true and `max_byte_length` holds
+/// the cap. Fixed buffers keep resizable==false; their max_byte_length is unused
+/// (zero) so the fixed-buffer fast path never touches it.
 struct HObjectArrayBuffer {
     char*    data;          // heap.alloc_func'd, zeroed; null when detached or zero-length
     uint     byte_length;   // byte length; set to 0xFFFFFFFF on detach
     HObject* views_head;    // intrusive list of views (via HObjectBufferView.next_view)
+    uint     max_byte_length; // cap for resizable buffers; unused (0) when !resizable
+    bool     resizable;     // true iff constructed with {maxByteLength}
 }
 
 /// TypedArray or DataView. Active for INT8ARRAY..FLOAT64ARRAY and DATAVIEW.
+///
+/// `length_tracking` (ES2024): true iff the view was created over a resizable
+/// buffer with no explicit length. Such a view auto-tracks the buffer: its
+/// effective byte_length is recomputed from the buffer at every access (see
+/// view_effective_byte_length / view_is_out_of_bounds in typedarray.c3). For
+/// tracking views the stored `byte_length` field is not authoritative.
 struct HObjectBufferView {
     HObject* buffer;        // backing ARRAYBUFFER object (GC-traced)
     HObject* next_view;     // intrusive list link (buffer.extra.ab.views_head chain)
     uint     byte_offset;
-    uint     byte_length;   // in BYTES
+    uint     byte_length;   // in BYTES (authoritative only when !length_tracking)
+    bool     length_tracking; // auto-track backing resizable buffer length
 }
 
 /// Tagged union of subtype-specific fields.

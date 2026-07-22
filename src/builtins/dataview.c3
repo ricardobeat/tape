@@ -88,6 +88,9 @@ fn void builtin_dataview(BuiltinContext* ctx) {
     TVal len_arg; len_arg.set_undefined();
     if (ctx.argc >= 3) len_arg = ctx.regs[ctx.base_reg + 2];
 
+    // Length-tracking DataView: no explicit length over a resizable buffer.
+    bool length_tracking = len_arg.is_undefined() && (*buf.extra_ptr()).ab.resizable;
+
     uint view_len;
     if (len_arg.is_undefined()) {
         view_len = buf_len - byte_offset;
@@ -125,6 +128,7 @@ fn void builtin_dataview(BuiltinContext* ctx) {
     obj.prototype = instance_proto;
     (*obj.extra_ptr()).view.byte_offset = byte_offset;
     (*obj.extra_ptr()).view.byte_length = view_len;
+    (*obj.extra_ptr()).view.length_tracking = length_tracking;
     typedarray_link_view(buf, obj);
 
     ctx.result.set_object(obj);
@@ -151,12 +155,12 @@ fn void builtin_dataview_proto_bytelength_get(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)this_val.get_heapptr();
-    HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        arraybuffer_throw_type_error(ctx, "DataView.prototype.byteLength: buffer is detached");
+    // §25.3.4.1: throw if detached or out of bounds (buffer shrank past view).
+    if (view_is_out_of_bounds(obj)) {
+        arraybuffer_throw_type_error(ctx, "DataView.prototype.byteLength: view is out of bounds");
         return;
     }
-    ctx.result.set_fastint((long)(*obj.extra_ptr()).view.byte_length);
+    ctx.result.set_fastint((long)view_effective_byte_length(obj));
 }
 
 fn void builtin_dataview_proto_byteoffset_get(BuiltinContext* ctx) {
@@ -166,9 +170,9 @@ fn void builtin_dataview_proto_byteoffset_get(BuiltinContext* ctx) {
         return;
     }
     HObject* obj = (HObject*)this_val.get_heapptr();
-    HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        arraybuffer_throw_type_error(ctx, "DataView.prototype.byteOffset: buffer is detached");
+    // §25.3.4.2: throw if detached or out of bounds.
+    if (view_is_out_of_bounds(obj)) {
+        arraybuffer_throw_type_error(ctx, "DataView.prototype.byteOffset: view is out of bounds");
         return;
     }
     ctx.result.set_fastint((long)(*obj.extra_ptr()).view.byte_offset);
@@ -222,9 +226,9 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
     uint pos = 0;
     if (!arraybuffer_to_index(ctx, &pos_arg, &pos)) return;
 
-    // Detach check after ToIndex per spec step 6.
-    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        arraybuffer_throw_type_error(ctx, "DataView getter: buffer is detached");
+    // Detach / out-of-bounds check after ToIndex per spec step 6-7.
+    if (view_is_out_of_bounds(obj)) {
+        arraybuffer_throw_type_error(ctx, "DataView getter: view is out of bounds");
         return;
     }
 
@@ -234,7 +238,7 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
     }
 
     uint elem_size = dv_elem_size(elem_class);
-    uint view_len = (*obj.extra_ptr()).view.byte_length;
+    uint view_len = view_effective_byte_length(obj);
     if (pos + elem_size > view_len) {
         arraybuffer_throw_range_error(ctx, "DataView getter: offset out of bounds");
         return;
@@ -384,11 +388,11 @@ fn void dv_set(BuiltinContext* ctx, hobject::ObjClass elem_class) {
     // already ran (§24.2.1.2 steps 1-10 recheck ViewedArrayBuffer/bounds
     // after ToNumber/ToBigInt) — unlike TypedArray element writes, which
     // silently no-op on a post-conversion OOB/detach.
-    if (((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        arraybuffer_throw_type_error(ctx, "DataView setter: buffer is detached");
+    if (view_is_out_of_bounds(obj)) {
+        arraybuffer_throw_type_error(ctx, "DataView setter: view is out of bounds");
         return;
     }
-    uint view_len = (*obj.extra_ptr()).view.byte_length;
+    uint view_len = view_effective_byte_length(obj);
     if (pos + elem_size > view_len) {
         arraybuffer_throw_range_error(ctx, "DataView setter: offset out of bounds");
         return;

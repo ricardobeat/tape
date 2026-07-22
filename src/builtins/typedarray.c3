@@ -513,10 +513,14 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
             TVal len_arg; len_arg.set_undefined();
             if (ctx.argc >= 3) len_arg = ctx.regs[ctx.base_reg + 2];
 
+            // Length-tracking view: no explicit length over a resizable buffer.
+            bool length_tracking = len_arg.is_undefined()
+                && (*arg_obj.extra_ptr()).ab.resizable;
+
             uint view_len_bytes;
             if (len_arg.is_undefined()) {
                 uint remainder = buf_len - off;
-                if (remainder % elem_size != 0) {
+                if (remainder % elem_size != 0 && !length_tracking) {
                     arraybuffer_throw_range_error(ctx, "buffer length minus byteOffset must be a multiple of the element size");
                     return;
                 }
@@ -545,6 +549,7 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
             obj.prototype = instance_proto;
             (*obj.extra_ptr()).view.byte_offset = off;
             (*obj.extra_ptr()).view.byte_length = view_len_bytes;
+            (*obj.extra_ptr()).view.length_tracking = length_tracking;
             typedarray_link_view(arg_obj, obj);
             ctx.result.set_object(obj);
             return;
@@ -561,8 +566,7 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                 byte_offset = 0;
                 byte_length = 0;
             } else {
-                uint src_shift = ta_elem_shift(src_cls);
-                uint count = (*arg_obj.extra_ptr()).view.byte_length >> src_shift;
+                uint count = ta_element_count(arg_obj);
                 uint total_bytes = count * elem_size;
                 buf = typedarray_alloc_buffer(ctx, total_bytes);
                 if (buf == null) {
@@ -816,13 +820,7 @@ fn void builtin_typedarray_proto_length_get(BuiltinContext* ctx) {
         arraybuffer_throw_type_error(ctx, "TypedArray.prototype.length called on incompatible receiver");
         return;
     }
-    HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        ctx.result.set_fastint(0);
-        return;
-    }
-    uint shift = ta_elem_shift(obj.flags.obj_class);
-    ctx.result.set_fastint((long)((*obj.extra_ptr()).view.byte_length >> shift));
+    ctx.result.set_fastint((long)ta_element_count(obj));
 }
 
 fn void builtin_typedarray_proto_bytelength_get(BuiltinContext* ctx) {
@@ -831,12 +829,7 @@ fn void builtin_typedarray_proto_bytelength_get(BuiltinContext* ctx) {
         arraybuffer_throw_type_error(ctx, "TypedArray.prototype.byteLength called on incompatible receiver");
         return;
     }
-    HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        ctx.result.set_fastint(0);
-        return;
-    }
-    ctx.result.set_fastint((long)(*obj.extra_ptr()).view.byte_length);
+    ctx.result.set_fastint((long)view_effective_byte_length(obj));
 }
 
 fn void builtin_typedarray_proto_byteoffset_get(BuiltinContext* ctx) {
@@ -845,8 +838,8 @@ fn void builtin_typedarray_proto_byteoffset_get(BuiltinContext* ctx) {
         arraybuffer_throw_type_error(ctx, "TypedArray.prototype.byteOffset called on incompatible receiver");
         return;
     }
-    HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+    // Per §23.2.3.3: 0 when the view is out of bounds (or detached).
+    if (view_is_out_of_bounds(obj)) {
         ctx.result.set_fastint(0);
         return;
     }
@@ -895,27 +888,64 @@ fn HObject* ta_validate(BuiltinContext* ctx) {
         arraybuffer_throw_type_error(ctx, "TypedArray method called on incompatible receiver");
         return null;
     }
-    HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
-        arraybuffer_throw_type_error(ctx, "Typed array buffer is detached");
+    // ValidateTypedArray (§23.2.4.4): reject a detached buffer OR a view that
+    // has gone out of bounds because its resizable buffer shrank past it.
+    if (view_is_out_of_bounds(obj)) {
+        arraybuffer_throw_type_error(ctx, "Typed array is detached or out of bounds");
         return null;
     }
     return obj;
 }
 
-/// Check detach status without throwing — inline guard after user-code calls.
-fn bool ta_is_detached(HObject* obj) {
+/// IsViewOutOfBounds (ES2024 §10.4.5): a view over a resizable buffer goes
+/// out of bounds when the buffer shrinks past it. Covers both TypedArray and
+/// DataView. Returns true if detached or out of bounds. Fixed (non-resizable)
+/// buffers can never be OOB while live, so this collapses to a detach check.
+fn bool view_is_out_of_bounds(HObject* obj) {
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     if (buf == null) return true;
-    return ((*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu);
+    uint buf_len = (*buf.extra_ptr()).ab.byte_length;
+    if (buf_len == 0xFFFFFFFFu) return true; // detached
+    if (!(*buf.extra_ptr()).ab.resizable) return false; // fixed: never OOB
+    uint off = (*obj.extra_ptr()).view.byte_offset;
+    if (off > buf_len) return true;
+    if ((*obj.extra_ptr()).view.length_tracking) return false;
+    return off + (*obj.extra_ptr()).view.byte_length > buf_len;
 }
 
-/// Element count ([[ArrayLength]]) of a live TypedArray — 0 when detached.
-fn uint ta_element_count(HObject* obj) {
+/// Effective byte length of a view given the CURRENT backing buffer length.
+/// For length-tracking views this is recomputed from the buffer; for fixed
+/// views it is the stored byte_length (0 when out of bounds). For TypedArrays
+/// the tracking length is floored to a whole number of elements.
+fn uint view_effective_byte_length(HObject* obj) {
+    if (view_is_out_of_bounds(obj)) return 0;
+    if (!(*obj.extra_ptr()).view.length_tracking) {
+        return (*obj.extra_ptr()).view.byte_length;
+    }
     HObject* buf = (*obj.extra_ptr()).view.buffer;
-    if (buf == null || (*buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu) return 0;
+    uint buf_len = (*buf.extra_ptr()).ab.byte_length;
+    uint off = (*obj.extra_ptr()).view.byte_offset;
+    uint avail = buf_len - off; // off <= buf_len guaranteed by not-OOB
+    if (is_typed_array_class(obj.flags.obj_class)) {
+        uint shift = ta_elem_shift(obj.flags.obj_class);
+        // floor to whole elements
+        avail = (avail >> shift) << shift;
+    }
+    return avail;
+}
+
+/// Check detach status without throwing — inline guard after user-code calls.
+/// Also true when a view over a resizable buffer has gone out of bounds, since
+/// callers use this to reject element access on a no-longer-valid view.
+fn bool ta_is_detached(HObject* obj) {
+    return view_is_out_of_bounds(obj);
+}
+
+/// Element count ([[ArrayLength]]) of a live TypedArray — 0 when detached
+/// or out of bounds.
+fn uint ta_element_count(HObject* obj) {
     uint shift = ta_elem_shift(obj.flags.obj_class);
-    return (*obj.extra_ptr()).view.byte_length >> shift;
+    return view_effective_byte_length(obj) >> shift;
 }
 
 /// IsValidIntegerIndex (ES2022 §10.4.5.9): true iff `idx` is a non-negative
@@ -1026,7 +1056,7 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
     uint dst_shift = ta_elem_shift(dst_cls);
     HObject* dst_buf = (*dst.extra_ptr()).view.buffer;
     uint dst_byte_off = (*dst.extra_ptr()).view.byte_offset;
-    uint dst_len = (*dst.extra_ptr()).view.byte_length >> dst_shift;
+    uint dst_len = ta_element_count(dst);
 
     // Resolve offset argument
     TVal offset_arg; offset_arg.set_undefined();
@@ -1062,8 +1092,7 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
                 arraybuffer_throw_type_error(ctx, "TypedArray.set: source buffer is detached");
                 return;
             }
-            uint src_shift = ta_elem_shift(src_cls);
-            uint src_len = (*src_obj.extra_ptr()).view.byte_length >> src_shift;
+            uint src_len = ta_element_count(src_obj);
             uint src_byte_off = (*src_obj.extra_ptr()).view.byte_offset;
 
             // Use 64-bit addition to detect overflow of src_len + target_offset.
@@ -1210,9 +1239,9 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint byte_len = (*obj.extra_ptr()).view.byte_length;
-    // When detached, treat length as 0 for index normalization.
-    uint len = (buf == null || byte_len == 0xFFFFFFFFu) ? 0 : (byte_len >> shift);
+    // Effective element count — 0 when detached/out of bounds, and for a
+    // length-tracking view reflects the current backing buffer length.
+    uint len = ta_element_count(obj);
 
     TVal begin_arg; begin_arg.set_undefined();
     TVal end_arg;   end_arg.set_undefined();
@@ -1230,6 +1259,12 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
     }
 
     uint begin_idx = ta_norm_index(begin_d, len);
+
+    // §23.2.3.27: a length-tracking view with `end` omitted produces another
+    // length-tracking view — newLength is undefined and species is called with
+    // only (buffer, beginByteOffset).
+    bool result_tracking = (*obj.extra_ptr()).view.length_tracking && end_arg.is_undefined();
+
     uint end_idx   = ta_norm_index(end_d, len);
     uint new_len   = end_idx > begin_idx ? end_idx - begin_idx : 0;
 
@@ -1275,13 +1310,15 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
     }
 
     if (species_ctor != null) {
-        // Call species_ctor(buf, beginByteOffset, newLength).
+        // Call species_ctor(buf, beginByteOffset[, newLength]). A length-tracking
+        // source with `end` omitted passes only 2 args (newLength is undefined).
         TVal[3] args;
         args[0].set_object(buf);
         args[1].set_fastint((long)new_byte_off);
         args[2].set_fastint((long)new_len);
+        uint argc = result_tracking ? 2 : 3;
         TVal species_tv; species_tv.set_object(species_ctor);
-        TVal result_tv = heap.construct_fn(ctx.vm, species_tv, &args[0], 3, species_tv);
+        TVal result_tv = heap.construct_fn(ctx.vm, species_tv, &args[0], argc, species_tv);
         if (heap.has_error) {
             ctx.should_throw = true;
             ctx.throw_value = heap.error_value;
@@ -1306,6 +1343,7 @@ fn void builtin_ta_proto_subarray(BuiltinContext* ctx) {
         sub.prototype = obj.prototype != null ? obj.prototype : heap.typedarray_proto;
         (*sub.extra_ptr()).view.byte_offset = new_byte_off;
         (*sub.extra_ptr()).view.byte_length = new_byte_len;
+        (*sub.extra_ptr()).view.length_tracking = result_tracking;
         typedarray_link_view(buf, sub);
         ctx.result.set_object(sub);
     }
@@ -1323,7 +1361,7 @@ fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
 
     TVal val_arg; val_arg.set_undefined();
     if (ctx.argc >= 1) val_arg = ctx.regs[ctx.base_reg];
@@ -1396,7 +1434,7 @@ fn void builtin_ta_proto_copyWithin(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
 
     TVal target_arg; target_arg.set_undefined();
     TVal start_arg;  start_arg.set_undefined();
@@ -1452,7 +1490,7 @@ fn void builtin_ta_proto_slice(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* src_buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
 
     TVal start_arg; start_arg.set_undefined();
     TVal end_arg;   end_arg.set_undefined();
@@ -1628,9 +1666,7 @@ fn HObject* ta_species_create(BuiltinContext* ctx, HObject* exemplar, uint count
         arraybuffer_throw_type_error(ctx, "TypedArray species: result buffer is detached");
         return null;
     }
-    hobject::ObjClass result_cls = result_obj.flags.obj_class;
-    uint result_shift = ta_elem_shift(result_cls);
-    uint result_len = (*result_obj.extra_ptr()).view.byte_length >> result_shift;
+    uint result_len = ta_element_count(result_obj);
     if (result_len < count) {
         arraybuffer_throw_type_error(ctx, "TypedArray species: result TypedArray is too small");
         return null;
@@ -1684,7 +1720,7 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     // Spec: if len == 0 return -1 immediately, before evaluating fromIndex.
@@ -1731,7 +1767,7 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     if (len == 0) { ctx.result.set_fastint(-1); return; }
@@ -1774,7 +1810,7 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     // Spec: if len == 0 return false immediately, before evaluating fromIndex.
@@ -1817,7 +1853,7 @@ fn void builtin_ta_proto_join(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     // Separator — ToString(separator) per spec, must propagate errors (e.g., throwing object).
@@ -1910,7 +1946,7 @@ fn void builtin_ta_proto_forEach(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -1943,7 +1979,7 @@ fn void builtin_ta_proto_every(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -1974,7 +2010,7 @@ fn void builtin_ta_proto_some(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2005,7 +2041,7 @@ fn void builtin_ta_proto_reduce(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2056,7 +2092,7 @@ fn void builtin_ta_proto_reduceRight(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2111,7 +2147,7 @@ fn void builtin_ta_proto_map(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2152,7 +2188,7 @@ fn void builtin_ta_proto_filter(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2222,7 +2258,7 @@ fn void builtin_ta_proto_find(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2252,7 +2288,7 @@ fn void builtin_ta_proto_findIndex(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2282,7 +2318,7 @@ fn void builtin_ta_proto_findLast(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2312,7 +2348,7 @@ fn void builtin_ta_proto_findLastIndex(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal cb_val; cb_val.set_undefined();
@@ -2370,7 +2406,7 @@ fn void builtin_ta_proto_toReversed(BuiltinContext* ctx) {
     uint elem_sz = ta_elem_size(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* src = (*buf.extra_ptr()).ab.data + byte_off;
 
     HObject* result = ta_alloc_same_class_from(ctx, obj, len);
@@ -2393,7 +2429,7 @@ fn void builtin_ta_proto_at(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     TVal idx_arg; idx_arg.set_fastint(0);
@@ -2503,7 +2539,7 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     bool has_comparefn = false;
@@ -2570,7 +2606,7 @@ fn void builtin_ta_proto_toSorted(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* src = (*buf.extra_ptr()).ab.data + byte_off;
     uint elem_sz = ta_elem_size(cls);
 
@@ -2644,7 +2680,7 @@ fn void builtin_ta_proto_with(BuiltinContext* ctx) {
     uint elem_sz = ta_elem_size(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* src = (*buf.extra_ptr()).ab.data + byte_off;
 
     // Get index
@@ -2731,7 +2767,7 @@ fn void builtin_ta_proto_toLocaleString(BuiltinContext* ctx) {
     uint shift = ta_elem_shift(cls);
     HObject* buf = (*obj.extra_ptr()).view.buffer;
     uint byte_off = (*obj.extra_ptr()).view.byte_offset;
-    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    uint len = ta_element_count(obj);
     char* base = (*buf.extra_ptr()).ab.data + byte_off;
 
     if (len == 0) {

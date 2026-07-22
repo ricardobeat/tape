@@ -122,8 +122,7 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
         if (builtins::is_typed_array_class(cur.get_class())) {
             HObject* ta_buf = (*cur.extra_ptr()).view.buffer;
             if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
-                uint ta_shift = builtins::ta_elem_shift(cur.get_class());
-                uint ta_count = (*cur.extra_ptr()).view.byte_length >> ta_shift;
+                uint ta_count = builtins::ta_element_count(cur);
                 for (uint i = 0; i < ta_count; i++) {
                     HString* k = vm.heap.int_to_hstring((long)i);
                     if (k == null) continue;

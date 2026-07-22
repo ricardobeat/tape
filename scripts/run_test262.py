@@ -145,7 +145,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
     r""
-    r"Float16Array|resizable-arraybuffer|"
+    r"Float16Array|"
     r"arraybuffer-transfer|immutable-arraybuffer|"
     r"joint-iteration|"
     # ES2024+ features (implement later)

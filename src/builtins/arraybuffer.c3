@@ -166,6 +166,47 @@ fn void builtin_arraybuffer(BuiltinContext* ctx) {
         return;
     }
 
+    // ES2024 §25.1.3.1: GetArrayBufferMaxByteLengthOption — read the
+    // {maxByteLength} option from the second argument if it is an object.
+    // A present, non-undefined maxByteLength makes the buffer resizable.
+    bool has_max = false;
+    double max_wide = 0.0;
+    if (ctx.argc >= 2) {
+        TVal opt = ctx.regs[ctx.base_reg + 1];
+        if (opt.is_object() && opt.get_heapptr() != null) {
+            HObject* opt_obj = (HObject*)opt.get_heapptr();
+            HString* mbl_key = builtin_intern_string(ctx.heap, "maxByteLength");
+            if (try mv = builtins_generic_get(opt_obj, mbl_key, ctx)) {
+                if (ctx.should_throw) return;
+                if (!mv.is_undefined()) {
+                    if (!arraybuffer_to_index_wide(ctx, &mv, &max_wide)) return;
+                    has_max = true;
+                }
+            } else {
+                return;
+            }
+        }
+    }
+
+    // AllocateArrayBuffer (§25.1.3.1) step 1: byteLength must not exceed
+    // maxByteLength. This RangeError is raised BEFORE OrdinaryCreateFrom
+    // Constructor (step 3) resolves new.target.prototype, so a throwing
+    // "prototype" getter must not preempt it. Compare in wide (double) space:
+    // the engine's INT32 allocation cap is a separate, LATER failure (see
+    // data-allocation-after-object-creation.js) that must lose to the getter.
+    uint max_byte_length = 0;
+    if (has_max) {
+        if (max_wide > 2147483647.0) {
+            arraybuffer_throw_range_error(ctx, "Invalid array buffer maxByteLength");
+            return;
+        }
+        max_byte_length = (uint)max_wide;
+        if (byte_length_wide > max_wide) {
+            arraybuffer_throw_range_error(ctx, "ArrayBuffer length exceeds maxByteLength");
+            return;
+        }
+    }
+
     HObject* instance_proto = arraybuffer_instance_proto(ctx, ctx.heap.arraybuffer_proto);
     if (ctx.should_throw) return;
 
@@ -180,6 +221,8 @@ fn void builtin_arraybuffer(BuiltinContext* ctx) {
     (*obj.extra_ptr()).ab.byte_length = 0;
     (*obj.extra_ptr()).ab.views_head = null;
 
+    // CreateByteDataBlock: the engine's uint32 cap plays the role of an
+    // allocation failure — checked only after the instance prototype resolved.
     uint byte_length = 0;
     if (byte_length_wide > 2147483647.0) {
         arraybuffer_throw_range_error(ctx, "Invalid array buffer length");
@@ -198,6 +241,8 @@ fn void builtin_arraybuffer(BuiltinContext* ctx) {
     }
     (*obj.extra_ptr()).ab.data = data;
     (*obj.extra_ptr()).ab.byte_length = byte_length;
+    (*obj.extra_ptr()).ab.resizable = has_max;
+    (*obj.extra_ptr()).ab.max_byte_length = max_byte_length;
 
     ctx.result.set_object(obj);
 }
@@ -241,6 +286,112 @@ fn void builtin_arraybuffer_proto_detached_get(BuiltinContext* ctx) {
         return;
     }
     ctx.result.set_boolean(((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu));
+}
+
+// ============================================================================
+// ArrayBuffer.prototype.resizable getter — ES2024 §25.1.6.4
+// ============================================================================
+
+fn void builtin_arraybuffer_proto_resizable_get(BuiltinContext* ctx) {
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.resizable called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (!is_arraybuffer_obj(obj)) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.resizable called on incompatible receiver");
+        return;
+    }
+    ctx.result.set_boolean((*obj.extra_ptr()).ab.resizable);
+}
+
+// ============================================================================
+// ArrayBuffer.prototype.maxByteLength getter — ES2024 §25.1.6.3
+// ============================================================================
+
+fn void builtin_arraybuffer_proto_maxbytelength_get(BuiltinContext* ctx) {
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.maxByteLength called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (!is_arraybuffer_obj(obj)) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.maxByteLength called on incompatible receiver");
+        return;
+    }
+    // Detached buffer: 0. Non-resizable: byteLength (spec §25.1.6.3).
+    if (((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        ctx.result.set_fastint(0);
+        return;
+    }
+    if ((*obj.extra_ptr()).ab.resizable) {
+        ctx.result.set_fastint((long)(*obj.extra_ptr()).ab.max_byte_length);
+    } else {
+        ctx.result.set_fastint((long)(*obj.extra_ptr()).ab.byte_length);
+    }
+}
+
+// ============================================================================
+// ArrayBuffer.prototype.resize(newLength) — ES2024 §25.1.6.9
+// ============================================================================
+
+fn void builtin_arraybuffer_proto_resize(BuiltinContext* ctx) {
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.resize called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (!is_arraybuffer_obj(obj)) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.resize called on incompatible receiver");
+        return;
+    }
+    if (!(*obj.extra_ptr()).ab.resizable) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.resize: buffer is not resizable");
+        return;
+    }
+
+    TVal len_arg; len_arg.set_undefined();
+    if (ctx.argc >= 1) len_arg = ctx.regs[ctx.base_reg];
+    uint new_len = 0;
+    // ToIndex (may run user code that detaches the buffer).
+    if (!arraybuffer_to_index(ctx, &len_arg, &new_len)) return;
+
+    // §25.1.6.9 step: throw if detached (after ToIndex).
+    if (((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.resize: buffer is detached");
+        return;
+    }
+    if (new_len > (*obj.extra_ptr()).ab.max_byte_length) {
+        arraybuffer_throw_range_error(ctx, "ArrayBuffer.prototype.resize: length exceeds maxByteLength");
+        return;
+    }
+
+    uint old_len = (*obj.extra_ptr()).ab.byte_length;
+    char* old_data = (*obj.extra_ptr()).ab.data;
+    // Reallocate the backing store to the new length. Grow zero-fills the tail.
+    char* new_data = null;
+    if (new_len > 0) {
+        new_data = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)new_len);
+        if (new_data == null) {
+            arraybuffer_throw_range_error(ctx, "Out of memory resizing ArrayBuffer");
+            return;
+        }
+        mem::clear(new_data, (sz)((usz)new_len));
+        if (old_data != null && old_len > 0) {
+            uint copy_len = old_len < new_len ? old_len : new_len;
+            mem::copy(new_data, old_data, (sz)((usz)copy_len));
+        }
+    }
+    if (old_data != null) {
+        ctx.heap.free_func(ctx.heap.heap_udata, old_data);
+    }
+    (*obj.extra_ptr()).ab.data = new_data;
+    (*obj.extra_ptr()).ab.byte_length = new_len;
+
+    ctx.result.set_undefined();
 }
 
 // ============================================================================
@@ -543,9 +694,12 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
     // Accessors
     if (!register_arraybuffer_accessor(proto, heap, "byteLength", Builtin.ARRAYBUFFER_PROTO_BYTELENGTH_GET.ordinal)) return false;
     if (!register_arraybuffer_accessor(proto, heap, "detached", Builtin.ARRAYBUFFER_PROTO_DETACHED_GET.ordinal)) return false;
+    if (!register_arraybuffer_accessor(proto, heap, "resizable", Builtin.ARRAYBUFFER_PROTO_RESIZABLE_GET.ordinal)) return false;
+    if (!register_arraybuffer_accessor(proto, heap, "maxByteLength", Builtin.ARRAYBUFFER_PROTO_MAXBYTELENGTH_GET.ordinal)) return false;
 
     // Methods
     if (!register_string_proto_method(proto, heap, "slice", Builtin.ARRAYBUFFER_PROTO_SLICE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "resize", Builtin.ARRAYBUFFER_PROTO_RESIZE.ordinal)) return false;
 
     // @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);

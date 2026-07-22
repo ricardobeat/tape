@@ -2834,7 +2834,9 @@ fn TVal? Vm.run(Vm* vm) {
                 if (is_int_idx) {
                     HObject* buf = (*obj.extra_ptr()).view.buffer;
                     uint shift = builtins::ta_elem_shift(obj.get_class());
-                    uint elem_count = (*obj.extra_ptr()).view.byte_length >> shift;
+                    uint elem_count = (buf != null && (*buf.extra_ptr()).ab.resizable)
+                        ? builtins::ta_element_count(obj)
+                        : (*obj.extra_ptr()).view.byte_length >> shift;
                     ra.set_boolean(idx_long >= 0 && buf != null && (*buf.extra_ptr()).ab.data != null
                         && (ulong)idx_long < (ulong)elem_count);
                     continue;

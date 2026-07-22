@@ -143,7 +143,11 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     bool is_int_idx = rc.is_fastint() || rc.get_number() == (double)idx_long;
                     HObject* buf = (*hobj.extra_ptr()).view.buffer;
                     uint shift = builtins::ta_elem_shift(hobj.get_class());
-                    uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                    // Fixed (non-resizable) buffers: raw byte_length is authoritative.
+                    // Resizable-backed views recompute effective length (tracking/OOB).
+                    uint elem_count = (buf != null && (*buf.extra_ptr()).ab.resizable)
+                        ? builtins::ta_element_count(hobj)
+                        : (*hobj.extra_ptr()).view.byte_length >> shift;
                     if (is_int_idx && idx_long >= 0 && buf != null
                         && (*buf.extra_ptr()).ab.data != null
                         && (ulong)idx_long < (ulong)elem_count) {
@@ -196,7 +200,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             uint idx = key_hstr.array_index();
                             HObject* buf = (*hobj.extra_ptr()).view.buffer;
                             uint shift = builtins::ta_elem_shift(hobj_cls);
-                            uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                            uint elem_count = (buf != null && (*buf.extra_ptr()).ab.resizable)
+                                ? builtins::ta_element_count(hobj)
+                                : (*hobj.extra_ptr()).view.byte_length >> shift;
                             if (buf != null && (*buf.extra_ptr()).ab.data != null
                                 && (ulong)idx < (ulong)elem_count) {
                                 char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
@@ -689,7 +695,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                                     uint cidx = key_hstr.array_index();
                                     HObject* cbuf = (*hobj.extra_ptr()).view.buffer;
                                     uint cshift = builtins::ta_elem_shift(cls_c);
-                                    uint ccount = (*hobj.extra_ptr()).view.byte_length >> cshift;
+                                    uint ccount = (cbuf != null && (*cbuf.extra_ptr()).ab.resizable)
+                                        ? builtins::ta_element_count(hobj)
+                                        : (*hobj.extra_ptr()).view.byte_length >> cshift;
                                     if (cbuf != null && (*cbuf.extra_ptr()).ab.data != null
                                         && (ulong)cidx < (ulong)ccount) {
                                         char* cbase = (*cbuf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
@@ -2100,7 +2108,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
 
                         HObject* buf = (*hobj.extra_ptr()).view.buffer;
                         uint shift = builtins::ta_elem_shift(ta_cls);
-                        uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                        uint elem_count = (buf != null && (*buf.extra_ptr()).ab.resizable)
+                            ? builtins::ta_element_count(hobj)
+                            : (*hobj.extra_ptr()).view.byte_length >> shift;
                         if (buf != null && (*buf.extra_ptr()).ab.data != null
                             && (ulong)idx_long < (ulong)elem_count) {
                             char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
@@ -2168,7 +2178,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                             uint idx = key_hstr.array_index();
                             HObject* buf = (*hobj.extra_ptr()).view.buffer;
                             uint shift = builtins::ta_elem_shift(ta_cls);
-                            uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                            uint elem_count = (buf != null && (*buf.extra_ptr()).ab.resizable)
+                                ? builtins::ta_element_count(hobj)
+                                : (*hobj.extra_ptr()).view.byte_length >> shift;
                             if (buf != null && (*buf.extra_ptr()).ab.data != null
                                 && (ulong)idx < (ulong)elem_count) {
                                 char* base = (*buf.extra_ptr()).ab.data + (*hobj.extra_ptr()).view.byte_offset;
@@ -2885,7 +2897,9 @@ fn TVal? dispatch_property(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc
                     if (is_int_idx) {
                         HObject* buf = (*hobj.extra_ptr()).view.buffer;
                         uint shift = builtins::ta_elem_shift(hobj.get_class());
-                        uint elem_count = (*hobj.extra_ptr()).view.byte_length >> shift;
+                        uint elem_count = (buf != null && (*buf.extra_ptr()).ab.resizable)
+                            ? builtins::ta_element_count(hobj)
+                            : (*hobj.extra_ptr()).view.byte_length >> shift;
                         bool in_range = idx_long >= 0 && buf != null && (*buf.extra_ptr()).ab.data != null
                             && (ulong)idx_long < (ulong)elem_count;
                         ra.set_boolean(!in_range);
