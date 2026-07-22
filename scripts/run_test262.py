@@ -260,6 +260,14 @@ SKIP_FILES = {
     # whole files CE. Un-skip with plan 060.
     "built-ins/Object/seal/seal-asyncgeneratorfunction.js",
     "built-ins/Function/prototype/toString/AsyncGenerator.js",
+    # Array.fromAsync tests whose SOURCE iterable is an async generator
+    # (the fromAsync implementation itself is live; un-skip with plan 060).
+    "built-ins/Array/fromAsync/async-iterable-input.js",
+    "built-ins/Array/fromAsync/asyncitems-asynciterator-exists.js",
+    "built-ins/Array/fromAsync/mapfn-async-iterable-async.js",
+    "built-ins/Array/fromAsync/async-iterable-async-mapped-awaits-once.js",
+    "built-ins/Array/fromAsync/mapfn-sync-iterable-async.js",
+    "built-ins/Array/fromAsync/async-iterable-input-iteration-err.js",
     "language/comments/hashbang/function-constructor.js",
     "language/expressions/optional-chaining/member-expression.js",
     "language/destructuring/binding/syntax/destructuring-array-parameters-function-arguments-length.js",
