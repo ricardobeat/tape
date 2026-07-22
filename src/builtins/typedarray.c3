@@ -195,6 +195,23 @@ fn void typedarray_store_converted(HObject* buf, uint byte_offset, hobject::ObjC
     ta_write_element(p, cls, val, ctx);
 }
 
+/// Read element `idx` of a live TypedArray, re-deriving the backing pointer
+/// from the buffer's CURRENT data (a resizable-buffer resize between calls may
+/// have realloc'd it) and returning undefined when `idx` is not a valid integer
+/// index (detached, out of bounds, or beyond the current length). Use this in
+/// any loop that runs user code between element reads, instead of caching a
+/// raw `base` pointer across the callback.
+fn TVal ta_read_element_checked(Heap* heap, HObject* obj, uint idx) {
+    TVal v;
+    if (!ta_is_valid_integer_index(obj, (double)idx)) {
+        v.set_undefined();
+        return v;
+    }
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    char* base = (*buf.extra_ptr()).ab.data + (*obj.extra_ptr()).view.byte_offset;
+    return ta_load_element(heap, base, obj.flags.obj_class, idx);
+}
+
 // ============================================================================
 // Byte-level element load/store — shared by construction and the VM
 // GETPROP/PUTPROP fast paths (vm_property.c3).
@@ -1212,7 +1229,10 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
         // iterating (to run all getters) but skip the store.
         TAScalar sv = ta_coerce_element(dst_cls, &elem, ctx);
         if (ctx.should_throw) return;
-        if (!ta_is_detached(dst)) {
+        // Re-derive the store pointer from the CURRENT buffer data (a resize in
+        // a getter/valueOf may have realloc'd it) and skip the write when the
+        // target index is no longer valid (detached or shrunk past it).
+        if (ta_is_valid_integer_index(dst, (double)(target_offset + i))) {
             char* dp = (*dst_buf.extra_ptr()).ab.data + dst_byte_off + ((target_offset + i) << dst_shift);
             ta_store_scalar(dp, dst_cls, &sv);
         }
@@ -1396,6 +1416,11 @@ fn void builtin_ta_proto_fill(BuiltinContext* ctx) {
         return;
     }
 
+    // Spec §23.2.3.11 step 10: after coercions (which may resize a resizable
+    // buffer) re-derive the length and clamp the bounds to it, so a shrink turns
+    // out-of-range writes into no-ops.
+    len = ta_element_count(obj);
+
     uint k = ta_norm_index(start_d, len);
     uint final_k = ta_norm_index(end_d, len);
 
@@ -1468,6 +1493,18 @@ fn void builtin_ta_proto_copyWithin(BuiltinContext* ctx) {
     uint count = final_end > from ? final_end - from : 0;
     uint room = len > to ? len - to : 0;
     if (count > room) count = room;
+
+    // Spec §23.2.3.5 step 14: after coercions (which may resize a resizable
+    // buffer) re-clamp the copy so it stays within the current element count.
+    uint cur_len = ta_element_count(obj);
+    if (to >= cur_len || from >= cur_len) {
+        count = 0;
+    } else {
+        uint max_from_to = cur_len - to;
+        uint max_from_src = cur_len - from;
+        if (count > max_from_to) count = max_from_to;
+        if (count > max_from_src) count = max_from_src;
+    }
 
     if (count > 0) {
         char* base = (*buf.extra_ptr()).ab.data + byte_off;
@@ -1736,6 +1773,13 @@ fn void builtin_ta_proto_indexOf(BuiltinContext* ctx) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
         double from_d = ta_val_to_number(&from_arg, ctx);
         if (ctx.should_throw) return;
+        // Spec §23.2.3.14 step 8: re-derive length after coercing fromIndex, as
+        // its valueOf may have resized the backing buffer. A shrink to OOB makes
+        // the search vacuous; re-fetch the data pointer for the realloc case.
+        if (ta_is_detached(obj)) { ctx.result.set_fastint(-1); return; }
+        len = ta_element_count(obj);
+        base = (*buf.extra_ptr()).ab.data + byte_off;
+        if (len == 0) { ctx.result.set_fastint(-1); return; }
         if (from_d >= (double)len) { ctx.result.set_fastint(-1); return; }
         if (from_d < 0.0) {
             double v = (double)len + from_d;
@@ -1782,6 +1826,11 @@ fn void builtin_ta_proto_lastIndexOf(BuiltinContext* ctx) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
         double from_d = ta_val_to_number(&from_arg, ctx);
         if (ctx.should_throw) return;
+        // Re-derive length/pointer after coercing fromIndex (valueOf may resize).
+        if (ta_is_detached(obj)) { ctx.result.set_fastint(-1); return; }
+        len = ta_element_count(obj);
+        base = (*buf.extra_ptr()).ab.data + byte_off;
+        if (len == 0) { ctx.result.set_fastint(-1); return; }
         if (from_d < 0.0) {
             from = (long)len + (long)from_d;
         } else {
@@ -1826,6 +1875,11 @@ fn void builtin_ta_proto_includes(BuiltinContext* ctx) {
         TVal from_arg = ctx.regs[ctx.base_reg + 1];
         double from_d = ta_val_to_number(&from_arg, ctx);
         if (ctx.should_throw) return;
+        // Re-derive length/pointer after coercing fromIndex (valueOf may resize).
+        if (ta_is_detached(obj)) { ctx.result.set_boolean(false); return; }
+        len = ta_element_count(obj);
+        base = (*buf.extra_ptr()).ab.data + byte_off;
+        if (len == 0) { ctx.result.set_boolean(false); return; }
         if (from_d >= (double)len) { ctx.result.set_boolean(false); return; }
         if (from_d < 0.0) {
             double v = (double)len + from_d;
@@ -1991,7 +2045,7 @@ fn void builtin_ta_proto_every(BuiltinContext* ctx) {
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
+        elem = ta_read_element_checked(ctx.heap, obj, i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (!builtin_to_boolean(&test)) {
@@ -2022,7 +2076,7 @@ fn void builtin_ta_proto_some(BuiltinContext* ctx) {
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
+        elem = ta_read_element_checked(ctx.heap, obj, i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2065,7 +2119,7 @@ fn void builtin_ta_proto_reduce(BuiltinContext* ctx) {
     for (; k < len; k++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, k); }
+        elem = ta_read_element_checked(ctx.heap, obj, k);
         TVal[4] args;
         args[0] = acc;
         args[1] = elem;
@@ -2118,7 +2172,7 @@ fn void builtin_ta_proto_reduceRight(BuiltinContext* ctx) {
     for (; k >= 0; k--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, (uint)k); }
+        elem = ta_read_element_checked(ctx.heap, obj, (uint)k);
         TVal[4] args;
         args[0] = acc;
         args[1] = elem;
@@ -2168,7 +2222,7 @@ fn void builtin_ta_proto_map(BuiltinContext* ctx) {
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
+        elem = ta_read_element_checked(ctx.heap, obj, i);
         TVal mapped = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         char* dp = res_base + (i << result_shift);
@@ -2212,7 +2266,7 @@ fn void builtin_ta_proto_filter(BuiltinContext* ctx) {
             return;
         }
         TVal elem;
-        if (ta_is_detached(obj)) { elem.set_undefined(); } else { elem = ta_load_element(ctx.heap, base, cls, i); }
+        elem = ta_read_element_checked(ctx.heap, obj, i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) {
             if (scratch != null) heap.free_func(heap.heap_udata, scratch);
@@ -2269,7 +2323,7 @@ fn void builtin_ta_proto_find(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(ctx.heap, base, cls, i);
+        TVal elem = ta_read_element_checked(ctx.heap, obj, i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2299,7 +2353,7 @@ fn void builtin_ta_proto_findIndex(BuiltinContext* ctx) {
 
     for (uint i = 0; i < len; i++) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(ctx.heap, base, cls, i);
+        TVal elem = ta_read_element_checked(ctx.heap, obj, i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2329,7 +2383,7 @@ fn void builtin_ta_proto_findLast(BuiltinContext* ctx) {
 
     for (long i = (long)len - 1; i >= 0; i--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(ctx.heap, base, cls, (uint)i);
+        TVal elem = ta_read_element_checked(ctx.heap, obj, (uint)i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, (uint)i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2359,7 +2413,7 @@ fn void builtin_ta_proto_findLastIndex(BuiltinContext* ctx) {
 
     for (long i = (long)len - 1; i >= 0; i--) {
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
-        TVal elem = ta_load_element(ctx.heap, base, cls, (uint)i);
+        TVal elem = ta_read_element_checked(ctx.heap, obj, (uint)i);
         TVal test = ta_call_callback(ctx, cb_val, this_arg, elem, (uint)i, obj);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
         if (builtin_to_boolean(&test)) {
@@ -2584,8 +2638,13 @@ fn void builtin_ta_proto_sort(BuiltinContext* ctx) {
     if (!ctx.should_throw && !ta_is_detached(obj)) {
         // Re-fetch base pointer: comparefn may have realloc'd if buffer grew, but
         // if it's been detached we skip the writeback (data pointer is null/freed).
+        // A shrink may have reduced the element count — only write back the
+        // elements that still fit in the current view (spec §23.2.3.30: writeback
+        // is bounded by the length captured before sorting AND the live length).
         base = (*buf.extra_ptr()).ab.data + byte_off;
-        for (uint i = 0; i < len; i++) {
+        uint writeback = ta_element_count(obj);
+        if (writeback > len) writeback = len;
+        for (uint i = 0; i < writeback; i++) {
             char* dp = base + (i << shift);
             ta_write_element(dp, cls, &scratch[i], ctx);
             if (ctx.should_throw) break;

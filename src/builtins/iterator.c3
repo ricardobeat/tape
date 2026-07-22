@@ -168,11 +168,11 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     if (target.get_class() == hobject::ObjClass.ARRAY) {
         len = (long)*target.array_len_ptr();
     } else if (is_typed_array_class(target.get_class())) {
-        HObject* ta_buf = (*target.extra_ptr()).view.buffer;
-        if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
-            uint ta_shift = ta_elem_shift(target.get_class());
-            len = (long)((*target.extra_ptr()).view.byte_length >> ta_shift);
-        }
+        // Re-derive the element count on every next(): length-tracking views
+        // over a resizable buffer change length when the buffer is resized, and
+        // a fixed view goes out of bounds (count 0) when the buffer shrinks past
+        // it. ta_element_count handles detach/OOB and floors to whole elements.
+        len = (long)ta_element_count(target);
     } else {
         TVal? len_val = target.get_prop_proto((HString*)heap.strs[heap::BuiltinStr.LENGTH]);
         if (try lv = len_val) {
@@ -187,13 +187,15 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     if ((long)idx >= len) {
         done = true;
     } else if (is_typed_array_class(target.get_class())) {
-        // TypedArray: read element from backing store directly.
-        HObject* ta_buf = (*target.extra_ptr()).view.buffer;
-        if (ta_buf != null && (*ta_buf.extra_ptr()).ab.data != null) {
+        // TypedArray: read element from backing store directly. Re-derive the
+        // data pointer here (a resize may have realloc'd the buffer) and skip
+        // the read entirely when the view is out of bounds.
+        if (!view_is_out_of_bounds(target)) {
+            HObject* ta_buf = (*target.extra_ptr()).view.buffer;
             char* ta_base = (*ta_buf.extra_ptr()).ab.data + (*target.extra_ptr()).view.byte_offset;
             value = ta_load_element(ctx.heap, ta_base, target.get_class(), idx);
         }
-        // detached: value stays undefined (spec: detach mid-iteration -> undefined)
+        // detached/OOB: value stays undefined (spec: detach mid-iteration -> undefined)
     } else {
         // Try dense array part first, then fall back to property table
         TVal? elem = target.get_array_idx(idx);
