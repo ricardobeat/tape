@@ -27,7 +27,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ### Todo — small (batch 2, one agent each)
 
-- [>] **`change-array-by-copy` un-skip** — TypedArray side done (phase 22 clean, incl. coordinator's with() coercion-order fix); 15 Array-side residuals surfaced in phase 6 (toSpliced/toSorted/with holes, comparefn validation, length-limit RangeError) — follow-up agent running.
+- [x] **`change-array-by-copy` un-skip** — fully landed: TypedArray side (incl. with() coercion order) + all 15 Array-side residuals (holes-as-own-props, toSorted via shared array_sort_compare, toSpliced arg/limit semantics); phases 5/6/22 all 0 fails.
 - [ ] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`).
 - [ ] **`JSON.parse` source access** (`json-parse-with-source`).
 - [ ] **`Array.fromAsync`**.
