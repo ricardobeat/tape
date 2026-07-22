@@ -33,7 +33,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [ ] **`Array.fromAsync`**.
 - [x] **`Math.sumPrecise`** — Shewchuk algorithm ported from quickjs; 10/10.
 - [x] **`Iterator.concat`** (`iterator-sequencing`) — 30/31; the 31st exposed the spread-into-builtin bug below.
-- [ ] **`#x in obj`** (`class-fields-private-in`, plan 054 P6) — parser + existing brand-check reuse.
+- [x] **`#x in obj`** (`class-fields-private-in`, plan 054 P6) — cherry-picked from `console` branch: new `HAS_BRAND` opcode (boolean own-property brand probe, TypeError on non-object RHS), `binary_expr` peek for `HASH_IDENT in`.
 - [ ] **Reflect un-skip** — surface implemented (A9); un-skip and fix what fails.
 
 ### Todo — architecture (batch 3)
