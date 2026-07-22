@@ -2633,6 +2633,76 @@ fn void builtin_ta_proto_toSorted(BuiltinContext* ctx) {
     ctx.result.set_object(result);
 }
 
+/// %TypedArray%.prototype.with(index, value) — §23.2.3.33.
+/// Returns a copy with a single element replaced.
+fn void builtin_ta_proto_with(BuiltinContext* ctx) {
+    HObject* obj = ta_validate(ctx);
+    if (obj == null) return;
+    Heap* heap = ctx.heap;
+    hobject::ObjClass cls = obj.flags.obj_class;
+    uint shift = ta_elem_shift(cls);
+    uint elem_sz = ta_elem_size(cls);
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    uint byte_off = (*obj.extra_ptr()).view.byte_offset;
+    uint len = (*obj.extra_ptr()).view.byte_length >> shift;
+    char* src = (*buf.extra_ptr()).ab.data + byte_off;
+
+    // Get index
+    double index_d = 0.0;
+    if (ctx.argc > 0) {
+        TVal* arg = &ctx.regs[ctx.base_reg];
+        index_d = ta_val_to_number(arg, ctx);
+        if (ctx.should_throw) return;
+    }
+
+    // Convert to integer (toIntegerOrInfinity)
+    if (index_d != index_d || index_d == 0.0) {
+        index_d = 0.0;
+    }
+    long actual_index;
+    if (index_d >= 9007199254740991.0) {
+        actual_index = (long)len;
+    } else if (index_d <= -9007199254740991.0) {
+        actual_index = -(long)len - 1;
+    } else {
+        actual_index = (long)index_d;
+    }
+
+    // Normalize negative index
+    if (actual_index < 0) {
+        actual_index = (long)len + actual_index;
+    }
+
+    // Check if index is in range
+    if (actual_index < 0 || actual_index >= (long)len) {
+        arraybuffer_throw_range_error(ctx, "Invalid index for with()");
+        return;
+    }
+
+    // Get value to set
+    TVal new_val; new_val.set_number(0.0);
+    if (ctx.argc > 1) {
+        new_val = ctx.regs[ctx.base_reg + 1];
+    }
+
+    // Create new TypedArray
+    HObject* result = ta_alloc_same_class_from(ctx, obj, len);
+    if (result == null) return;
+
+    HObject* res_buf = (*result.extra_ptr()).view.buffer;
+    char* dst = (*res_buf.extra_ptr()).ab.data;
+
+    // Copy all elements
+    if (len > 0) mem::copy(dst, src, (sz)((usz)(len * elem_sz)));
+
+    // Set the modified element
+    char* dp = dst + ((uint)actual_index << shift);
+    ta_write_element(dp, cls, &new_val, ctx);
+    if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+
+    ctx.result.set_object(result);
+}
+
 /// %TypedArray%.prototype.toString() — delegates to join with ",".
 fn void builtin_ta_proto_toString(BuiltinContext* ctx) {
     // Reuse join with default comma separator (argc=0).
@@ -3504,6 +3574,7 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "at",              Builtin.TA_PROTO_AT.ordinal))              return false;
     if (!register_string_proto_method(proto, heap, "sort",            Builtin.TA_PROTO_SORT.ordinal))            return false;
     if (!register_string_proto_method(proto, heap, "toSorted",        Builtin.TA_PROTO_TO_SORTED.ordinal))       return false;
+    if (!register_string_proto_method(proto, heap, "with",            Builtin.TA_PROTO_WITH.ordinal))            return false;
     // toString must be the same function object as Array.prototype.toString (§22.2.3.28).
     {
         HString* tostr_key = builtin_intern_string(heap, "toString");

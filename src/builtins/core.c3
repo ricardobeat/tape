@@ -292,6 +292,7 @@ enum Builtin : uint {
     TA_PROTO_AT,
     TA_PROTO_SORT,
     TA_PROTO_TO_SORTED,
+    TA_PROTO_WITH,
     TA_PROTO_TO_STRING,
     TA_PROTO_TO_LOCALE_STRING,
     TA_OF,
@@ -2696,6 +2697,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.TA_PROTO_AT.ordinal: return { "at", 1 };
         case Builtin.TA_PROTO_SORT.ordinal: return { "sort", 1 };
         case Builtin.TA_PROTO_TO_SORTED.ordinal: return { "toSorted", 1 };
+        case Builtin.TA_PROTO_WITH.ordinal: return { "with", 2 };
         case Builtin.TA_PROTO_TO_STRING.ordinal: return { "toString", 0 };
         case Builtin.TA_PROTO_TO_LOCALE_STRING.ordinal: return { "toLocaleString", 0 };
         case Builtin.OBJECT_FROMENTRIES.ordinal: return { "fromEntries", 1 };
@@ -3640,6 +3642,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.TA_PROTO_AT.ordinal]              = &builtin_ta_proto_at,
     [Builtin.TA_PROTO_SORT.ordinal]            = &builtin_ta_proto_sort,
     [Builtin.TA_PROTO_TO_SORTED.ordinal]       = &builtin_ta_proto_toSorted,
+    [Builtin.TA_PROTO_WITH.ordinal]            = &builtin_ta_proto_with,
     [Builtin.TA_PROTO_TO_STRING.ordinal]       = &builtin_ta_proto_toString,
     [Builtin.TA_PROTO_TO_LOCALE_STRING.ordinal] = &builtin_ta_proto_toLocaleString,
     [Builtin.TA_OF.ordinal]                    = &builtin_ta_of,
