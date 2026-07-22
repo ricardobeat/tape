@@ -433,6 +433,7 @@ enum Builtin : uint {
     MATH_FROUND,
     MATH_CLZ32,
     MATH_IMUL,
+    MATH_SUMPRECISE,
     ARRAY_ISARRAY,
     STRING_FROMCHARCODE,
     OBJECT_IS,
@@ -2545,6 +2546,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.MATH_FROUND.ordinal: return { "fround", 1 };
         case Builtin.MATH_CLZ32.ordinal: return { "clz32", 1 };
         case Builtin.MATH_IMUL.ordinal: return { "imul", 2 };
+        case Builtin.MATH_SUMPRECISE.ordinal: return { "sumPrecise", 1 };
         case Builtin.ARRAY_ISARRAY.ordinal: return { "isArray", 1 };
         case Builtin.STRING_FROMCHARCODE.ordinal: return { "fromCharCode", 1 };
         case Builtin.OBJECT_IS.ordinal: return { "is", 2 };
@@ -3375,6 +3377,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.MATH_FROUND.ordinal] = &builtin_math_fround,
     [Builtin.MATH_HYPOT.ordinal] = &builtin_math_hypot,
     [Builtin.MATH_IMUL.ordinal] = &builtin_math_imul,
+    [Builtin.MATH_SUMPRECISE.ordinal] = &builtin_math_sumPrecise,
     [Builtin.MATH_LOG.ordinal] = &builtin_math_log,
     [Builtin.MATH_LOG10.ordinal] = &builtin_math_log10,
     [Builtin.MATH_LOG1P.ordinal] = &builtin_math_log1p,

@@ -400,6 +400,435 @@ fn void builtin_math_imul(BuiltinContext* ctx) {
     ctx.result.set_fastint((long)result);
 }
 
+// ============================================================================
+// Math.sumPrecise - compensated summation using Shewchuk algorithm
+// ============================================================================
+
+/// SumPrecise state for accumulating high-precision sums.
+/// Uses limb-based representation for infinite precision intermediate result.
+enum SumPreciseStateEnum : uint {
+    FINITE,
+    INFINITY,
+    MINUS_INFINITY,
+    NAN,
+}
+
+const uint SP_LIMB_BITS = 56;
+const uint SP_RND_BITS = SP_LIMB_BITS - 53;
+const uint SUM_PRECISE_ACC_LEN = 39;
+const uint SUM_PRECISE_COUNTER_INIT = 250;
+
+struct SumPreciseState {
+    SumPreciseStateEnum state;
+    uint counter;
+    int n_limbs;
+    long[SUM_PRECISE_ACC_LEN] acc;
+}
+
+fn void sum_precise_init(SumPreciseState* s) {
+    for (uint i = 0; i < SUM_PRECISE_ACC_LEN; i++) {
+        s.acc[i] = 0;
+    }
+    s.state = SumPreciseStateEnum.FINITE;
+    s.counter = SUM_PRECISE_COUNTER_INIT;
+    s.n_limbs = 0;
+}
+
+fn void sum_precise_renorm(SumPreciseState* s) {
+    long v, carry;
+    int i;
+
+    carry = 0;
+    for (i = 0; i < s.n_limbs; i++) {
+        v = s.acc[i] + carry;
+        s.acc[i] = v & (long)(((1uL << SP_LIMB_BITS) - 1));
+        carry = v >> (int)SP_LIMB_BITS;
+    }
+    if (carry != 0 && s.n_limbs < (int)SUM_PRECISE_ACC_LEN) {
+        s.acc[s.n_limbs++] = carry;
+    }
+}
+
+fn void sum_precise_add(SumPreciseState* s, double d) {
+    ulong a, m, a0, a1;
+    int sgn, e, p;
+    uint shift;
+
+    a = *(ulong*)&d;
+    sgn = (int)(a >> 63);
+    e = (int)((a >> 52) & ((1uL << 11) - 1));
+    m = a & (((1uL << 52) - 1));
+
+    if (e == 2047) {
+        if (m == 0) {
+            if (s.state == SumPreciseStateEnum.NAN ||
+                (s.state == SumPreciseStateEnum.MINUS_INFINITY && !sgn) ||
+                (s.state == SumPreciseStateEnum.INFINITY && sgn)) {
+                s.state = SumPreciseStateEnum.NAN;
+            } else {
+                s.state = sgn ? SumPreciseStateEnum.MINUS_INFINITY : SumPreciseStateEnum.INFINITY;
+            }
+        } else {
+            s.state = SumPreciseStateEnum.NAN;
+        }
+        return;
+    }
+
+    if (e == 0) {
+        if (m == 0) {
+            if (s.n_limbs == 0 && !sgn) {
+                s.n_limbs = 1;
+            }
+        } else {
+            p = 0;
+            shift = 0;
+            a0 = (m << shift) & (((1uL << SP_LIMB_BITS) - 1));
+            a1 = m >> (SP_LIMB_BITS - shift);
+            if (!sgn) {
+                s.acc[p] += (long)a0;
+                s.acc[p + 1] += (long)a1;
+            } else {
+                s.acc[p] -= (long)a0;
+                s.acc[p + 1] -= (long)a1;
+            }
+            if (p + 2 > s.n_limbs) {
+                s.n_limbs = p + 2;
+            }
+
+            if (--s.counter == 0) {
+                s.counter = SUM_PRECISE_COUNTER_INIT;
+                sum_precise_renorm(s);
+            }
+        }
+        return;
+    }
+
+    m |= (1uL << 52);
+    shift = (uint)(e - 1);
+    p = (int)(shift / SP_LIMB_BITS);
+    shift %= SP_LIMB_BITS;
+
+    a0 = (m << shift) & (((1uL << SP_LIMB_BITS) - 1));
+    a1 = m >> ((int)SP_LIMB_BITS - (int)shift);
+    if (!sgn) {
+        s.acc[p] += (long)a0;
+        s.acc[p + 1] += (long)a1;
+    } else {
+        s.acc[p] -= (long)a0;
+        s.acc[p + 1] -= (long)a1;
+    }
+    if (p + 2 > s.n_limbs) {
+        s.n_limbs = p + 2;
+    }
+
+    if (--s.counter == 0) {
+        s.counter = SUM_PRECISE_COUNTER_INIT;
+        sum_precise_renorm(s);
+    }
+}
+
+fn uint clz64(ulong x) {
+    if (x == 0) return 64;
+    uint n = 0;
+    if (x <= 0x00000000FFFFFFFFUL) { n += 32; x <<= 32; }
+    if (x <= 0x0000FFFFFFFFFFFFUL) { n += 16; x <<= 16; }
+    if (x <= 0x00FFFFFFFFFFFFFFUL) { n += 8; x <<= 8; }
+    if (x <= 0x0FFFFFFFFFFFFFFFUL) { n += 4; x <<= 4; }
+    if (x <= 0x3FFFFFFFFFFFFFFFUL) { n += 2; x <<= 2; }
+    if (x <= 0x7FFFFFFFFFFFFFFFUL) { n += 1; }
+    return n;
+}
+
+fn double sum_precise_get_result(SumPreciseState* s) {
+    int n, shift, e, p, is_neg;
+    ulong m, addend;
+
+    if (s.state != SumPreciseStateEnum.FINITE) {
+        switch (s.state) {
+            case SumPreciseStateEnum.INFINITY:
+                return double::inf;
+            case SumPreciseStateEnum.MINUS_INFINITY:
+                return -double::inf;
+            case SumPreciseStateEnum.NAN:
+                return double::nan;
+            default:
+                return double::inf;
+        }
+    }
+
+    sum_precise_renorm(s);
+
+    n = s.n_limbs;
+    if (n == 0) {
+        return -0.0;
+    }
+
+    while (n > 0 && s.acc[n - 1] == 0) {
+        n--;
+    }
+
+    if (n == 0) {
+        return 0.0;
+    }
+
+    is_neg = (s.acc[n - 1] < 0) ? 1 : 0;
+    if (is_neg) {
+        ulong v, carry;
+        int i;
+        carry = 1;
+        for (i = 0; i < n - 1; i++) {
+            v = (((1uL << SP_LIMB_BITS) - 1) - (ulong)s.acc[i] + carry);
+            carry = v >> SP_LIMB_BITS;
+            s.acc[i] = (long)(v & (((1uL << SP_LIMB_BITS) - 1)));
+        }
+        s.acc[n - 1] = (long)(-(ulong)s.acc[n - 1] + carry - 1);
+        while (n > 1 && s.acc[n - 1] == 0) {
+            n--;
+        }
+    }
+
+    if (n == 1 && (ulong)s.acc[0] < (1uL << 52)) {
+        ulong bits = (((ulong)is_neg << 63) | (ulong)s.acc[0]);
+        return *(double*)&&bits;
+    }
+
+    e = n * (int)SP_LIMB_BITS;
+    p = n - 1;
+    m = (ulong)s.acc[p];
+    shift = (uint)((int)clz64(m) - (64 - (int)SP_LIMB_BITS));
+    e = e - (int)shift - 52;
+
+    if (shift != 0) {
+        m <<= shift;
+        if (p > 0) {
+            uint shift1;
+            ulong nz;
+            p--;
+            shift1 = (uint)SP_LIMB_BITS - (uint)shift;
+            nz = (ulong)s.acc[p] & (((1uL << (int)shift1) - 1));
+            m = m | ((ulong)s.acc[p] >> (int)shift1) | (nz != 0 ? 1uL : 0);
+        }
+    }
+
+    if ((m & ((1uL << SP_RND_BITS) - 1)) == (1uL << (SP_RND_BITS - 1))) {
+        while (p > 0) {
+            p--;
+            if (s.acc[p] != 0) {
+                m |= 1;
+                break;
+            }
+        }
+    }
+
+    addend = (1uL << (SP_RND_BITS - 1)) - 1 + ((m >> SP_RND_BITS) & 1);
+    m = (m + addend) >> SP_RND_BITS;
+
+    if (m == (1uL << 53)) {
+        e++;
+    }
+
+    if (e >= 2047) {
+        ulong bits = (((ulong)is_neg << 63) | ((2047uL) << 52));
+        return *(double*)&&bits;
+    } else {
+        m &= (((1uL << 52) - 1));
+        ulong bits = (((ulong)is_neg << 63) | ((ulong)e << 52) | m);
+        return *(double*)&&bits;
+    }
+}
+
+fn void sp_throw_type_error(BuiltinContext* ctx, char[] msg) {
+    HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (try err = err_raw) {
+        err.prototype = ctx.heap.type_err_proto;
+        HString* msg_str = builtin_intern_string(ctx.heap, msg);
+        if (msg_str != null) {
+            TVal msg_val;
+            msg_val.set_string(msg_str);
+            HString* msg_key = builtin_intern_string(ctx.heap, "message");
+            err.put_prop(msg_key, msg_val, hobject::PROP_FLAGS_WC);
+        }
+        ctx.should_throw = true;
+        ctx.throw_value.set_object(err);
+    }
+}
+
+fn void sp_iterator_close_after_throw(BuiltinContext* ctx, TVal iterator) {
+    if (ctx.heap.call_fn == null || ctx.vm == null) return;
+    if (!iterator.is_object() || iterator.get_heapptr() == null) return;
+    HObject* iter_obj = (HObject*)iterator.get_heapptr();
+    HString* return_key = builtin_intern_string(ctx.heap, "return");
+    if (return_key == null) return;
+    TVal? return_method_opt = iter_obj.get_prop_proto(return_key);
+    if (try return_method = return_method_opt) {
+        if (return_method.is_undefined() || return_method.is_null()) return;
+        if (!return_method.is_object() || return_method.get_heapptr() == null) return;
+        HObject* return_obj = (HObject*)return_method.get_heapptr();
+        if (!return_obj.is_callable()) return;
+        ctx.heap.call_fn(ctx.vm, return_method, null, 0, iterator);
+        ctx.heap.has_error = false;
+    }
+}
+
+fn void builtin_math_sumPrecise(BuiltinContext* ctx) {
+    if (ctx.argc == 0) {
+        sp_throw_type_error(ctx, "Math.sumPrecise requires an iterable argument");
+        ctx.result.set_undefined();
+        return;
+    }
+
+    if (ctx.vm == null) {
+        sp_throw_type_error(ctx, "Math.sumPrecise requires a VM context");
+        ctx.result.set_undefined();
+        return;
+    }
+
+    Vm* vm = (Vm*)ctx.vm;
+    Heap* heap = ctx.heap;
+    TVal* iterable_val = &ctx.regs[ctx.base_reg];
+
+    SumPreciseState sp_state;
+    sum_precise_init(&sp_state);
+
+    // Get Symbol.iterator
+    HString* iter_sym = ensure_iterator_symbol(heap);
+    if (iter_sym == null) {
+        sp_throw_type_error(ctx, "Symbol.iterator not available");
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // Wrap non-objects for property access (ES2015 ToObject semantics)
+    HObject* items_obj = null;
+    if (iterable_val.is_object() && iterable_val.get_heapptr() != null) {
+        items_obj = (HObject*)iterable_val.get_heapptr();
+    }
+
+    if (items_obj == null) {
+        sp_throw_type_error(ctx, "Math.sumPrecise argument is not iterable");
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // GetMethod(items, @@iterator)
+    TVal? iter_method_opt = builtins_generic_get(items_obj, iter_sym, ctx);
+    if (ctx.should_throw) {
+        ctx.result.set_undefined();
+        return;
+    }
+
+    TVal iter_method;
+    if (try im = iter_method_opt) {
+        if (im.is_undefined() || im.is_null()) {
+            sp_throw_type_error(ctx, "Math.sumPrecise argument is not iterable");
+            ctx.result.set_undefined();
+            return;
+        }
+        iter_method = im;
+    } else {
+        sp_throw_type_error(ctx, "Math.sumPrecise argument is not iterable");
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // Call the iterator method to get the iterator object
+    TVal iter_obj_val = heap.call_fn(vm, iter_method, null, 0, *iterable_val);
+    if (heap.has_error) {
+        ctx.should_throw = true;
+        ctx.throw_value = heap.error_value;
+        heap.has_error = false;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    if (!iter_obj_val.is_object() || iter_obj_val.get_heapptr() == null) {
+        sp_throw_type_error(ctx, "Iterator is not an object");
+        ctx.result.set_undefined();
+        return;
+    }
+
+    HObject* iter_obj = (HObject*)iter_obj_val.get_heapptr();
+
+    // Get the next method
+    HString* next_key = builtin_intern_string(heap, "next");
+    TVal? next_opt = iter_obj.get_prop_proto(next_key);
+    TVal next_fn_val;
+    if (try nv = next_opt) {
+        if (nv.is_undefined() || nv.is_null()) {
+            sp_throw_type_error(ctx, "Iterator next is not a method");
+            sp_iterator_close_after_throw(ctx, iter_obj_val);
+            ctx.result.set_undefined();
+            return;
+        }
+        next_fn_val = nv;
+    } else {
+        sp_throw_type_error(ctx, "Iterator next is not a method");
+        sp_iterator_close_after_throw(ctx, iter_obj_val);
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // Iterate
+    while (true) {
+        TVal iter_result = heap.call_fn(vm, next_fn_val, null, 0, iter_obj_val);
+        if (heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = heap.error_value;
+            heap.has_error = false;
+            sp_iterator_close_after_throw(ctx, iter_obj_val);
+            ctx.result.set_undefined();
+            return;
+        }
+
+        if (!iter_result.is_object() || iter_result.get_heapptr() == null) {
+            sp_throw_type_error(ctx, "Iterator result is not an object");
+            sp_iterator_close_after_throw(ctx, iter_obj_val);
+            ctx.result.set_undefined();
+            return;
+        }
+
+        HObject* result_obj = (HObject*)iter_result.get_heapptr();
+
+        // Check done property
+        HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+        TVal? done_opt = result_obj.get_prop_proto(done_key);
+        bool done = false;
+        if (try dv = done_opt) {
+            done = builtin_to_boolean(&dv);
+        }
+
+        if (done) break;
+
+        // Get value property
+        HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+        TVal? value_opt = result_obj.get_prop_proto(value_key);
+
+        double d;
+        if (try val = value_opt) {
+            if (val.is_fastint()) {
+                d = (double)val.get_fastint();
+            } else if (val.is_number()) {
+                d = val.get_number();
+            } else {
+                sp_throw_type_error(ctx, "Sum element is not a number");
+                sp_iterator_close_after_throw(ctx, iter_obj_val);
+                ctx.result.set_undefined();
+                return;
+            }
+        } else {
+            sp_throw_type_error(ctx, "Cannot get value from iterator result");
+            sp_iterator_close_after_throw(ctx, iter_obj_val);
+            ctx.result.set_undefined();
+            return;
+        }
+
+        sum_precise_add(&sp_state, d);
+    }
+
+    double result = sum_precise_get_result(&sp_state);
+    ctx.result.set_number(result);
+}
+
 fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
     HObject*? math_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = math_raw) return false;
@@ -450,6 +879,7 @@ fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
     if (!register_math_method(math, heap, "fround", Builtin.MATH_FROUND.ordinal)) return false;
     if (!register_math_method(math, heap, "clz32",  Builtin.MATH_CLZ32.ordinal))  return false;
     if (!register_math_method(math, heap, "imul",   Builtin.MATH_IMUL.ordinal))   return false;
+    if (!register_math_method(math, heap, "sumPrecise", Builtin.MATH_SUMPRECISE.ordinal)) return false;
 
     // Set @@toStringTag on Math
     HString* tag_key = ensure_tostringtag_symbol(heap);
