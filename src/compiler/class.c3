@@ -858,6 +858,20 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
             // Continue to the field branch below.
         }
 
+        // A line terminator after the identifier `accessor` cannot be
+        // reinterpreted as a second class element after an accessor-field
+        // introducer. Resource/accessor proposal syntax is not implemented,
+        // so reject this ambiguous form instead of accepting it via ASI.
+        if (self.check(TokenType.IDENTIFIER)
+            && method_name.str_value.len == 8
+            && method_name.str_value[0] == 'a' && method_name.str_value[1] == 'c'
+            && method_name.str_value[2] == 'c' && method_name.str_value[3] == 'e'
+            && method_name.str_value[4] == 's' && method_name.str_value[5] == 's'
+            && method_name.str_value[6] == 'o' && method_name.str_value[7] == 'r'
+            && self.lexer.seen_line_term) {
+            return COMPILE_ERROR~;
+        }
+
         // Public field branch (P7, plan 054 §7). Triggered when the element
         // has a name (literal or computed-key, public or private-name) and
         // is NOT followed by `(` (i.e. is not a method) and NOT a

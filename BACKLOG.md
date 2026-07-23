@@ -55,7 +55,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 Full feature-probe diff vs vendored `out/qjs` (globals, ~80 builtin members, 18 syntax forms): **zero gaps remaining**. The probe found exactly one — `Atomics.pause` — landed same day (phase 22 +6). We now *exceed* qjs on `Array.fromAsync` and `Atomics.waitAsync`. qjs itself lacks legacy RegExp statics and Realm, so those are not parity items; `$262.agent`/`createRealm`/cross-realm are test-harness host features, not engine-language features. Full suite: 41,655/0/0.
 
 - [x] **`Atomics.pause`** — landed s296: no-coercion integral-Number validation matching qjs; skip token removed.
-- [>] **ASI over-acceptance** (agent running) — `class A { accessor x = 1 }` parses as two fields (one named "accessor"!) and `using x = null` parses as identifier + assignment; both must be SyntaxError (ASI requires a line terminator). Not a parity gap (we over-accept) but a spec bug that can mask typos.
+- [x] **ASI over-acceptance** — class elements now reject a line-terminated `accessor` prefix instead of accepting it as two fields; unsupported `using` declarations are rejected before expression/ASI parsing. Focused regressions pass.
 
 ### Parity exceptions (user call needed)
 

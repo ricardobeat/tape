@@ -313,6 +313,17 @@ fn void? CompilerContext.statement(&self) {
                     break;
                 }
 
+                // `using` is a reserved declaration introducer in current
+                // ECMAScript grammar. Explicit resource management is not
+                // implemented, so reject it instead of parsing it as an
+                // identifier expression that ASI may split across lines.
+                if (id_tok.str_value.len == 5
+                    && id_tok.str_value[0] == 'u' && id_tok.str_value[1] == 's'
+                    && id_tok.str_value[2] == 'i' && id_tok.str_value[3] == 'n'
+                    && id_tok.str_value[4] == 'g') {
+                    return self.fail("using declarations are not supported")~;
+                }
+
                 // Not a label or async function — push the identifier back and fall through
                 self.lexer.pushback(id_tok);
             }
