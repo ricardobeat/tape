@@ -3176,15 +3176,20 @@ fn void builtin_ta_of(BuiltinContext* ctx) {
     HObject* res_buf = (*result.extra_ptr()).view.buffer;
     hobject::ObjClass cls = result.flags.obj_class;
     uint shift = ta_elem_shift(cls);
-    char* res_base = items_count > 0 ? (*res_buf.extra_ptr()).ab.data : null;
 
     for (uint i = 0; i < items_count; i++) {
         TVal item = ctx.regs[ctx.base_reg + (int)i];
-        if (res_base != null && !ta_is_detached(result)) {
-            char* dp = res_base + (i << shift);
-            ta_write_element(dp, cls, &item, ctx);
-        }
+        // Coerce first — it may run user code that resizes/reallocs the
+        // destination buffer — then re-derive the data pointer and bounds
+        // before storing (write is skipped for indices now out of bounds).
+        TAScalar sc = ta_coerce_element(cls, &item, ctx);
         if (ctx.should_throw) { ctx.result.set_undefined(); return; }
+        if (!ta_is_detached(result) && !view_is_out_of_bounds(result)
+            && i < ta_element_count(result)) {
+            char* base = (*res_buf.extra_ptr()).ab.data
+                + (*result.extra_ptr()).view.byte_offset;
+            ta_store_scalar(base + (i << shift), cls, &sc);
+        }
     }
     ctx.result.set_object(result);
 }
