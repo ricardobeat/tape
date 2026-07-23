@@ -240,6 +240,16 @@ bitstruct ObjFlags : uint {
     /// JSON.isRawJSON tests it; JSON.stringify embeds the "rawJSON" property
     /// verbatim when serialising such an object.
     bool is_raw_json        : 26;
+    /// Set (conservatively, never cleared) whenever any property with flags
+    /// other than the default WEC (writable+enumerable+configurable data) is
+    /// installed on this object — i.e. any accessor, read-only, non-enumerable,
+    /// or non-configurable property. When false, every own property is a
+    /// default data property, so get_prop_flags() can return PROP_FLAGS_WEC in
+    /// O(1) instead of walking an O(N)-deep shape chain. This is critical for
+    /// large dictionary-mode objects (e.g. `for (i) obj[i]=v`) whose shape
+    /// chain grows one node per property: without it, every property read that
+    /// probes flags is O(depth), making bulk reads O(N^2).
+    bool has_nondefault_flags : 27;
 }
 
 // ============================================================================
@@ -1082,6 +1092,11 @@ fn void* HObject.prop_key_at(&self, uint idx) @inline {
 /// Get property flags at a given index by walking the shape chain.
 /// Flags are authoritative in the ShapeProperty (kept in sync on writes).
 fn PropFlags HObject.get_prop_flags(&self, uint idx) @inline {
+    // O(1) fast path: if no property with non-default attributes was ever
+    // installed, every own property carries the default WEC descriptor. This
+    // avoids an O(shape-chain-depth) walk, which is O(N) for dictionary-mode
+    // objects whose shape chain grows one node per property.
+    if (!self.flags.has_nondefault_flags) return PROP_FLAGS_WEC;
     hobject::Shape* sh = self.get_shape();
     while (sh != null) {
         if (idx >= sh.offset && idx < sh.offset + sh.own_count) {
@@ -1128,6 +1143,9 @@ fn void HObject.make_shape_private(&self) {
 /// changes don't leak to objects sharing the same shape.
 /// Skips the expensive private-shape creation when flags already match.
 fn void HObject.set_prop_flags(&self, uint idx, PropFlags new_flags) {
+    // Track (conservatively, never cleared) that this object holds a property
+    // with non-default attributes, so get_prop_flags() can stay O(1) otherwise.
+    if (new_flags != PROP_FLAGS_WEC) self.flags.has_nondefault_flags = true;
     // Fast path: flags already correct — no shape mutation needed.
     hobject::Shape* sh = self.get_shape();
     while (sh != null) {
@@ -1306,6 +1324,9 @@ fn bool dense_index_ok(uint cur_size, uint idx) {
 /// (via Heap.transition_shape) when a new property is added.
 /// Returns `true` on success, `false` on allocation failure.
 fn bool HObject.put_prop(&self, void* key, TVal val, PropFlags pflags) {
+    // Track (conservatively, never cleared) that this object holds a property
+    // with non-default attributes, so get_prop_flags() can stay O(1) otherwise.
+    if (pflags != PROP_FLAGS_WEC) self.flags.has_nondefault_flags = true;
     // --- Update existing property ---
     int idx = self.find_prop_idx(key);
     if (idx >= 0) {
