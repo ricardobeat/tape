@@ -18,8 +18,22 @@ Ranked consolidations (full details + file:line in survey; invariants noted per 
 
 Ordering: A1 → A2 → A3 (mechanical, independently verifiable) → A5 → A4 → A6 (semantic). Each gates on: phases 21/24/15 zero, golden 9/9, rosetta, bench-fast flat, ASan over generator families.
 
-## B. Compiler (survey pending)
-## C. Builtins/registration (survey pending)
+## B. Compiler (survey complete)
+
+- **B1 ParamListPlan + emit_param_prologue(ProloguePolicy)** — the three prologues (parse_function_body / compile_inner_function / compile_arrow_inner_reparse) are ~600 lines of interleaved byte-identical stages with 4 real policy axes (push_var, default-tail putlex, deferred destruct defaults, dup-check). Split parse→plan→emit; policy flags select existing branches so golden bytecode stays byte-identical. Kills the fix-in-every-copy class (PUTLEX-r0, in_formal_params). Also: arrow reparse is MISSING the dup/restricted-name check (functions.c3:3562) — a real gap the merge should close.
+- **B2 in_formal_params owned by compile_default_expr** — 13 call sites in two inconsistent camps (4 self-guarding, 9 ambient); make it a parameter + internal defer; assert-equal transition build.
+- **B3 CallableCtx defer-frame** for {is_async,is_generator,is_user_generator,forbid_*} — 26 manual far-apart restores leak the mutated flag on `!` error paths (LATENT BUG); defer-based frame at ~10 multi-flag sites. Exclude cross-context propagation copies (they carry per-flag spec rationale).
+- **B4 Finish TemplateScan rollout** — skip_expr_lex still hand-rolls template_depth (no per-level brace counting) and the three statements.c3 pre-scanners have NO template handling (a `let` inside `${...}` misclassifies). Drop-in TemplateScan; add fixtures. Plus a shared DepthTracker primitive for the 6 walkers duplicating paren/bracket arithmetic (full 12-walker unification NOT warranted — different stop conditions/payloads).
+- **B5 Error-emission normalization** — 136 bare `COMPILE_ERROR~` returns with no message/position vs 51 self.fail; mechanical conversion, strictly better diagnostics, zero bytecode impact.
+
+## C. Builtins/registration (survey complete)
+
+- **C1 Fold BuiltinMeta into the dispatch table** — replace the 461-arm metadata switch + separate fn-pointer array with one `BuiltinDef{fn,name,arity}[Builtin.LAST.ordinal]` designated-init table (C3 supports it; dispatch array already is one). Per-feature edit drops from 3 synchronized sites to enum + one row — kills the session's #1 merge-conflict magnet. Preserve O(1) [ordinal] access + null-fn hole behavior.
+- **C2 One ToObject/boxing ladder** — three copies (arr_to_object, builtin_to_object, inline Object()-ctor copy) differing only in return convention; the Array.from bug family's divergence risk. One `to_object_hobject` + thin ctx wrapper; preserve exotic-string flags/.length and Symbol-before-String ordering.
+- **C3 Merge registrars** — register_array_proto_method ≡ register_string_proto_method (byte-identical) → one register_proto_method; 6 accessor registrars → one (getter+optional setter); keep ctor-shaped ones separate. Preserve name/length prop-flags + "get " prefix + lookup-first interning.
+- **C4 Throw-helper unification** — 7+ per-module {type,range}-error wrapper families → shared builtin_throw_type/range; retire the 72 hand-rolled alloc(ERROR) blocks onto builtin_throw. Keep the result-changing vs no-result split (load-bearing).
+- **C5 AB/SAB merge** — ctor/slice/resize-grow parameterized by (obj_class, is_shared, allow_shrink, alloc_full_max); preserve SAB grow-in-place stable-pointer invariant + detach/RangeError ordering.
+- **C6 (none needed)** — keyed collections already model-consolidated (coll_* + one canonicalizer); use as the reference pattern.
 ## D. VM/heap conventions (survey pending)
 
 ## Execution rules
