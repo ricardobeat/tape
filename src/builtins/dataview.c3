@@ -119,6 +119,19 @@ fn void builtin_dataview(BuiltinContext* ctx) {
         return;
     }
 
+    // §25.3.2.1 steps 11-13: the prototype Get may also have RESIZED the
+    // buffer; re-validate offset and (non-tracking) length against the
+    // current byte length.
+    buf_len = (*buf.extra_ptr()).ab.byte_length;
+    if (byte_offset > buf_len) {
+        arraybuffer_throw_range_error(ctx, "DataView constructor: byteOffset out of range");
+        return;
+    }
+    if (!length_tracking && view_len > buf_len - byte_offset) {
+        arraybuffer_throw_range_error(ctx, "DataView constructor: byteLength out of range");
+        return;
+    }
+
     HObject*? raw = ctx.heap.alloc_object(hobject::ObjClass.DATAVIEW);
     if (catch err = raw) {
         ctx.result.set_undefined();
