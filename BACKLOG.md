@@ -39,7 +39,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 ### Todo — architecture (batch 3)
 
 - [ ] **Async generators** — plan 060 (~2,000 tests, ~3-5 sessions). Until then all four syntactic forms parse-reject; runner skips structurally. for-await-of consumer + AsyncFromSync stay in scope.
-- [>] **Resizable ArrayBuffer** (`resizable-arraybuffer`) — core + resize-during-op fixes landed (145→33 in-scope fails; both hangs were a GENERAL compiler bug: C-style for-let condition temporaries clobbered the loop-var register when the condition had a member expression — fixed via cond_floor clamp in statements.c3). Final agent running on the last ~33: Array generics with TA receivers (writes + every/some callback bug), species-resize interactions, few DataView/Object edges.
+- [x] **Resizable ArrayBuffer** (`resizable-arraybuffer`) — fully landed across four agent waves + coordinator fixes; phase 22 stable 2600/0. Root-caused along the way: for-let register clobber (compiler), lexer stack-slice escape, GC sweep ordering, three rooting/refcount bugs.
 - [ ] **`ArrayBuffer.prototype.transfer`** (`arraybuffer-transfer`).
 - [ ] **`Float16Array`**.
 - [x] **WeakRef / FinalizationRegistry** — API surface landed (74/76; 2 cross-realm), non-weak semantics matching WeakMap policy (cleanup never fires — spec-legal); also fixed internal collection storage leaking through getOwnPropertyNames. TRUE weakness (all four types) remains a GC-integration project, out of parity scope for now.
@@ -54,7 +54,8 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 ## Known bugs (pre-existing, exposed by un-skips)
 
 - [x] **GC sweep-order use-after-free** — fixed: two-phase sweep (unlink dying → run all teardowns while memory valid → free headers) + decref sweep-guard; bonus fix: vm_mark_activations now marks each activation's full register span (live values above valstack_top were collectable).
-- [>] **GC rooting gap: instantiate_closure HObject collected** — sole reference lives somewhere the marker doesn't scan; ASan repro set/src-typedarray-big-throws.js; silently corrupts worker heap and flakes the join pair in batch. Agent running.
+- [x] **GC rooting gap: instantiate_closure HObject collected** — fixed: `vm.return_val`/`vm.throw_value` were never GC roots (a top-level RET's closure lived only there across a safepoint). Same fix wave also caught a string double-free in TypedArray join (`str_table_insert` without the interning protocol's owning ref) and an empty-separator `&sep[0]` bounds trap in Array join. Phase 22 stable 2600/0 ×3, ASan-clean over 165 tests.
+- [ ] **Grep audit: `&slice[0]` on possibly-empty slices** — the join trap is a general C3 pattern hidden by optimized builds; all join sites now guarded, rest of codebase unaudited.
 - [x] **Lexer returned token slices into dead stack frames** — escaped strings/templates decoded into 64KB stack buffers whose slices escaped via Token.str_value/raw_value; fixed with a lexer arena (pointer-held so lexer snapshot/restore keeps allocations), freed at compile end; dead str_owns_memory removed; ASan-verified across 400+ escape/template tests.
 
 - [x] **Object-literal method + default param + param-capturing closure scrambles param slots** (FIXED: PUTLEX hardcoded source register 0 in all 3 duplicated param prologues — every env-backed param received param 0's value; now uses each param's arg-index register) — `{ m(a, b, c = "") { push(() => b); return String(b); } }`: `b` reads as the CLOSURE OBJECT inside the method. Was breaking temporalHelpers.observeProperty → 6 fromAsync tests; the 7th needed a separate fromAsync length-coercion fix (ToPrimitive on object-valued length).
