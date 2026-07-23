@@ -400,6 +400,14 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name, bo
             io::eprintfn("%s: compile error at line %d:%d",
                          (ZString)name_buf[0..], line, col);
         }
+        // Park a SyntaxError on the heap error channel: a module parse
+        // failure is a static-semantics early error, and ECMA-262 requires
+        // dynamic `import()` to reject with a SyntaxError rather than a
+        // generic load failure. Callers that don't surface the parked value
+        // (run_module_file's rc-2 path) clear the channel themselves.
+        heap.error_value = module_syntax_error(
+            heap, msg_len > 0 ? ((char*)msg)[:msg_len] : (char[])"module compile error");
+        heap.has_error = true;
         return MODULE_ERROR~;
     }
     mod.func = func_opt;
@@ -918,7 +926,15 @@ fn int run_module_file(Heap* heap, Vm* vm, char[] path) {
     // Reading + compiling + recursively resolving dependencies. A failure here
     // is a load/compile/link error (rc 2), not a thrown runtime value.
     ModuleDef*? mod_opt = resolve_module(heap, path, "");
-    if (catch err = mod_opt) { return 2; }
+    if (catch err = mod_opt) {
+        // resolve_module may have parked a SyntaxError on the error channel
+        // for dynamic import's benefit; here the failure is reported via the
+        // return code, so clear the channel to keep the rc-2 contract
+        // (structural failure, no thrown value).
+        heap.error_value.set_undefined();
+        heap.has_error = false;
+        return 2;
+    }
     ModuleDef* mod = mod_opt;
 
     if (!link_module(heap, vm, mod, vm.global_env)) { return 2; }
@@ -1142,9 +1158,24 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier, bool wants_json = 
     bool clear_reason_ref = false;
 
     ModuleDef* mod = null;
+    heap.has_error = false;
+    heap.error_value.set_undefined();
     ModuleDef*? mod_opt = resolve_module(heap, dup_spec, base_name, wants_json);
     if (catch err = mod_opt) {
-        reason = module_type_error(heap, "cannot resolve module");
+        // A load failure may have parked a specific static-semantics error
+        // (SyntaxError for a module parse failure) on the heap error channel —
+        // prefer it over the generic TypeError, and clear the channel so the
+        // fault becomes a promise rejection rather than leaking to the
+        // enclosing frame.
+        if (heap.has_error || heap.error_value.is_object() || heap.error_value.is_string()) {
+            reason.set_undefined();
+            heap.tval_copy_ref(&reason, &heap.error_value);
+            clear_reason_ref = true;
+        } else {
+            reason = module_type_error(heap, "cannot resolve module");
+        }
+        heap.error_value.set_undefined();
+        heap.has_error = false;
         rejected = true;
     } else {
         mod = mod_opt;

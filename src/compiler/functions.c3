@@ -1772,6 +1772,21 @@ fn void? CompilerContext.hoist_decls(&self, bool is_global, bool checks_only = f
                 Token name_tok2 = name_opt2;
                 if (name_tok2.type != TokenType.IDENTIFIER) break;
 
+                // ES2024 §16.2.1.1 module early errors: a module body's
+                // LexicallyDeclaredNames (which, unlike a Script's, include
+                // its top-level FunctionDeclarations) must not intersect its
+                // VarDeclaredNames. hoist_global_fn_decls has already scanned
+                // the whole module, so `var x; function x(){}` in either
+                // order is caught here. Scripts keep the ES5 behavior where
+                // both are var-scoped and may share a name.
+                if (self.is_module) {
+                    for (ushort hi = 0; hi < self.hoisted_fn_count; hi++) {
+                        if (str_eq(self.hoisted_fn_names[hi], name_tok2.str_value)) {
+                            return self.fail("module-level function declaration cannot share a name with a var declaration")~;
+                        }
+                    }
+                }
+
                 // Check-prologue pass: emit CanDeclareGlobalVar for each
                 // top-level var name (Script only) and skip its binding.
                 if (checks_only) {
@@ -2056,6 +2071,13 @@ fn void? CompilerContext.hoist_global_fn_decls(&self, bool checks_only = false) 
                     already = true;
                     break;
                 }
+            }
+            // ES2024 §16.2.1.1 module early errors: top-level function
+            // declarations are lexically declared in a module body, so a
+            // duplicate name is a duplicate in LexicallyDeclaredNames — a
+            // SyntaxError. Scripts keep the ES5 last-one-wins var semantics.
+            if (already && self.is_module) {
+                return self.fail("duplicate module-level function declaration")~;
             }
             if (!already && self.hoisted_fn_count < 256) {
                 self.hoisted_fn_names[self.hoisted_fn_count] = fn_name;
