@@ -201,6 +201,97 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 bool await_was_settled =
                     builtins::promise_get_state(await_obj, 0) != builtins::PROMISE_PENDING;
 
+                // ── Async-generator internal await (ES2018 §27.6) ────────────
+                // When this AWAIT fires inside an async-generator body, we must
+                // suspend onto the SAME GeneratorState that owns the request
+                // queue (ds.act.async_gen_state), not a fresh one, and re-drive
+                // via the ASYNC_GEN_AWAIT_RESUME/REJECT reactions so the drain
+                // continues servicing the in-flight request. The drain is told
+                // (ag_did_await) to leave the current request's promise alone.
+                GeneratorState* ag_gs = (GeneratorState*)ds.act.async_gen_state;
+                bool is_ag_await = ag_gs != null && ag_gs.is_async_gen;
+                if (is_ag_await) {
+                    GeneratorState* gs = ag_gs;
+                    CompiledFunction* ag_func = (CompiledFunction*)ds.act.func;
+                    // Save the body's execution state back into the request-
+                    // queue gs (its saved_regs array already sized num_regs).
+                    gs.saved_pc = ds.curr_pc; // points to LOAD_RESUME
+                    gs.var_env = ds.act.var_env;
+                    gs.lex_env = ds.act.lex_env;
+                    gs.cat = ds.act.cat;
+                    vm.heap.tval_copy_ref(&gs.this_binding, &ds.act.this_binding);
+                    TVal* ag_regs_src = ds.act.bottom;
+                    for (uint i = 0; i < gs.num_regs; i++) {
+                        vm.heap.tval_copy_ref(&gs.saved_regs[i], &ag_regs_src[i]);
+                    }
+                    // AWAITING_RETURN is preserved (a .return()-triggered await
+                    // must stay in that state); otherwise mark SUSPENDED_YIELD.
+                    if (gs.state != GEN_AWAITING_RETURN) gs.state = GEN_SUSPENDED_YIELD;
+                    gs.ag_suspend_kind = AG_SUSPEND_AWAIT;
+
+                    // Attach resume/reject reactions carrying gs.
+                    HObject*? agr_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
+                    HObject*? agj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
+                    HObject*? agx_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+                    if (catch _e = agr_raw) { return (TVal){}; }
+                    if (catch _e = agj_raw) { return (TVal){}; }
+                    if (catch _e = agx_raw) { return (TVal){}; }
+                    HObject* ag_resume_fn = agr_raw;
+                    (*ag_resume_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_GEN_AWAIT_RESUME.ordinal;
+                    (*ag_resume_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
+                    ag_resume_fn.flags.is_async_state = true;
+                    HObject* ag_reject_fn = agj_raw;
+                    (*ag_reject_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_GEN_AWAIT_REJECT.ordinal;
+                    (*ag_reject_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
+                    ag_reject_fn.flags.is_async_state = true;
+                    HObject* ag_rxn = agx_raw;
+                    ag_rxn.prototype = vm.heap.object_proto;
+                    TVal agr_tv; agr_tv.set_object(ag_resume_fn);
+                    TVal agj_tv; agj_tv.set_object(ag_reject_fn);
+                    HString* ag_ff = builtins::builtin_intern_string(vm.heap, "onFulfilled");
+                    HString* ag_rj = builtins::builtin_intern_string(vm.heap, "onRejected");
+                    if (ag_ff != null) ag_rxn.put_prop(ag_ff, agr_tv, hobject::PROP_FLAGS_WEC);
+                    if (ag_rj != null) ag_rxn.put_prop(ag_rj, agj_tv, hobject::PROP_FLAGS_WEC);
+                    builtins::promise_add_reaction(await_obj, ag_rxn, vm.heap);
+                    if (await_was_settled) {
+                        builtins::promise_trigger_reactions(await_obj, vm.heap, (void*)vm);
+                    }
+
+                    // Signal the drain that the body suspended internally, then
+                    // pop the async-gen activation and return to the drain's
+                    // call_fn (or the caller if at top).
+                    vm.heap.ag_did_await = true;
+                    if (vm.heap.resume_gen == gs) vm.heap.resume_gen = null;
+                    decref_callee_regs(vm, ds.act);
+                    vm.activation_count--;
+                    if (vm.activation_count == 0) {
+                        TVal undef_ag;
+                        undef_ag.set_undefined();
+                        vm.heap.tval_copy_ref(&vm.return_val, &undef_ag);
+                        ds.halt = true;
+                        ds.halt_value = vm.return_val;
+                        return (TVal){};
+                    }
+                    ds.act = &vm.activations[vm.activation_count - 1];
+                    vm.valstack_bottom = ds.act.bottom;
+                    vm.valstack_top = ds.act.caller_valstack_top;
+                    CompiledFunction* ag_caller_f = (CompiledFunction*)ds.act.func;
+                    if (ag_caller_f != vm.current_func) {
+                        vm.current_func = ag_caller_f;
+                        ds.code_base = ag_caller_f.code;
+                        ds.code_count = ag_caller_f.code_count;
+                        ds.code_end = ds.code_base + ds.code_count;
+                        ds.constants = ag_caller_f.constants;
+                        ds.ic_base = (hobject::ICEntry*)ag_caller_f.ic_entries;
+                        ds.var_ic_base = (hobject::VarICEntry*)ag_caller_f.var_ic_entries;
+                        ds.nregs = ag_caller_f.num_regs;
+                    }
+                    ds.curr_pc = ds.act.curr_pc;
+                    ds.regs_base = ds.act.bottom;
+                    ds.needs_restart = true;
+                    return (TVal){};
+                }
+
                 // Suspend the async function and attach a resume/reject
                 // reaction to the resolved Promise. If it is already settled,
                 // promise_trigger_reactions below enqueues the reaction as a

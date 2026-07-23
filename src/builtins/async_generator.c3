@@ -290,17 +290,22 @@ fn void async_gen_settle_reject(Heap* heap, void* vm, HObject* promise, TVal rea
     promise_trigger_reactions(promise, heap, vm);
 }
 
-/// AsyncGeneratorDrainQueue / AsyncGeneratorResume (§27.6.3.3/.4), Phase-B
-/// synchronous subset. Processes queued requests FIFO until the queue is empty
-/// or the generator suspends at a `yield`.
+/// AsyncGeneratorDrainQueue / AsyncGeneratorResume (§27.6.3.3/.4).
+/// Processes queued requests FIFO until the queue is empty, the generator
+/// suspends at a `yield`, or the body suspends internally on an `await` (in
+/// which case a microtask ASYNC_GEN_AWAIT_RESUME reaction resumes the drain).
 fn void async_gen_drain(BuiltinContext* ctx, GeneratorState* gs) {
     Heap* heap = ctx.heap;
     void* vm = ctx.vm;
 
+    // If a request is already in flight (an internal await is outstanding),
+    // don't start a new one — the await reaction will re-drive.
+    if (gs.ag_current_request != null) return;
+
     while (gs.agr_head != null) {
         // COMPLETED-state fast answers (§27.6.3.7 AsyncGeneratorResume-style):
         //   next   → {undefined, true}
-        //   return → {value, true}
+        //   return → {value, true}   (§27.6.3.7 AsyncGeneratorReturn — value awaited)
         //   throw  → reject(value)
         if (gs.state == GEN_COMPLETED) {
             AsyncGenRequest req = async_gen_dequeue(heap, gs);
@@ -340,34 +345,103 @@ fn void async_gen_drain(BuiltinContext* ctx, GeneratorState* gs) {
             continue;
         }
 
+        // Hold the request across a possible internal await, then resume.
+        gs.ag_current_request = (void*)promise;
+        heap.ag_did_await = false;
+        gs.ag_suspend_kind = AG_SUSPEND_NONE;
         TVal result = async_gen_resume_body(ctx, gs, req.completion_kind, req.value);
 
-        if (heap.has_error) {
-            // Uncaught throw unwound the body → COMPLETED, reject this request.
-            TVal thrown = heap.error_value;
-            heap.has_error = false;
-            gs.state = GEN_COMPLETED;
-            async_gen_settle_reject(heap, vm, promise, thrown);
-            continue;
+        // If the body suspended internally on an await, leave the current
+        // request in flight; the ASYNC_GEN_AWAIT_RESUME reaction re-drives.
+        if (heap.ag_did_await) {
+            heap.ag_did_await = false;
+            return;
         }
 
-        // The body returned an IteratorResult {value, done}. Read done/value
-        // and settle. A yield leaves the generator SUSPENDED_YIELD (set by the
-        // YIELD opcode); a completion leaves it COMPLETED (set by RET_GEN).
-        TVal value; value.set_undefined();
-        bool done = false;
-        if (result.is_object() && result.get_heapptr() != null) {
-            HObject* robj = (HObject*)result.get_heapptr();
-            HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
-            if (try dv = robj.get_prop(done_key)) { done = builtin_to_boolean(&dv); }
-            HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
-            if (try vv = robj.get_prop(value_key)) { value = vv; }
-        }
-        async_gen_settle_result(heap, vm, promise, value, done);
-        // If the body only yielded, stop draining: the generator is suspended
-        // and the next queued request must wait for a fresh resume.
-        if (!done) break;
+        // Body settled (yield / return / throw) — service the outcome.
+        gs.ag_current_request = null;
+        if (!async_gen_finish_body(ctx, gs, promise, result)) break;
     }
+}
+
+/// Service the outcome of a body resume that did NOT suspend on an internal
+/// await: settle the current request's promise. Returns true to keep draining
+/// (completed request), false to stop (the body yielded and is now suspended).
+fn bool async_gen_finish_body(BuiltinContext* ctx, GeneratorState* gs, HObject* promise, TVal result) {
+    Heap* heap = ctx.heap;
+    void* vm = ctx.vm;
+
+    if (heap.has_error) {
+        TVal thrown = heap.error_value;
+        heap.has_error = false;
+        gs.state = GEN_COMPLETED;
+        async_gen_settle_reject(heap, vm, promise, thrown);
+        return true;
+    }
+
+    TVal value; value.set_undefined();
+    bool done = false;
+    if (result.is_object() && result.get_heapptr() != null) {
+        HObject* robj = (HObject*)result.get_heapptr();
+        HString* done_key = (HString*)heap.strs[heap::BuiltinStr.DONE];
+        if (try dv = robj.get_prop(done_key)) { done = builtin_to_boolean(&dv); }
+        HString* value_key = (HString*)heap.strs[heap::BuiltinStr.VALUE];
+        if (try vv = robj.get_prop(value_key)) { value = vv; }
+    }
+    async_gen_settle_result(heap, vm, promise, value, done);
+    // Continue draining regardless of done: AsyncGeneratorDrainQueue
+    // (§27.6.3.4) resumes one queued request per step, so after a yield settles
+    // the next queued request resumes the body again. The while-loop's
+    // queue-empty test terminates the single-consumer (for-await) case.
+    return true;
+}
+
+/// ASYNC_GEN_AWAIT_RESUME native reaction (§27.6): an internal `await` inside an
+/// async-gen body fulfilled. Deliver the value as the resume completion, re-run
+/// the body, and continue draining.
+fn void builtin_async_gen_await_resume(BuiltinContext* ctx) {
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    async_gen_await_reenter(ctx, gs, NEXT, arg);
+}
+
+/// ASYNC_GEN_AWAIT_REJECT native reaction (§27.6): an internal `await` rejected.
+/// Inject the reason as a throw completion at the await point.
+fn void builtin_async_gen_await_reject(BuiltinContext* ctx) {
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    async_gen_await_reenter(ctx, gs, THROW, arg);
+}
+
+/// Re-enter a suspended async-gen body after an internal await settled, then
+/// resume draining. Shared by the fulfill/reject reactions.
+fn void async_gen_await_reenter(BuiltinContext* ctx, GeneratorState* gs, ResumeKind kind, TVal completion) {
+    Heap* heap = ctx.heap;
+    HObject* promise = (HObject*)gs.ag_current_request;
+
+    heap.ag_did_await = false;
+    gs.ag_suspend_kind = AG_SUSPEND_NONE;
+    TVal result = async_gen_resume_body(ctx, gs, kind, completion);
+
+    // Suspended again on another internal await — stay in flight.
+    if (heap.ag_did_await) {
+        heap.ag_did_await = false;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    // The body settled. Finish the in-flight request, then drain the rest.
+    gs.ag_current_request = null;
+    if (promise != null) {
+        if (async_gen_finish_body(ctx, gs, promise, result)) {
+            async_gen_drain(ctx, gs);
+        }
+    }
+    ctx.result.set_undefined();
 }
 
 /// Resume the async generator's body synchronously (reusing the sync generator

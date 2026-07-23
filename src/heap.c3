@@ -130,6 +130,17 @@ enum ResumeKind : char {
     RETURN,   /// .return() — inject return at yield point
 }
 
+/// How an async-generator body last suspended, recorded by the AWAIT/YIELD
+/// opcodes so the drain (async_gen_drain) knows whether the returned-from-body
+/// value settles the current request (YIELD/RETURN) or whether the body merely
+/// suspended internally on an `await` and must be re-driven by a microtask
+/// (AWAIT) without touching the current request's promise.
+enum GenSuspendKind : char {
+    AG_SUSPEND_NONE,   /// idle / not an async-gen resume
+    AG_SUSPEND_AWAIT,  /// body suspended at an internal `await` (invisible to caller)
+    AG_SUSPEND_YIELD,  /// body reached a `yield` — settle current request {v,false}
+}
+
 /// Saved execution context for a generator.
 ///
 /// When a generator function is called, instead of executing the body
@@ -165,6 +176,14 @@ struct GeneratorState {
     bool  is_async_gen;
     AsyncGenRequest* agr_head; // FIFO queue head (current in-flight request)
     AsyncGenRequest* agr_tail; // FIFO queue tail
+    // The request currently being serviced (dequeued from agr_head at the start
+    // of a resume, held here across internal `await` suspensions so the eventual
+    // yield/return/throw settles the right promise). Null when idle.
+    void* ag_current_request;  // AsyncGenRequest*
+    // How the async-gen body last suspended (ES2018 §27.6): AWAIT means the body
+    // suspended internally on an await and the drain must NOT settle the current
+    // request — a microtask resume will re-drive it. YIELD/RETURN/THROW settle.
+    GenSuspendKind ag_suspend_kind;
     // yield-through state: when yield fires inside a non-generator inner
     // function (e.g. a default expression thunk), the resume value must be
     // placed into a specific register in the generator's frame on resume.
@@ -314,6 +333,11 @@ struct Heap {
     GeneratorState* resume_gen;
     TVal yield_value;          /// Value yielded by YIELD opcode
     bool did_yield;            /// True when YIELD was just executed
+    /// Set by the AWAIT opcode when it suspends an *async-generator* body on an
+    /// internal await (ES2018 §27.6.3.8 / §27.6.3.9): the drain must leave the
+    /// current request's promise untouched — a microtask ASYNC_GEN resume will
+    /// re-drive the body. Cleared by the drain before each body resume.
+    bool ag_did_await;
 
     // Initial generator call state — set by the initial-call path in vm_calls
     // before eagerly running the frame, cleared by the GEN_START handler.
@@ -1207,6 +1231,7 @@ fn void Heap.reset(&self) {
     self.valstack_top_ptr = null;
     self.resume_gen       = null;
     self.did_yield        = false;
+    self.ag_did_await     = false;
     self.gc_root_count    = 0;
     self.gc_running       = false;
     self.gc_trigger_counter = GC_INITIAL_TRIGGER;

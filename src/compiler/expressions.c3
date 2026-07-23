@@ -3053,10 +3053,19 @@ fn ushort? CompilerContext.primary_expr(&self) {
 
             ushort val_reg;
             if (is_delegate) {
+                ushort iterable_reg = self.assignment_expr()!;
+                if (self.is_async_gen()) {
+                    // async `yield* EXPR` (ES2018 §27.6.3.8): delegate over the
+                    // *async* iterator protocol — the sync YIELD_STAR opcode
+                    // can't await each inner .next(). Desugar to a delegation
+                    // loop over GET_ITER_ASYNC (AsyncFromSync wraps sync sources).
+                    ushort r = self.emit_async_yield_star(iterable_reg)!;
+                    self.free_reg(iterable_reg);
+                    return r;
+                }
                 // yield* iterable — delegate to the inner iterable via the ES6 iterator protocol.
                 // The YIELD_STAR opcode handles Getting the iterator, calling .next() in a
                 // suspend/resume loop, and properly delegating .throw()/.return().
-                ushort iterable_reg = self.assignment_expr()!;
                 ushort result_reg = self.alloc_reg();
                 self.emit_abc(Opcode.YIELD_STAR, (uint)result_reg, (uint)iterable_reg, 0);
                 self.free_reg(iterable_reg);
@@ -3077,6 +3086,13 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 val_reg = self.assignment_expr()!;
                 ushort result = self.alloc_reg();
                 self.emit_abc(Opcode.LDREG, (uint)result, (uint)val_reg, 0);
+                // ES2018 §27.6.3.8 AsyncGeneratorYield step 5: the yield operand
+                // is awaited before the request settles. Emit AWAIT here so a
+                // yielded thenable resolves to its value.
+                if (self.is_async_gen()) {
+                    self.emit_abc(Opcode.AWAIT, (uint)result, 0, 0);
+                    self.emit_abc(Opcode.LOAD_RESUME, (uint)result, 0, 0);
+                }
                 self.emit_abc(Opcode.YIELD, (uint)result, 0, 0);
                 self.emit_abc(Opcode.LOAD_RESUME, (uint)result, 0, 0);
                 self.free_reg(val_reg);

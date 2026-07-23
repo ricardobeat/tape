@@ -612,6 +612,8 @@ enum Builtin : uint {
     ASYNC_GENERATOR_PROTO_RETURN,          // %AsyncGeneratorPrototype%.return(value)
     ASYNC_GENERATOR_PROTO_THROW,           // %AsyncGeneratorPrototype%.throw(value)
     ASYNC_GENERATOR_FUNCTION,              // %AsyncGeneratorFunction% constructor
+    ASYNC_GEN_AWAIT_RESUME,                // native reaction: internal await fulfilled → re-drive body
+    ASYNC_GEN_AWAIT_REJECT,                // native reaction: internal await rejected → inject throw
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -3835,6 +3837,8 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ASYNC_GENERATOR_PROTO_RETURN.ordinal]   = &builtin_async_generator_proto_return,
     [Builtin.ASYNC_GENERATOR_PROTO_THROW.ordinal]    = &builtin_async_generator_proto_throw,
     [Builtin.ASYNC_GENERATOR_FUNCTION.ordinal]       = &builtin_async_generator_function,
+    [Builtin.ASYNC_GEN_AWAIT_RESUME.ordinal]         = &builtin_async_gen_await_resume,
+    [Builtin.ASYNC_GEN_AWAIT_REJECT.ordinal]         = &builtin_async_gen_await_reject,
     [Builtin.ARRAY_FROM_ASYNC.ordinal]               = &builtin_array_from_async,
     [Builtin.ARRAY_FROM_ASYNC_STEP_FULFILL.ordinal]  = &builtin_array_from_async_step_fulfill,
     [Builtin.ARRAY_FROM_ASYNC_MAP_FULFILL.ordinal]   = &builtin_array_from_async_map_fulfill,

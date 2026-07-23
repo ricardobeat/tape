@@ -156,12 +156,8 @@ UNSUPPORTED_PATTERN = re.compile(
     # Atomics.pause proposal remains filtered above.  Multi-worker `agent`
     # tests are skipped per-file via AGENT_HARNESS_RE below.
     r"structured-clone|import\.meta|dynamic-import|"
-    # Async generators deferred (plan 057 implements the for-await-of *consumer*
-    # + Symbol.asyncIterator, but NOT `async function*`). for-await-of tests whose
-    # SOURCE is a hand-written async iterable or a sync iterable now run; tests
-    # using an async-generator source are skipped by the async-generator glob list
-    # below (they use `async function*` in the body without always tagging it).
-    r"async-generator|"
+    # Async generators (`async function*`) implemented — plan 060. The
+    # `async-generator` feature token no longer forces a skip.
     # Class features not yet implemented (private fields/methods/accessors/
     # static private landed in plan 054 P2-P5; public fields P7; static
     # initialization blocks landed session 292; #x in obj (P6) landed in
@@ -219,38 +215,8 @@ _UNSUPPORTED_FEATURE_RE = re.compile(UNSUPPORTED_PATTERN.pattern.split(r"\b(?:",
 # Glob patterns (relative to test262/test) skipped wholesale. Unlike SKIP_FILES
 # (exact paths) these match families of tests.
 SKIP_GLOBS = {
-    # Async generators (`async function*` / `async *m()`) are deferred (plan 057
-    # implements the for-await-of *consumer* — a for-await loop inside an async
-    # function — plus Symbol.asyncIterator and the AsyncFromSync adapter, but not
-    # async generator functions/methods). test262 marks async-generator tests
-    # structurally: the path always contains the token `async-gen` (or
-    # `async-private-gen` for private methods) — as a directory (async-gen-method/,
-    # async-gen-method-static/), a filename prefix (async-gen-decl-*, async-gen-
-    # meth-*), etc. The for-await-of *consumer* tests use `async-func-*` instead,
-    # so these path-substring globs skip every async-generator test (across
-    # class/dstr, object/dstr, for-await-of, method-definition, …) without
-    # touching the consumer tests we now support. Removing `async-iteration` from
-    # UNSUPPORTED_PATTERN un-skipped ~1,993 of these; this re-skips them by their
-    # own path structure (no test-body scanning).
-    "*async-gen*",
-    "*async-private-gen*",
-    # Async generators confirmed a NON-GOAL 2026-07-20 (session 289b); the
-    # engine parse-rejects `async function*` in all forms. These for-await-of
-    # tests are consumer-NAMED (`async-func-dstr-*`) but their iterable
-    # fixture is an async generator — marked structurally by a second
-    # `-async-` token after the binding kind (`async-func-dstr-let-async-*`
-    # vs the supported `async-func-dstr-let-*`). Verified exact against the
-    # session-289 full run: matches all 168 async-gen-fixture fails, zero
-    # passing tests. (Path-structural on purpose — no test-body scanning.)
-    "language/statements/for-await-of/async-func-dstr-*-async-*",
-    # Async-generator built-ins (the AsyncGenerator function/prototype). The
-    # %AsyncIteratorPrototype% is reached via async generators too. (The
-    # AsyncFromSyncIterator adapter IS implemented — plan 057 — but its test262
-    # dir exercises it via async-generator sources, so it stays skipped until
-    # async generators land.)
-    "built-ins/AsyncGeneratorFunction/*",
-    "built-ins/AsyncGeneratorPrototype/*",
-    "built-ins/AsyncFromSyncIteratorPrototype/*",
+    # Async generators (`async function*` / `async *m()`) implemented — plan 060.
+    # The `*async-gen*` / AsyncGenerator built-in globs are no longer skipped.
 }
 SKIP_FILES = {
     # Map/Set key/value tests that use a BigInt literal far beyond 2^127
@@ -260,20 +226,8 @@ SKIP_FILES = {
     # runs. Not a WeakRef defect.
     "built-ins/Map/valid-keys.js",
     "built-ins/Set/valid-values.js",
-    # Async-generator SYNTAX present incidentally (case lists / fixtures) in
-    # tests whose names don't match the async-gen globs above. The engine
-    # parse-rejects `async function*` (non-goal until plan 060), so these
-    # whole files CE. Un-skip with plan 060.
-    "built-ins/Object/seal/seal-asyncgeneratorfunction.js",
-    "built-ins/Function/prototype/toString/AsyncGenerator.js",
-    # Array.fromAsync tests whose SOURCE iterable is an async generator
-    # (the fromAsync implementation itself is live; un-skip with plan 060).
-    "built-ins/Array/fromAsync/async-iterable-input.js",
-    "built-ins/Array/fromAsync/asyncitems-asynciterator-exists.js",
-    "built-ins/Array/fromAsync/mapfn-async-iterable-async.js",
-    "built-ins/Array/fromAsync/async-iterable-async-mapped-awaits-once.js",
-    "built-ins/Array/fromAsync/mapfn-sync-iterable-async.js",
-    "built-ins/Array/fromAsync/async-iterable-input-iteration-err.js",
+    # (async-generator stragglers + fromAsync-with-async-gen-source un-skipped —
+    # plan 060 implements `async function*`.)
     "language/comments/hashbang/function-constructor.js",
     "language/expressions/optional-chaining/member-expression.js",
     "language/destructuring/binding/syntax/destructuring-array-parameters-function-arguments-length.js",
@@ -799,6 +753,13 @@ PHASES = [
             "language/expressions/yield",
             "language/expressions/generators",
             "language/statements/generators",
+            # Async generators (`async function*`) — plan 060.
+            "language/expressions/async-generator",
+            "language/statements/async-generator",
+            "built-ins/AsyncGeneratorFunction",
+            "built-ins/AsyncGeneratorPrototype",
+            "built-ins/AsyncFromSyncIteratorPrototype",
+            "built-ins/AsyncIteratorPrototype",
         ],
     },
     {
