@@ -55,6 +55,18 @@ fn bool register_async_generator(EnvRecord* global_env, Heap* heap) {
                 (int)Builtin.ASYNC_ITERATOR_PROTO_SYMBOL_ASYNCITER.ordinal;
             fn_obj.flags.callable = true;
             fn_obj.prototype = heap.function_proto;
+            // .length = 0, .name = "[Symbol.asyncIterator]" (ES2018 §27.1.3.1).
+            {
+                HString* length_key = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+                TVal len_tv; len_tv.set_fastint(0);
+                fn_obj.put_prop(length_key, len_tv, hobject::PROP_FLAGS_NWC);
+                HString* name_key = builtin_intern_string(heap, "name");
+                HString* name_val = builtin_intern_string(heap, "[Symbol.asyncIterator]");
+                if (name_key != null && name_val != null) {
+                    TVal name_tv; name_tv.set_string(name_val);
+                    fn_obj.put_prop(name_key, name_tv, hobject::PROP_FLAGS_NWC);
+                }
+            }
             TVal iter_tv;
             iter_tv.set_object(fn_obj);
             ai_proto.put_prop(asynciter_key, iter_tv, hobject::PROP_FLAGS_WC);

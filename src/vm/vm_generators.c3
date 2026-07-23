@@ -63,6 +63,33 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                             return (TVal){};
                         }
 
+                        // Async generator: an uncaught throw at an injected point
+                        // (e.g. a rejected internal await) completes the generator
+                        // and rejects the in-flight request. Surface the throw via
+                        // heap.has_error and halt the nested resume run so the
+                        // drain (async_gen_resume_body's caller) settles it.
+                        if (gs_lr.is_async_gen) {
+                            decref_callee_regs(vm, ds.act);
+                            vm.activation_count--;
+                            vm.has_error = true;
+                            vm.heap.has_error = true;
+                            vm.heap.tval_copy_ref(&vm.heap.error_value, &throw_val);
+                            if (vm.activation_count == 0) {
+                                ds.halt = true;
+                                ds.halt_value = (TVal){};
+                                return (TVal){};
+                            }
+                            Activation* ag_caller = &vm.activations[vm.activation_count - 1];
+                            vm.valstack_bottom = ag_caller.bottom;
+                            if (ag_caller.func != null) {
+                                CompiledFunction* ag_cf = (CompiledFunction*)ag_caller.func;
+                                vm.valstack_top = ag_caller.bottom + ag_cf.num_regs;
+                            }
+                            ds.halt = true;
+                            ds.halt_value = (TVal){};
+                            return (TVal){};
+                        }
+
                         // Generator path: pop activation and propagate error
                         if (vm.activation_count > 0) {
                             vm.activation_count--;
