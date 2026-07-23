@@ -32,7 +32,6 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     HObject* pattern_regexp = null;  // Saved pointer for RegExp→RegExp constructor shortcut
     char* pattern_str = "";
     usz pattern_len = 0;
-    int flags = 0;
     int js_flags = 0;  // JS flag bits: 1=g, 2=i, 4=m
     char* flags_str = "";
     usz flags_len = 0;
@@ -220,88 +219,75 @@ fn void builtin_regexp(BuiltinContext* ctx) {
         }
     }
 
-    // Convert JS flags to libregexp flag bits and store JS flags
-    // ES2022 §21.2.3.2.2 step 5: if F contains the same code unit more than once, throw SyntaxError.
+    HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.REGEXP);
+    if (catch err = obj_raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* obj = obj_raw;
+    obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.regexp_proto);
+    // Pooled memory is not zeroed — clear the regexp fields before
+    // regexp_initialize reads them (it re_frees any previous compiled data).
+    (*obj.extra_ptr()).regexp.regexp_data = null;
+    (*obj.extra_ptr()).regexp.owns_data = false;
+    (*obj.extra_ptr()).regexp.flags = 0;
+    (*obj.extra_ptr()).prim.primitive_value.set_undefined();
+
+    if (!regexp_initialize(ctx, obj, pattern_str, pattern_len, flags_str, flags_len, js_flags)) return;
+    ctx.result.set_object(obj);
+}
+
+/// RegExpInitialize (ES2022 §22.2.3.2.2): parse `flags_str`, compile
+/// `pattern_str`, and install the result on `obj` (REGEXP class), replacing
+/// any previous compiled data (re_free is refcounted) and resetting
+/// lastIndex to 0. `js_flags` seeds the JS flag bits for callers that take
+/// flags from another RegExp's internals instead of a string (pass 0
+/// otherwise). On invalid flags or a pattern that fails to compile, throws
+/// SyntaxError via ctx and returns false leaving `obj` untouched.
+fn bool regexp_initialize(BuiltinContext* ctx, HObject* obj,
+                          char* pattern_str, usz pattern_len,
+                          char* flags_str, usz flags_len,
+                          int js_flags = 0) {
+    // Parse the flags string into JS flag bits.
+    // ES2022 §21.2.3.2.2 step 5: if F contains the same code unit more than
+    // once, or an unrecognized one, throw SyntaxError.
     int seen_flags = 0;
     for (usz i = 0; i < flags_len; i++) {
         char f = flags_str[i];
-        int flag_bit = 0;
-        if (f == 'g') {
-            flag_bit = 1;
-        } else if (f == 'i') {
-            flag_bit = 2;
-        } else if (f == 'm') {
-            flag_bit = 4;
-        } else if (f == 's') {
-            flag_bit = 8;
-        } else if (f == 'u') {
-            flag_bit = 16;
-        } else if (f == 'y') {
-            flag_bit = 32;
-        } else if (f == 'd') {
-            flag_bit = 64;
-        } else if (f == 'v') {
-            flag_bit = 128;
-        } else {
-            // Invalid flag per ES5 §15.10.4.1 — throw SyntaxError
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.syntax_err_proto;
-                char[80] buf;
-                int len = (int)(io::bprintf(&buf, "Invalid flags supplied to RegExp constructor '%c'", f) ?? buf[:0]).len;
-                if (len > 0 && len < 80) {
-                    HString* msg_str = builtin_intern_string(ctx.heap, buf[:len]);
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                }
-                ctx.throw_value.set_object(err);
-            } else {
-                ctx.throw_value.set_undefined();
-            }
-            ctx.should_throw = true;
-            return;
+        int flag_bit;
+        switch (f) {
+            case 'g': flag_bit = 1;
+            case 'i': flag_bit = 2;
+            case 'm': flag_bit = 4;
+            case 's': flag_bit = 8;
+            case 'u': flag_bit = 16;
+            case 'y': flag_bit = 32;
+            case 'd': flag_bit = 64;
+            case 'v': flag_bit = 128;
+            default:  flag_bit = 0;
         }
-        // Check for duplicate flag
-        if ((seen_flags & flag_bit) != 0) {
-            HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-            if (try err = err_raw) {
-                err.prototype = ctx.heap.syntax_err_proto;
-                char[80] buf;
-                int len = (int)(io::bprintf(&buf, "Invalid flags supplied to RegExp constructor '%c'", f) ?? buf[:0]).len;
-                if (len > 0 && len < 80) {
-                    HString* msg_str = builtin_intern_string(ctx.heap, buf[:len]);
-                    TVal msg_tv;
-                    msg_tv.set_string(msg_str);
-                    HString* msg_key = builtin_intern_string(ctx.heap, "message");
-                    err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-                }
-                ctx.throw_value.set_object(err);
-            } else {
-                ctx.throw_value.set_undefined();
-            }
-            ctx.should_throw = true;
-            return;
+        // Invalid or duplicate flag — throw SyntaxError.
+        if (flag_bit == 0 || (seen_flags & flag_bit) != 0) {
+            char[80] buf;
+            int len = (int)(io::bprintf(&buf, "Invalid flags supplied to RegExp constructor '%c'", f) ?? buf[:0]).len;
+            builtin_throw_no_result_change(ctx, ctx.heap.syntax_err_proto,
+                (len > 0 && len < 80) ? buf[:len] : "Invalid flags supplied to RegExp constructor");
+            return false;
         }
         seen_flags |= flag_bit;
         js_flags |= flag_bit;
-        if (f == 'i') {
-            flags |= re_bindings::RE_FLAG_IGNORECASE;
-        } else if (f == 'm') {
-            flags |= re_bindings::RE_FLAG_MULTILINE;
-        } else if (f == 's') {
-            flags |= re_bindings::RE_FLAG_DOTALL;
-        } else if (f == 'u') {
-            flags |= re_bindings::RE_FLAG_UNICODE;
-        } else if (f == 'y') {
-            flags |= re_bindings::RE_FLAG_STICKY;
-        } else if (f == 'd') {
-            flags |= re_bindings::RE_FLAG_INDICES;
-        } else if (f == 'v') {
-            flags |= re_bindings::RE_FLAG_UNICODE_SETS;
-        }
     }
+
+    // Derive libregexp flag bits from the JS flag bits (covers both parsed
+    // flags and flags inherited from another RegExp's internals).
+    int flags = 0;
+    if ((js_flags & 2)   != 0) flags |= re_bindings::RE_FLAG_IGNORECASE;
+    if ((js_flags & 4)   != 0) flags |= re_bindings::RE_FLAG_MULTILINE;
+    if ((js_flags & 8)   != 0) flags |= re_bindings::RE_FLAG_DOTALL;
+    if ((js_flags & 16)  != 0) flags |= re_bindings::RE_FLAG_UNICODE;
+    if ((js_flags & 32)  != 0) flags |= re_bindings::RE_FLAG_STICKY;
+    if ((js_flags & 64)  != 0) flags |= re_bindings::RE_FLAG_INDICES;
+    if ((js_flags & 128) != 0) flags |= re_bindings::RE_FLAG_UNICODE_SETS;
 
     // Compile the regexp
     char[128] error_buf;
@@ -309,33 +295,16 @@ fn void builtin_regexp(BuiltinContext* ctx) {
         (char*)pattern_str, (usz)pattern_len,
         flags, &error_buf, 128
     );
-
     if (compiled == null) {
         // Compilation failed — throw SyntaxError (ES5 §15.10.4.1)
-        HObject*? err_raw = ctx.heap.alloc_object(hobject::ObjClass.ERROR);
-        if (try err = err_raw) {
-            err.prototype = ctx.heap.syntax_err_proto;
-            HString* msg_str = builtin_intern_string(ctx.heap, error_buf[:128]);
-            TVal msg_tv;
-            msg_tv.set_string(msg_str);
-            HString* msg_key = builtin_intern_string(ctx.heap, "message");
-            err.put_prop(msg_key, msg_tv, hobject::PROP_FLAGS_WC);
-            ctx.throw_value.set_object(err);
-        } else {
-            ctx.throw_value.set_undefined();
-        }
-        ctx.should_throw = true;
-        return;
+        builtin_throw_no_result_change(ctx, ctx.heap.syntax_err_proto, error_buf[:128]);
+        return false;
     }
 
-    HObject*? obj_raw = ctx.heap.alloc_object(hobject::ObjClass.REGEXP);
-    if (catch err = obj_raw) {
-        if (compiled != null) re_bindings::re_free(compiled);
-        ctx.result.set_undefined();
-        return;
-    }
-    HObject* obj = obj_raw;
-    obj.prototype = builtin_proto_from_new_target(ctx, ctx.heap.regexp_proto);
+    // Drop any previous compiled data (re-initialization via compile();
+    // re_free only frees at refcount zero).
+    void* old_data = (*obj.extra_ptr()).regexp.regexp_data;
+    if (old_data != null) re_bindings::re_free(old_data);
     (*obj.extra_ptr()).regexp.regexp_data = compiled;
     // Exclusive owner of re_compile's initial ref (pooled memory is not zeroed,
     // so this MUST be set explicitly — see HObjectRegExp.owns_data).
@@ -346,13 +315,91 @@ fn void builtin_regexp(BuiltinContext* ctx) {
     HString* pattern_hs = builtin_intern_string(ctx.heap, pattern_str[:pattern_len]);
     (*obj.extra_ptr()).prim.primitive_value.set_string(pattern_hs);
 
-    // Set RegExp.prototype.lastIndex (ES5 §15.10.7.5) — writable, non-enumerable,
-    // non-configurable own data property.
+    // Set lastIndex = 0 (ES5 §15.10.7.5) — writable, non-enumerable,
+    // non-configurable own data property. RegExpInitialize step 12 is
+    // Set(obj, "lastIndex", 0, true): throws TypeError when an existing
+    // lastIndex is non-writable (the internals above stay updated).
     HString* lastindex_key = builtin_intern_string(ctx.heap, "lastIndex");
+    if (!obj.is_prop_writable((void*)lastindex_key)) {
+        builtin_throw_no_result_change(ctx, ctx.heap.type_err_proto, "Cannot assign to read only property 'lastIndex'");
+        return false;
+    }
     TVal lastindex_tv;
     lastindex_tv.set_fastint(0);
     obj.put_prop(lastindex_key, lastindex_tv, hobject::PROP_FLAGS_WENC);
+    return true;
+}
 
+/// RegExp.prototype.compile(pattern, flags) — ECMA-262 Annex B §B.2.4.1.
+/// Re-initializes the receiver RegExp in place (recompiles the bytecode,
+/// updates source/flags internals, resets lastIndex to 0) and returns it.
+fn void builtin_regexp_proto_compile(BuiltinContext* ctx) {
+    // Steps 1-2: receiver must have a [[RegExpMatcher]] internal slot.
+    HObject* obj = regexp_get_this(ctx);
+    if (obj == null || (*obj.extra_ptr()).regexp.regexp_data == null) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "RegExp.prototype.compile called on incompatible receiver");
+        return;
+    }
+
+    TVal pattern_arg;
+    pattern_arg.set_undefined();
+    TVal flags_arg;
+    flags_arg.set_undefined();
+    if (ctx.argc > 0) pattern_arg = ctx.regs[ctx.base_reg];
+    if (ctx.argc > 1) flags_arg = ctx.regs[ctx.base_reg + 1];
+
+    char* pattern_str = "";
+    usz pattern_len = 0;
+    char* flags_str = "";
+    usz flags_len = 0;
+    int js_flags = 0;
+
+    HObject* src = null;
+    if (pattern_arg.is_object() && pattern_arg.get_heapptr() != null) {
+        HObject* pobj = (HObject*)pattern_arg.get_heapptr();
+        if (pobj.get_class() == hobject::ObjClass.REGEXP && (*pobj.extra_ptr()).regexp.regexp_data != null) {
+            src = pobj;
+        }
+    }
+    if (src != null) {
+        // Step 3: pattern has [[RegExpMatcher]] — flags must be undefined,
+        // then take pattern/flags from its internals.
+        if (!flags_arg.is_undefined()) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot supply flags when constructing one RegExp from another");
+            return;
+        }
+        if ((*src.extra_ptr()).prim.primitive_value.is_string()) {
+            HString* phs = (HString*)(*src.extra_ptr()).prim.primitive_value.get_heapptr();
+            pattern_str = phs.get_cstr();
+            pattern_len = phs.blen;
+        }
+        js_flags = (*src.extra_ptr()).regexp.flags;
+    } else {
+        // Step 4: P = pattern undefined ? "" : ToString(pattern),
+        //         F = flags undefined ? "" : ToString(flags).
+        if (!pattern_arg.is_undefined()) {
+            HString* phs = builtin_to_string_vm(ctx, &pattern_arg);
+            if (ctx.should_throw) return;
+            if (phs != null) {
+                pattern_str = phs.get_cstr();
+                pattern_len = phs.blen;
+            }
+        }
+        if (!flags_arg.is_undefined()) {
+            HString* fhs = builtin_to_string_vm(ctx, &flags_arg);
+            if (ctx.should_throw) return;
+            if (fhs != null) {
+                flags_str = fhs.get_cstr();
+                flags_len = fhs.blen;
+            }
+        }
+    }
+
+    // Step 5: re-run RegExpInitialize on the SAME object; return the receiver.
+    if (!regexp_initialize(ctx, obj, pattern_str, pattern_len, flags_str, flags_len, js_flags)) {
+        ctx.result.set_undefined();
+        return;
+    }
     ctx.result.set_object(obj);
 }
 
@@ -2734,6 +2781,9 @@ fn bool register_regexp_constructor(EnvRecord* global_env, Heap* heap) {
 
     // Add RegExp.prototype.toString()
     if (!register_string_proto_method(proto, heap, "toString", Builtin.REGEXP_PROTO_TOSTRING.ordinal)) return false;
+
+    // Add RegExp.prototype.compile() (Annex B §B.2.4.1)
+    if (!register_string_proto_method(proto, heap, "compile", Builtin.REGEXP_PROTO_COMPILE.ordinal)) return false;
 
     // Add RegExp.prototype accessor getters (ES6 §21.2.5)
     if (!register_proto_accessor(proto, heap, "flags", Builtin.REGEXP_PROTO_GET_FLAGS.ordinal)) return false;

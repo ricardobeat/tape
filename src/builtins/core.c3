@@ -618,6 +618,7 @@ enum Builtin : uint {
     ASYNC_GEN_RETURN_REJECT,               // native reaction: AwaitReturn value rejected → reject request
     ASYNC_GEN_YRET_FULFILL,                // native reaction: yield-resumption return value fulfilled → resume body w/ return
     ASYNC_GEN_YRET_REJECT,                 // native reaction: yield-resumption return value rejected → resume body w/ throw
+    REGEXP_PROTO_COMPILE,                  // RegExp.prototype.compile(pattern, flags) (Annex B §B.2.4.1)
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2501,6 +2502,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.REGEXP_PROTO_TEST.ordinal: return { "test", 1 };
         case Builtin.REGEXP_PROTO_EXEC.ordinal: return { "exec", 1 };
         case Builtin.REGEXP_PROTO_TOSTRING.ordinal: return { "toString", 0 };
+        case Builtin.REGEXP_PROTO_COMPILE.ordinal: return { "compile", 2 };
         case Builtin.OBJECT_PROTO_ISPROTOTYPEOF.ordinal: return { "isPrototypeOf", 1 };
         case Builtin.OBJECT_PROTO_HASOWNPROPERTY.ordinal: return { "hasOwnProperty", 1 };
         case Builtin.OBJECT_PROTO_PROPERTYISENUMERABLE.ordinal: return { "propertyIsEnumerable", 1 };
@@ -3600,6 +3602,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.RANGE_ERROR.ordinal] = &builtin_range_error,
     [Builtin.REFERENCE_ERROR.ordinal] = &builtin_reference_error,
     [Builtin.REGEXP.ordinal] = &builtin_regexp,
+    [Builtin.REGEXP_PROTO_COMPILE.ordinal] = &builtin_regexp_proto_compile,
     [Builtin.REGEXP_PROTO_EXEC.ordinal] = &builtin_regexp_proto_exec,
     [Builtin.REGEXP_PROTO_GET_DOTALL.ordinal] = &builtin_regexp_proto_get_dotAll,
     [Builtin.REGEXP_PROTO_GET_FLAGS.ordinal] = &builtin_regexp_proto_get_flags,
