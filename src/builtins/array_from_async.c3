@@ -300,7 +300,16 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
             items_obj = w;
             HObject* wrap_proto = heap.string_proto;
             if (async_items.is_string()) {
-                (*items_obj.extra_ptr()).prim.primitive_value = async_items;
+                // Symbols share the STRING tag: a Symbol primitive must wrap
+                // to an ordinary object with Symbol.prototype, NOT a string
+                // exotic (which would find String.prototype[@@iterator] and
+                // throw trying to stringify the symbol).
+                HString* hs = (HString*)async_items.get_heapptr();
+                if (hs != null && hs.is_symbol()) {
+                    wrap_proto = heap.symbol_proto;
+                } else {
+                    (*items_obj.extra_ptr()).prim.primitive_value = async_items;
+                }
             } else if (async_items.is_fastint() || async_items.is_number()) {
                 wrap_proto = heap.number_proto;
             } else if (async_items.is_boolean()) {
@@ -321,7 +330,7 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
         HString* async_sym = ensure_asynciterator_symbol(heap);
         if (async_sym != null) {
             TVal? m_opt = builtins_generic_get(items_obj, async_sym, ctx);
-            if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
+            if (ctx.should_throw) { afa_flush_prologue_throw(ctx, outer); return; }
             if (try m = m_opt) {
                 if (!m.is_undefined() && !m.is_null()) { iter_method = m; have_iter = true; }
             }
@@ -331,7 +340,7 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
             HString* iter_sym = ensure_iterator_symbol(heap);
             if (iter_sym != null) {
                 TVal? m_opt = builtins_generic_get(items_obj, iter_sym, ctx);
-                if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
+                if (ctx.should_throw) { afa_flush_prologue_throw(ctx, outer); return; }
                 if (try m = m_opt) {
                     if (!m.is_undefined() && !m.is_null()) {
                         iter_method = m; have_iter = true; wrap_sync = true;
@@ -352,7 +361,7 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
         // Construct A (IsConstructor(C) ? Construct(C) : ArrayCreate(0)) BEFORE
         // GetIterator, per spec order.
         HObject* arr = afa_construct_result(ctx, c_val, false, 0);
-        if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
+        if (ctx.should_throw) { afa_flush_prologue_throw(ctx, outer); return; }
         if (arr == null) { afa_reject_outer_alloc(heap, ctx.vm, state); return; }
         afa_put_obj(state, heap, AFA_ARR_SLOT, arr);
 
@@ -404,7 +413,7 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
         // GetMethod(iterator, "next") once (§ IteratorRecord [[NextMethod]]).
         HString* next_key = builtin_intern_string(heap, "next");
         TVal? next_opt = builtins_generic_get(iter_obj, next_key, ctx);
-        if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
+        if (ctx.should_throw) { afa_flush_prologue_throw(ctx, outer); return; }
         TVal next_method; next_method.set_undefined();
         if (try nm = next_opt) next_method = nm;
         afa_put_tval(state, heap, AFA_NEXT_SLOT, next_method);
@@ -433,12 +442,12 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
     ulong len = 0;
     if (len_key != null) {
         TVal? len_opt = builtins_generic_get(array_like, len_key, ctx);
-        if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
+        if (ctx.should_throw) { afa_flush_prologue_throw(ctx, outer); return; }
         if (try lv = len_opt) {
             // ToLength via ToNumber with ToPrimitive: an object-valued
             // length (observable valueOf) must be coerced, not NaN'd.
             double len_d = builtin_to_number_vm(ctx, &lv);
-            if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
+            if (ctx.should_throw) { afa_flush_prologue_throw(ctx, outer); return; }
             len = arr_to_length(len_d);
         }
     }
@@ -457,7 +466,7 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
 
     // Construct A (IsConstructor(C) ? Construct(C, «len») : ArrayCreate(len)).
     HObject* arr = afa_construct_result(ctx, c_val, true, len);
-    if (ctx.should_throw) { afa_flush_ctx_throw_to_outer(ctx, outer); return; }
+    if (ctx.should_throw) { afa_flush_prologue_throw(ctx, outer); return; }
     if (arr == null) { afa_reject_outer_alloc(heap, ctx.vm, state); return; }
     afa_put_obj(state, heap, AFA_ARR_SLOT, arr);
 
@@ -473,6 +482,15 @@ fn void afa_flush_ctx_throw_to_outer(BuiltinContext* ctx, HObject* outer) {
     if (ctx.heap.has_error) ctx.heap.has_error = false;
     promise_settle(outer, PROMISE_REJECTED, &reason, ctx.heap);
     promise_trigger_reactions(outer, ctx.heap, ctx.vm);
+}
+
+/// Prologue variant: builtin_throw (which set should_throw) also clobbered
+/// ctx.result to undefined — restore the outer promise so fromAsync still
+/// RETURNS the (now rejected) promise instead of undefined. Only valid for
+/// the real fromAsync BuiltinContext, not the driver's stack-local lctx.
+fn void afa_flush_prologue_throw(BuiltinContext* ctx, HObject* outer) {
+    afa_flush_ctx_throw_to_outer(ctx, outer);
+    ctx.result.set_object(outer);
 }
 
 /// Construct the result array A. When `with_len`, IsConstructor(C) receives
