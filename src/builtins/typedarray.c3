@@ -1006,6 +1006,20 @@ fn bool view_is_out_of_bounds(HObject* obj) {
     return off + (*obj.extra_ptr()).view.byte_length > buf_len;
 }
 
+/// IsTypedArrayFixedLength (ES2024 §10.4.5.15): false iff the view is
+/// length-tracking, or its backing buffer is a resizable (non-shared)
+/// ArrayBuffer. A non-fixed-length TypedArray cannot be made non-extensible —
+/// its [[PreventExtensions]] returns false — so Object.freeze/seal on it (and
+/// on any view over a resizable buffer, even a currently zero-length one)
+/// fails and throws TypeError.
+fn bool ta_is_fixed_length(HObject* obj) {
+    if ((*obj.extra_ptr()).view.length_tracking) return false;
+    HObject* buf = (*obj.extra_ptr()).view.buffer;
+    if (buf == null) return true;
+    if ((*buf.extra_ptr()).ab.resizable && !(*buf.extra_ptr()).ab.is_shared) return false;
+    return true;
+}
+
 /// Effective byte length of a view given the CURRENT backing buffer length.
 /// For length-tracking views this is recomputed from the buffer; for fixed
 /// views it is the stored byte_length (0 when out of bounds). For TypedArrays

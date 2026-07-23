@@ -333,11 +333,12 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
         }
         // Count dense array indices that are not also in the named property table
         uint dense_int_count = 0;
-        // Only ARRAY exotics surface array_part as indexed own properties.
-        // Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep their
-        // entries in array_part as internal storage (mirroring get_prop, which
-        // only consults array_part for exotic_array objects).
-        if (obj.array_size > 0 && obj.flags.exotic_array) {
+        // ARRAY and ARGUMENTS exotics surface array_part as indexed own
+        // properties (mirroring get_prop, which consults array_part for both
+        // classes). Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep
+        // their entries in array_part as internal storage, not own properties.
+        bool array_part_is_indexed = obj.flags.exotic_array || obj.flags.exotic_arguments;
+        if (obj.array_size > 0 && array_part_is_indexed) {
             for (uint i = 0; i < obj.array_size; i++) {
                 if (!obj.array_part()[i].is_undefined()) {
                     HString* ki = ctx.heap.int_to_hstring((long)i);
@@ -367,7 +368,7 @@ fn uint collect_own_enum_string_keys(BuiltinContext* ctx, HObject* obj, HString*
                     }
                 }
                 // Add dense array indices (not already in named props)
-                for (uint i = 0; obj.flags.exotic_array && i < obj.array_size; i++) {
+                for (uint i = 0; array_part_is_indexed && i < obj.array_size; i++) {
                     if (!obj.array_part()[i].is_undefined()) {
                         HString* ki = ctx.heap.int_to_hstring((long)i);
                         if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
@@ -645,11 +646,12 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
         }
         // Count dense array indices not in named property table
         uint dense_int_count = 0;
-        // Only ARRAY exotics surface array_part as indexed own properties.
-        // Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep their
-        // entries in array_part as internal storage (mirroring get_prop, which
-        // only consults array_part for exotic_array objects).
-        if (obj.array_size > 0 && obj.flags.exotic_array) {
+        // ARRAY and ARGUMENTS exotics surface array_part as indexed own
+        // properties (mirroring get_prop, which consults array_part for both
+        // classes). Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep
+        // their entries in array_part as internal storage, not own properties.
+        bool array_part_is_indexed = obj.flags.exotic_array || obj.flags.exotic_arguments;
+        if (obj.array_size > 0 && array_part_is_indexed) {
             for (uint i = 0; i < obj.array_size; i++) {
                 if (!obj.array_part()[i].is_undefined()) {
                     HString* ki = ctx.heap.int_to_hstring((long)i);
@@ -677,7 +679,7 @@ fn void builtin_object_getOwnPropertyNames(BuiltinContext* ctx) {
                     }
                 }
                 // Add dense array indices
-                for (uint i = 0; obj.flags.exotic_array && i < obj.array_size; i++) {
+                for (uint i = 0; array_part_is_indexed && i < obj.array_size; i++) {
                     if (!obj.array_part()[i].is_undefined()) {
                         HString* ki = ctx.heap.int_to_hstring((long)i);
                         if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
@@ -897,11 +899,12 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
             }
         }
         uint dense_int_count = 0;
-        // Only ARRAY exotics surface array_part as indexed own properties.
-        // Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep their
-        // entries in array_part as internal storage (mirroring get_prop, which
-        // only consults array_part for exotic_array objects).
-        if (obj.array_size > 0 && obj.flags.exotic_array) {
+        // ARRAY and ARGUMENTS exotics surface array_part as indexed own
+        // properties (mirroring get_prop, which consults array_part for both
+        // classes). Map/Set/WeakMap/WeakSet/WeakRef/FinalizationRegistry keep
+        // their entries in array_part as internal storage, not own properties.
+        bool array_part_is_indexed = obj.flags.exotic_array || obj.flags.exotic_arguments;
+        if (obj.array_size > 0 && array_part_is_indexed) {
             for (uint i = 0; i < obj.array_size; i++) {
                 if (!obj.array_part()[i].is_undefined()) {
                     HString* ki = ctx.heap.int_to_hstring((long)i);
@@ -927,7 +930,7 @@ fn void builtin_reflect_ownKeys(BuiltinContext* ctx) {
                         }
                     }
                 }
-                for (uint i = 0; obj.flags.exotic_array && i < obj.array_size; i++) {
+                for (uint i = 0; array_part_is_indexed && i < obj.array_size; i++) {
                     if (!obj.array_part()[i].is_undefined()) {
                         HString* ki = ctx.heap.int_to_hstring((long)i);
                         if (ki != null && ki.is_arridx() && obj.find_prop_idx(ki) >= 0) continue;
@@ -2043,7 +2046,7 @@ fn void builtin_object_getOwnPropertyDescriptors(BuiltinContext* ctx) {
             }
         }
     }
-    if (obj.flags.exotic_array) {
+    if (obj.flags.exotic_array || obj.flags.exotic_arguments) {
         for (uint i = 0; i < obj.array_size && kn < cap; i++) {
             if (!obj.array_part()[i].is_undefined()) {
                 HString* k = ctx.heap.int_to_hstring((long)i);
@@ -3007,6 +3010,33 @@ fn void builtin_object_defineProperties(BuiltinContext* ctx) {
                 continue;
             }
 
+            // Integer-Indexed exotic [[DefineOwnProperty]] (ES2022 §10.4.5.3):
+            // route through ordinary_define_own (which special-cases canonical
+            // numeric index keys on TypedArrays — out-of-bounds indices and any
+            // non-writable/non-configurable/enumerable=false or accessor
+            // descriptor make it return false → DefinePropertyOrThrow throws).
+            // Shared with Object.defineProperty and Reflect.defineProperty.
+            if (is_typed_array_class(obj.get_class())) {
+                ProxyDesc pd;
+                pd.found = true;
+                if (is_accessor) {
+                    pd.has_get = has_get_in_desc_helper(ctx.heap, desc_obj); pd.getter = desc_vals[0];
+                    pd.has_set = has_set_in_desc_helper(ctx.heap, desc_obj); pd.setter = desc_vals[1];
+                } else {
+                    pd.has_value = has_value_in_desc_helper(ctx.heap, desc_obj); pd.value = desc_vals[0];
+                    pd.has_writable = has_writable_in_desc_helper(ctx.heap, desc_obj); pd.writable = desc_flags.writable;
+                }
+                pd.has_enumerable = has_enumerable_in_desc_helper(ctx.heap, desc_obj); pd.enumerable = desc_flags.enumerable;
+                pd.has_configurable = has_configurable_in_desc_helper(ctx.heap, desc_obj); pd.configurable = desc_flags.configurable;
+                bool dok;
+                if (!ordinary_define_own(ctx.vm, ctx.heap, obj, p_key, &pd, &dok)) { proxy_ctx_ok(ctx); return; }
+                if (!dok) {
+                    builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property");
+                    return;
+                }
+                continue;
+            }
+
             // [[DefineOwnProperty]]
             // ES5 §15.4.5.1: ARRAY exotic — dense elements are own data properties
             // with {writable:true, enumerable:true, configurable:true}. Promote a
@@ -3636,6 +3666,19 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
     if (obj.flags.exotic_proxyobj) {
         if (!proxy_set_integrity_level(ctx.vm, ctx.heap, obj, true)) { proxy_ctx_ok(ctx); return; }
         ctx.result.set_object(obj);
+        return;
+    }
+    // Integer-Indexed exotic SetIntegrityLevel(O, frozen) — §7.3.15 step 3.a
+    // calls O.[[PreventExtensions]](), which for a non-fixed-length TypedArray
+    // (length-tracking, or any view over a resizable non-shared buffer) returns
+    // false (§10.4.5.1). SetIntegrityLevel then returns false and Object.freeze
+    // throws TypeError — even when the view is currently zero-length. A
+    // fixed-length TypedArray with in-bounds elements still throws because
+    // DefineOwnProperty with {[[Writable]]: false} on an element returns false
+    // (§10.4.5.3); a fixed-length zero-length view has no keys and freezes.
+    if (is_typed_array_class(obj.get_class())
+        && (!ta_is_fixed_length(obj) || ta_element_count(obj) > 0)) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot freeze this TypedArray");
         return;
     }
     obj.freeze();
