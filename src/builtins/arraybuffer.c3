@@ -395,6 +395,122 @@ fn void builtin_arraybuffer_proto_resize(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// ArrayBuffer.prototype.transfer([newLength]) — ES2024 §25.1.6.7
+// ArrayBuffer.prototype.transferToFixedLength([newLength]) — ES2024 §25.1.6.8
+//
+// ArrayBufferCopyAndDetach: moves the backing store into a fresh ArrayBuffer,
+// then detaches the source. `preserve_resizable` keeps the source's resizability
+// and maxByteLength (transfer); transferToFixedLength always produces a
+// fixed-length buffer.
+// ============================================================================
+
+fn void arraybuffer_transfer_impl(BuiltinContext* ctx, bool preserve_resizable) {
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.transfer called on non-object");
+        return;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (!is_arraybuffer_obj(obj)) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.transfer called on incompatible receiver");
+        return;
+    }
+    // Step 4: IsDetachedBuffer(O) — throw TypeError.
+    if (((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+        arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.transfer: buffer is detached");
+        return;
+    }
+
+    // Steps 5-6: newLength defaults to the current byteLength; otherwise
+    // ToIntegerOrInfinity (may run user code that detaches the buffer).
+    bool has_new_length = ctx.argc >= 1 && !ctx.regs[ctx.base_reg].is_undefined();
+    uint new_len;
+    if (!has_new_length) {
+        new_len = (*obj.extra_ptr()).ab.byte_length;
+    } else {
+        TVal len_arg = ctx.regs[ctx.base_reg];
+        double d = builtin_to_integer_vm(ctx, &len_arg);
+        if (ctx.should_throw) return;
+        // Step 7 constructs a new ArrayBuffer of newByteLength, whose allocation
+        // performs ToIndex — negative or > 2^53-1 lengths are RangeErrors, and
+        // the engine's uint32 allocation cap plays the CreateByteDataBlock role.
+        if (d != d) {
+            new_len = 0; // NaN -> 0
+        } else if (d < 0.0 || d > 2147483647.0) {
+            arraybuffer_throw_range_error(ctx, "Invalid array buffer length");
+            return;
+        } else {
+            new_len = (uint)d;
+        }
+        // ToIntegerOrInfinity may have detached the source (step 6 side effects
+        // precede the detach in step 14; re-validate before the copy).
+        if (((*obj.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
+            arraybuffer_throw_type_error(ctx, "ArrayBuffer.prototype.transfer: buffer detached during length coercion");
+            return;
+        }
+    }
+
+    // The destination preserves resizability/maxByteLength only for transfer;
+    // transferToFixedLength (and a non-resizable source) yields a fixed buffer.
+    bool dest_resizable = preserve_resizable && (*obj.extra_ptr()).ab.resizable;
+    uint dest_max = dest_resizable ? (*obj.extra_ptr()).ab.max_byte_length : new_len;
+    if (dest_resizable && new_len > dest_max) {
+        arraybuffer_throw_range_error(ctx, "ArrayBuffer length exceeds maxByteLength");
+        return;
+    }
+
+    // Step 7 allocates the destination via %ArrayBuffer% using the source's
+    // constructor realm; here the plain instance prototype suffices.
+    HObject*? new_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAYBUFFER);
+    if (catch err = new_raw) {
+        arraybuffer_throw_range_error(ctx, "Out of memory allocating ArrayBuffer");
+        return;
+    }
+    HObject* new_buf = new_raw;
+    new_buf.prototype = ctx.heap.arraybuffer_proto;
+    (*new_buf.extra_ptr()).ab.views_head = null;
+
+    char* new_data = null;
+    if (new_len > 0) {
+        new_data = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)new_len);
+        if (new_data == null) {
+            arraybuffer_throw_range_error(ctx, "Out of memory allocating ArrayBuffer");
+            return;
+        }
+        mem::clear(new_data, (sz)((usz)new_len));
+        // Step 9-12: copy min(newByteLength, sourceByteLength) bytes.
+        uint src_len = (*obj.extra_ptr()).ab.byte_length;
+        char* src_data = (*obj.extra_ptr()).ab.data;
+        if (src_data != null && src_len > 0) {
+            uint copy_len = src_len < new_len ? src_len : new_len;
+            mem::copy(new_data, src_data, (sz)((usz)copy_len));
+        }
+    }
+    (*new_buf.extra_ptr()).ab.data = new_data;
+    (*new_buf.extra_ptr()).ab.byte_length = new_len;
+    (*new_buf.extra_ptr()).ab.resizable = dest_resizable;
+    (*new_buf.extra_ptr()).ab.max_byte_length = dest_max;
+
+    // Step 14: DetachArrayBuffer(O) — free the source's backing store and mark
+    // it detached (engine convention: byte_length = 0xFFFFFFFF).
+    if ((*obj.extra_ptr()).ab.data != null) {
+        ctx.heap.free_func(ctx.heap.heap_udata, (*obj.extra_ptr()).ab.data);
+        (*obj.extra_ptr()).ab.data = null;
+    }
+    (*obj.extra_ptr()).ab.byte_length = 0xFFFFFFFFu;
+
+    ctx.result.set_object(new_buf);
+}
+
+fn void builtin_arraybuffer_proto_transfer(BuiltinContext* ctx) {
+    arraybuffer_transfer_impl(ctx, true);
+}
+
+fn void builtin_arraybuffer_proto_transfer_to_fixed_length(BuiltinContext* ctx) {
+    arraybuffer_transfer_impl(ctx, false);
+}
+
+// ============================================================================
 // ArrayBuffer.prototype.slice(start, end) — ES2015 §24.1.4.3
 // ============================================================================
 
@@ -700,6 +816,8 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
     // Methods
     if (!register_string_proto_method(proto, heap, "slice", Builtin.ARRAYBUFFER_PROTO_SLICE.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "resize", Builtin.ARRAYBUFFER_PROTO_RESIZE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "transfer", Builtin.ARRAYBUFFER_PROTO_TRANSFER.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "transferToFixedLength", Builtin.ARRAYBUFFER_PROTO_TRANSFER_TO_FIXED_LENGTH.ordinal)) return false;
 
     // @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);

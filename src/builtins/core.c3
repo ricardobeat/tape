@@ -578,6 +578,8 @@ enum Builtin : uint {
     ARRAYBUFFER_PROTO_RESIZE,
     ARRAYBUFFER_PROTO_RESIZABLE_GET,
     ARRAYBUFFER_PROTO_MAXBYTELENGTH_GET,
+    ARRAYBUFFER_PROTO_TRANSFER,
+    ARRAYBUFFER_PROTO_TRANSFER_TO_FIXED_LENGTH,
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2674,6 +2676,8 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.ARRAYBUFFER_ISVIEW.ordinal: return { "isView", 1 };
         case Builtin.ARRAYBUFFER_PROTO_SLICE.ordinal: return { "slice", 2 };
         case Builtin.ARRAYBUFFER_PROTO_RESIZE.ordinal: return { "resize", 1 };
+        case Builtin.ARRAYBUFFER_PROTO_TRANSFER.ordinal: return { "transfer", 0 };
+        case Builtin.ARRAYBUFFER_PROTO_TRANSFER_TO_FIXED_LENGTH.ordinal: return { "transferToFixedLength", 0 };
         // DataView constructor / prototype
         case Builtin.DATAVIEW.ordinal: return { "DataView", 1 };
         case Builtin.DATAVIEW_GET_INT8.ordinal: return { "getInt8", 1 };
@@ -3636,6 +3640,8 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ARRAYBUFFER_PROTO_RESIZE.ordinal] = &builtin_arraybuffer_proto_resize,
     [Builtin.ARRAYBUFFER_PROTO_RESIZABLE_GET.ordinal] = &builtin_arraybuffer_proto_resizable_get,
     [Builtin.ARRAYBUFFER_PROTO_MAXBYTELENGTH_GET.ordinal] = &builtin_arraybuffer_proto_maxbytelength_get,
+    [Builtin.ARRAYBUFFER_PROTO_TRANSFER.ordinal] = &builtin_arraybuffer_proto_transfer,
+    [Builtin.ARRAYBUFFER_PROTO_TRANSFER_TO_FIXED_LENGTH.ordinal] = &builtin_arraybuffer_proto_transfer_to_fixed_length,
     [Builtin.DETACH_ARRAYBUFFER.ordinal] = &builtin_detach_arraybuffer,
     // TypedArray.prototype accessors (plan 049 stage 2)
     [Builtin.TYPEDARRAY_PROTO_LENGTH_GET.ordinal] = &builtin_typedarray_proto_length_get,
