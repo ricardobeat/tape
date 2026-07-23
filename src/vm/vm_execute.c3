@@ -586,20 +586,12 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                     }
                     // ES5 §10.6: [[Prototype]] is Object.prototype
                     args_obj.prototype = vm.heap.object_proto;
-                    // ES5 §10.6: define 'callee' property (writable, non-enumerable, configurable)
-                    HString* callee_key = (HString*)vm.heap.strs[heap::BuiltinStr.CALLEE];
-                    if (callee_key != null) {
-                        TVal callee_tv;
-                        callee_tv.set_object(hobj);
-                        args_obj.put_prop(callee_key, callee_tv, hobject::PROP_FLAGS_WC);
-                    }
-                    // ES5 §10.6: define 'length' property (writable, non-enumerable, configurable)
-                    HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-                    if (length_key != null) {
-                        TVal length_tv;
-                        length_tv.set_fastint((long)nargs);
-                        args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
-                    }
+                    // Install length, callee, and @@iterator (= %Array.prototype.values%)
+                    // via the shared helper so this re-entrant call_fn path produces an
+                    // arguments object identical to the normal CALL path — in particular
+                    // with @@iterator, so `[...arguments]` works inside builtin callbacks
+                    // (forEach/map/.then reactions, AsyncFromSync adapter methods).
+                    finish_arguments_object(vm, args_obj, hobj, nargs);
                     // Declare 'arguments' in the function's var_env
                     HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
                     if (args_name != null) {
@@ -1037,12 +1029,11 @@ fn TVal vm_construct_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TV
                 args_obj.set_array_idx(ai, frame[ai]);
             }
             args_obj.prototype = vm.heap.object_proto;
-            HString* length_key = (HString*)vm.heap.strs[heap::BuiltinStr.LENGTH];
-            if (length_key != null) {
-                TVal length_tv;
-                length_tv.set_fastint((long)nargs);
-                args_obj.put_prop(length_key, length_tv, hobject::PROP_FLAGS_WC);
-            }
+            // Install length, callee, and @@iterator (= %Array.prototype.values%)
+            // via the shared helper so this re-entrant construct path produces an
+            // arguments object identical to the normal CALL path — with @@iterator,
+            // so `[...arguments]` works inside constructors invoked through call_fn.
+            finish_arguments_object(vm, args_obj, ctor, nargs);
             // Declare `arguments` in the function's var_env so the body can access it.
             HString* args_name = (HString*)vm.heap.strs[heap::BuiltinStr.ARGUMENTS];
             if (args_name != null) {
