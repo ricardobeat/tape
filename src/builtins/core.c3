@@ -217,6 +217,7 @@ enum Builtin : uint {
     UINT16ARRAY,
     INT32ARRAY,
     UINT32ARRAY,
+    FLOAT16ARRAY,
     FLOAT32ARRAY,
     FLOAT64ARRAY,
     BIGINT64ARRAY,
@@ -254,6 +255,7 @@ enum Builtin : uint {
     DATAVIEW_GET_UINT16,
     DATAVIEW_GET_INT32,
     DATAVIEW_GET_UINT32,
+    DATAVIEW_GET_FLOAT16,
     DATAVIEW_GET_FLOAT32,
     DATAVIEW_GET_FLOAT64,
     DATAVIEW_SET_INT8,
@@ -262,6 +264,7 @@ enum Builtin : uint {
     DATAVIEW_SET_UINT16,
     DATAVIEW_SET_INT32,
     DATAVIEW_SET_UINT32,
+    DATAVIEW_SET_FLOAT16,
     DATAVIEW_SET_FLOAT32,
     DATAVIEW_SET_FLOAT64,
     TA_PROTO_VALUES,
@@ -444,6 +447,7 @@ enum Builtin : uint {
     MATH_TRUNC,
     MATH_SIGN,
     MATH_FROUND,
+    MATH_F16ROUND,
     MATH_CLZ32,
     MATH_IMUL,
     MATH_SUMPRECISE,
@@ -2578,6 +2582,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.MATH_TRUNC.ordinal: return { "trunc", 1 };
         case Builtin.MATH_SIGN.ordinal: return { "sign", 1 };
         case Builtin.MATH_FROUND.ordinal: return { "fround", 1 };
+        case Builtin.MATH_F16ROUND.ordinal: return { "f16round", 1 };
         case Builtin.MATH_CLZ32.ordinal: return { "clz32", 1 };
         case Builtin.MATH_IMUL.ordinal: return { "imul", 2 };
         case Builtin.MATH_SUMPRECISE.ordinal: return { "sumPrecise", 1 };
@@ -2686,6 +2691,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.DATAVIEW_GET_UINT16.ordinal: return { "getUint16", 1 };
         case Builtin.DATAVIEW_GET_INT32.ordinal: return { "getInt32", 1 };
         case Builtin.DATAVIEW_GET_UINT32.ordinal: return { "getUint32", 1 };
+        case Builtin.DATAVIEW_GET_FLOAT16.ordinal: return { "getFloat16", 1 };
         case Builtin.DATAVIEW_GET_FLOAT32.ordinal: return { "getFloat32", 1 };
         case Builtin.DATAVIEW_GET_FLOAT64.ordinal: return { "getFloat64", 1 };
         case Builtin.DATAVIEW_SET_INT8.ordinal: return { "setInt8", 2 };
@@ -2694,6 +2700,7 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.DATAVIEW_SET_UINT16.ordinal: return { "setUint16", 2 };
         case Builtin.DATAVIEW_SET_INT32.ordinal: return { "setInt32", 2 };
         case Builtin.DATAVIEW_SET_UINT32.ordinal: return { "setUint32", 2 };
+        case Builtin.DATAVIEW_SET_FLOAT16.ordinal: return { "setFloat16", 2 };
         case Builtin.DATAVIEW_SET_FLOAT32.ordinal: return { "setFloat32", 2 };
         case Builtin.DATAVIEW_SET_FLOAT64.ordinal: return { "setFloat64", 2 };
         case Builtin.MAP_SPECIES_GETTER.ordinal: return { "[Symbol.species]", 0 };
@@ -3428,6 +3435,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.MATH_EXPM1.ordinal] = &builtin_math_expm1,
     [Builtin.MATH_FLOOR.ordinal] = &builtin_math_floor,
     [Builtin.MATH_FROUND.ordinal] = &builtin_math_fround,
+    [Builtin.MATH_F16ROUND.ordinal] = &builtin_math_f16round,
     [Builtin.MATH_HYPOT.ordinal] = &builtin_math_hypot,
     [Builtin.MATH_IMUL.ordinal] = &builtin_math_imul,
     [Builtin.MATH_SUMPRECISE.ordinal] = &builtin_math_sumPrecise,
@@ -3626,6 +3634,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.UINT16ARRAY.ordinal] = &builtin_uint16array,
     [Builtin.INT32ARRAY.ordinal] = &builtin_int32array,
     [Builtin.UINT32ARRAY.ordinal] = &builtin_uint32array,
+    [Builtin.FLOAT16ARRAY.ordinal] = &builtin_float16array,
     [Builtin.FLOAT32ARRAY.ordinal] = &builtin_float32array,
     [Builtin.FLOAT64ARRAY.ordinal] = &builtin_float64array,
     [Builtin.BIGINT64ARRAY.ordinal] = &builtin_bigint64array,
@@ -3661,6 +3670,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.DATAVIEW_GET_UINT16.ordinal] = &builtin_dataview_get_uint16,
     [Builtin.DATAVIEW_GET_INT32.ordinal] = &builtin_dataview_get_int32,
     [Builtin.DATAVIEW_GET_UINT32.ordinal] = &builtin_dataview_get_uint32,
+    [Builtin.DATAVIEW_GET_FLOAT16.ordinal] = &builtin_dataview_get_float16,
     [Builtin.DATAVIEW_GET_FLOAT32.ordinal] = &builtin_dataview_get_float32,
     [Builtin.DATAVIEW_GET_FLOAT64.ordinal] = &builtin_dataview_get_float64,
     [Builtin.DATAVIEW_SET_INT8.ordinal] = &builtin_dataview_set_int8,
@@ -3669,6 +3679,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.DATAVIEW_SET_UINT16.ordinal] = &builtin_dataview_set_uint16,
     [Builtin.DATAVIEW_SET_INT32.ordinal] = &builtin_dataview_set_int32,
     [Builtin.DATAVIEW_SET_UINT32.ordinal] = &builtin_dataview_set_uint32,
+    [Builtin.DATAVIEW_SET_FLOAT16.ordinal] = &builtin_dataview_set_float16,
     [Builtin.DATAVIEW_SET_FLOAT32.ordinal] = &builtin_dataview_set_float32,
     [Builtin.DATAVIEW_SET_FLOAT64.ordinal] = &builtin_dataview_set_float64,
     // %TypedArray%.prototype wave A (plan 049 stage 4)

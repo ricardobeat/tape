@@ -30,7 +30,7 @@ struct TAInfo {
     char[]  name;        // constructor name for @@toStringTag / errors
 }
 
-const TAInfo[11] TA_INFO = {
+const TAInfo[12] TA_INFO = {
     { 1, 0, false, "Int8Array"         },
     { 1, 0, false, "Uint8Array"        },
     { 1, 0, false, "Uint8ClampedArray" },
@@ -38,11 +38,61 @@ const TAInfo[11] TA_INFO = {
     { 2, 1, false, "Uint16Array"       },
     { 4, 2, false, "Int32Array"        },
     { 4, 2, false, "Uint32Array"       },
+    { 2, 1, false, "Float16Array"      },
     { 4, 2, false, "Float32Array"      },
     { 8, 3, false, "Float64Array"      },
     { 8, 3, true,  "BigInt64Array"     },
     { 8, 3, true,  "BigUint64Array"    },
 };
+
+// ============================================================================
+// IEEE 754 half-precision (binary16) conversion — ported from QuickJS cutils.h
+// (fromfp16/tofp16). Round-to-nearest-even; NaN/Inf/subnormal preserving.
+// Used by Float16Array element load/store, Math.f16round and DataView
+// getFloat16/setFloat16. Do NOT replace with a truncating (float)cast.
+// ============================================================================
+
+/// binary16 bit pattern -> double (exact; half is a subset of double).
+fn double f16_to_double(ushort v) {
+    uint v1 = (uint)v & 0x7fff;
+    if (v1 >= 0x7c00) v1 += 0x1f8000; // NaN or infinity
+    ulong bits = ((ulong)((uint)v >> 15) << 63) | ((ulong)v1 << (52 - 10));
+    double d;
+    mem::copy(&d, &bits, (sz)(8));
+    return d * 0x1p1008;
+}
+
+/// double -> binary16 bit pattern, round-to-nearest-even (§ NumberToRawBytes).
+fn ushort double_to_f16(double d) {
+    ulong a;
+    mem::copy(&a, &d, (sz)(8));
+    uint sgn = (uint)(a >> 63);
+    a = a & 0x7fffffffffffffff;
+    uint v;
+    if (a > 0x7ff0000000000000) {
+        // NaN
+        v = 0x7c01;
+    } else if (a < 0x3f10000000000000) { // 0x1p-14
+        // subnormal f16 number or zero
+        if (a <= 0x3e60000000000000) { // 0x1p-25
+            v = 0x0000; // zero
+        } else {
+            int shift = 1051 - (int)(a >> 52);
+            a = ((ulong)1 << 52) | (a & (((ulong)1 << 52) - 1));
+            ulong addend = ((a >> shift) & 1) + (((ulong)1 << (shift - 1)) - 1);
+            v = (uint)((a + addend) >> shift);
+        }
+    } else {
+        // normal number or infinity
+        a -= 0x3f00000000000000; // adjust the exponent
+        // round
+        ulong addend = ((a >> (52 - 10)) & 1) + (((ulong)1 << (52 - 11)) - 1);
+        v = (uint)((a + addend) >> (52 - 10));
+        // overflow ?
+        if (v > 0x7c00) v = 0x7c00;
+    }
+    return (ushort)(v | (sgn << 15));
+}
 
 /// True iff `cls` is any of the TypedArray element kinds.
 fn bool is_typed_array_class(hobject::ObjClass cls) {
@@ -264,6 +314,12 @@ fn TVal ta_load_element(Heap* heap, char* p, hobject::ObjClass cls, uint idx) {
             }
             break;
         }
+        case hobject::ObjClass.FLOAT16ARRAY: {
+            ushort v;
+            mem::copy(&v, ep, (sz)(2));
+            out.set_number(f16_to_double(v));
+            break;
+        }
         case hobject::ObjClass.FLOAT32ARRAY: {
             float v;
             mem::copy(&v, ep, (sz)(4));
@@ -362,6 +418,13 @@ fn void ta_write_element(char* p, hobject::ObjClass cls, TVal* val, BuiltinConte
             mem::copy(p, &v32, (sz)(4));
             break;
         }
+        case hobject::ObjClass.FLOAT16ARRAY: {
+            double d = ta_val_to_number(val, ctx);
+            if (ctx.should_throw) return;
+            ushort h = double_to_f16(d);
+            mem::copy(p, &h, (sz)(2));
+            break;
+        }
         case hobject::ObjClass.FLOAT32ARRAY: {
             double d = ta_val_to_number(val, ctx);
             if (ctx.should_throw) return;
@@ -444,6 +507,10 @@ fn void ta_store_scalar(char* p, hobject::ObjClass cls, TAScalar* s) {
         case hobject::ObjClass.UINT32ARRAY: {
             int v32 = (int)double_to_int32(s.num);
             mem::copy(p, &v32, (sz)(4));
+        }
+        case hobject::ObjClass.FLOAT16ARRAY: {
+            ushort h = double_to_f16(s.num);
+            mem::copy(p, &h, (sz)(2));
         }
         case hobject::ObjClass.FLOAT32ARRAY: {
             float f = (float)s.num;
@@ -806,6 +873,10 @@ fn void builtin_int32array(BuiltinContext* ctx) {
 
 fn void builtin_uint32array(BuiltinContext* ctx) {
     typed_array_construct(ctx, hobject::ObjClass.UINT32ARRAY);
+}
+
+fn void builtin_float16array(BuiltinContext* ctx) {
+    typed_array_construct(ctx, hobject::ObjClass.FLOAT16ARRAY);
 }
 
 fn void builtin_float32array(BuiltinContext* ctx) {
@@ -3106,6 +3177,7 @@ fn hobject::ObjClass ta_ctor_class(BuiltinContext* ctx) {
     if (nm.len >= 7 && nm[0] == 'U' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 't' && nm[4] == '1' && nm[5] == '6') return hobject::ObjClass.UINT16ARRAY;
     if (nm.len >= 6 && nm[0] == 'I' && nm[1] == 'n' && nm[2] == 't' && nm[3] == '3' && nm[4] == '2') return hobject::ObjClass.INT32ARRAY;
     if (nm.len >= 7 && nm[0] == 'U' && nm[1] == 'i' && nm[2] == 'n' && nm[3] == 't' && nm[4] == '3' && nm[5] == '2') return hobject::ObjClass.UINT32ARRAY;
+    if (nm.len >= 7 && nm[0] == 'F' && nm[1] == 'l' && nm[2] == 'o' && nm[3] == 'a' && nm[4] == 't' && nm[5] == '1' && nm[6] == '6') return hobject::ObjClass.FLOAT16ARRAY;
     if (nm.len >= 7 && nm[0] == 'F' && nm[1] == 'l' && nm[2] == 'o' && nm[3] == 'a' && nm[4] == 't' && nm[5] == '3' && nm[6] == '2') return hobject::ObjClass.FLOAT32ARRAY;
     if (nm.len >= 7 && nm[0] == 'F' && nm[1] == 'l' && nm[2] == 'o' && nm[3] == 'a' && nm[4] == 't' && nm[5] == '6' && nm[6] == '4') return hobject::ObjClass.FLOAT64ARRAY;
     return hobject::ObjClass.INT8ARRAY;
@@ -4307,6 +4379,7 @@ fn bool register_typed_array_constructors(EnvRecord* global_env, Heap* heap) {
     if (!register_ta_ctor(global_env, heap, "Uint16Array",             Builtin.UINT16ARRAY.ordinal,            proto, 2)) return false;
     if (!register_ta_ctor(global_env, heap, "Int32Array",              Builtin.INT32ARRAY.ordinal,             proto, 4)) return false;
     if (!register_ta_ctor(global_env, heap, "Uint32Array",             Builtin.UINT32ARRAY.ordinal,            proto, 4)) return false;
+    if (!register_ta_ctor(global_env, heap, "Float16Array",            Builtin.FLOAT16ARRAY.ordinal,           proto, 2)) return false;
     if (!register_ta_ctor(global_env, heap, "Float32Array",            Builtin.FLOAT32ARRAY.ordinal,           proto, 4)) return false;
     if (!register_ta_ctor(global_env, heap, "Float64Array",            Builtin.FLOAT64ARRAY.ordinal,           proto, 8)) return false;
     if (!register_ta_ctor(global_env, heap, "BigInt64Array",           Builtin.BIGINT64ARRAY.ordinal,          proto, 8)) return false;

@@ -30,6 +30,7 @@ fn uint dv_elem_size(hobject::ObjClass cls) {
             return 1;
         case hobject::ObjClass.INT16ARRAY:
         case hobject::ObjClass.UINT16ARRAY:
+        case hobject::ObjClass.FLOAT16ARRAY:
             return 2;
         case hobject::ObjClass.INT32ARRAY:
         case hobject::ObjClass.UINT32ARRAY:
@@ -293,6 +294,11 @@ fn void dv_get(BuiltinContext* ctx, hobject::ObjClass elem_class) {
             }
             return;
         }
+        case hobject::ObjClass.FLOAT16ARRAY: {
+            ushort bits = (ushort)raw;
+            ctx.result.set_number(f16_to_double(bits));
+            return;
+        }
         case hobject::ObjClass.FLOAT32ARRAY: {
             uint bits = (uint)raw;
             float f;
@@ -383,6 +389,9 @@ fn void dv_set(BuiltinContext* ctx, hobject::ObjClass elem_class) {
                 long iv = double_to_int32(d);
                 raw = (ulong)(uint)iv;
             }
+            case hobject::ObjClass.FLOAT16ARRAY: {
+                raw = (ulong)double_to_f16(d);
+            }
             case hobject::ObjClass.FLOAT32ARRAY: {
                 float f = (float)d;
                 uint bits;
@@ -422,6 +431,7 @@ fn void builtin_dataview_get_int16(BuiltinContext* ctx)   { dv_get(ctx, hobject:
 fn void builtin_dataview_get_uint16(BuiltinContext* ctx)  { dv_get(ctx, hobject::ObjClass.UINT16ARRAY); }
 fn void builtin_dataview_get_int32(BuiltinContext* ctx)   { dv_get(ctx, hobject::ObjClass.INT32ARRAY); }
 fn void builtin_dataview_get_uint32(BuiltinContext* ctx)  { dv_get(ctx, hobject::ObjClass.UINT32ARRAY); }
+fn void builtin_dataview_get_float16(BuiltinContext* ctx) { dv_get(ctx, hobject::ObjClass.FLOAT16ARRAY); }
 fn void builtin_dataview_get_float32(BuiltinContext* ctx) { dv_get(ctx, hobject::ObjClass.FLOAT32ARRAY); }
 fn void builtin_dataview_get_float64(BuiltinContext* ctx) { dv_get(ctx, hobject::ObjClass.FLOAT64ARRAY); }
 
@@ -431,6 +441,7 @@ fn void builtin_dataview_set_int16(BuiltinContext* ctx)   { dv_set(ctx, hobject:
 fn void builtin_dataview_set_uint16(BuiltinContext* ctx)  { dv_set(ctx, hobject::ObjClass.UINT16ARRAY); }
 fn void builtin_dataview_set_int32(BuiltinContext* ctx)   { dv_set(ctx, hobject::ObjClass.INT32ARRAY); }
 fn void builtin_dataview_set_uint32(BuiltinContext* ctx)  { dv_set(ctx, hobject::ObjClass.UINT32ARRAY); }
+fn void builtin_dataview_set_float16(BuiltinContext* ctx) { dv_set(ctx, hobject::ObjClass.FLOAT16ARRAY); }
 fn void builtin_dataview_set_float32(BuiltinContext* ctx) { dv_set(ctx, hobject::ObjClass.FLOAT32ARRAY); }
 fn void builtin_dataview_set_float64(BuiltinContext* ctx) { dv_set(ctx, hobject::ObjClass.FLOAT64ARRAY); }
 
@@ -545,6 +556,7 @@ fn bool register_dataview(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "getUint16", Builtin.DATAVIEW_GET_UINT16.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "getInt32", Builtin.DATAVIEW_GET_INT32.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "getUint32", Builtin.DATAVIEW_GET_UINT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "getFloat16", Builtin.DATAVIEW_GET_FLOAT16.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "getFloat32", Builtin.DATAVIEW_GET_FLOAT32.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "getFloat64", Builtin.DATAVIEW_GET_FLOAT64.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "setInt8", Builtin.DATAVIEW_SET_INT8.ordinal)) return false;
@@ -553,6 +565,7 @@ fn bool register_dataview(EnvRecord* global_env, Heap* heap) {
     if (!register_string_proto_method(proto, heap, "setUint16", Builtin.DATAVIEW_SET_UINT16.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "setInt32", Builtin.DATAVIEW_SET_INT32.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "setUint32", Builtin.DATAVIEW_SET_UINT32.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "setFloat16", Builtin.DATAVIEW_SET_FLOAT16.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "setFloat32", Builtin.DATAVIEW_SET_FLOAT32.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "setFloat64", Builtin.DATAVIEW_SET_FLOAT64.ordinal)) return false;
     if (!register_string_proto_method(proto, heap, "getBigInt64", Builtin.DATAVIEW_GET_BIGINT64.ordinal)) return false;

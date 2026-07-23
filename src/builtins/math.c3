@@ -361,6 +361,12 @@ fn void builtin_math_fround(BuiltinContext* ctx) {
     }
 }
 
+fn void builtin_math_f16round(BuiltinContext* ctx) {
+    double x = math_arg(ctx, 0);
+    // fromfp16(tofp16(x)) — preserves NaN/Inf/zero (and sign of zero) exactly.
+    ctx.result.set_number(f16_to_double(double_to_f16(x)));
+}
+
 fn void builtin_math_clz32(BuiltinContext* ctx) {
     double x = math_arg(ctx, 0);
     // Per spec: ToUint32(x) — NaN, +0, -0, +Infinity, -Infinity all return +0.
@@ -877,6 +883,7 @@ fn bool register_math_object(EnvRecord* global_env, Heap* heap) {
     if (!register_math_method(math, heap, "trunc",  Builtin.MATH_TRUNC.ordinal))  return false;
     if (!register_math_method(math, heap, "sign",   Builtin.MATH_SIGN.ordinal))   return false;
     if (!register_math_method(math, heap, "fround", Builtin.MATH_FROUND.ordinal)) return false;
+    if (!register_math_method(math, heap, "f16round", Builtin.MATH_F16ROUND.ordinal)) return false;
     if (!register_math_method(math, heap, "clz32",  Builtin.MATH_CLZ32.ordinal))  return false;
     if (!register_math_method(math, heap, "imul",   Builtin.MATH_IMUL.ordinal))   return false;
     if (!register_math_method(math, heap, "sumPrecise", Builtin.MATH_SUMPRECISE.ordinal)) return false;

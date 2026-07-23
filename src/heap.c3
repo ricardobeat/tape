@@ -1888,6 +1888,7 @@ fn void Heap.drain_gray(&self) {
             case ObjClass.UINT16ARRAY:
             case ObjClass.INT32ARRAY:
             case ObjClass.UINT32ARRAY:
+            case ObjClass.FLOAT16ARRAY:
             case ObjClass.FLOAT32ARRAY:
             case ObjClass.FLOAT64ARRAY:
             case ObjClass.BIGINT64ARRAY:
