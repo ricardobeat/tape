@@ -74,6 +74,9 @@ struct StarExportEntry {
 struct ReqModuleEntry {
     char[]       module_name;   // the specifier string
     void*        resolved;      // ModuleDef* filled during resolve phase (opaque to avoid cycle)
+    // True when the import carried `with { type: "json" }`; the referenced
+    // module is loaded as a JSON module. Layout mirrors CompReqModuleEntry.
+    bool         wants_json;
 }
 
 // ============================================================================
@@ -139,6 +142,14 @@ struct ModuleDef {
 
     // Module namespace object (lazily created for `import *`)
     HObject*                      namespace_obj;
+
+    // JSON module support (ES2025 `import x from "m" with { type: "json" }`).
+    // A JSON module has no compiled body: `func` is null and its sole export is
+    // `default`, bound to `json_value` (the JSON.parse of the file contents,
+    // computed at resolve time). `is_json` distinguishes it from an empty JS
+    // module so link/execute can install the synthetic default binding.
+    bool                          is_json;
+    TVal                          json_value;
 }
 
 // ============================================================================
@@ -297,7 +308,9 @@ fn ModuleDef*? heap_ensure_module(Heap* heap, char[] name) {
 }
 
 /// Resolve a module specifier, compile it, and recursively resolve dependencies.
-fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
+/// `wants_json` selects the JSON-module load path (parse the file with
+/// JSON.parse; sole export is `default`) rather than ECMAScript compilation.
+fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name, bool wants_json = false) {
     // 1. Normalize name via host hook
     char[]? normalized_opt = call_resolve_name(heap, base_name, specifier);
     if (catch err = normalized_opt) return MODULE_ERROR~;
@@ -318,6 +331,43 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
     if (catch err = mod_opt) return MODULE_ERROR~;
     ModuleDef* mod = mod_opt;
     mod.status = ModuleStatus.LOADING;
+
+    // 4a. JSON module: parse the file with JSON.parse and synthesize a single
+    // `default` export = the parsed value (ECMA-262 ParseJSONModule §1.4). The
+    // env is created and rooted here so the parsed value survives any GC before
+    // link/evaluate. No dependencies, no compiled body.
+    if (wants_json) {
+        TVal? parsed = builtins::json_parse_module_source(heap, source);
+        if (catch err = parsed) {
+            // A JSON parse failure surfaces as a resolution-phase SyntaxError.
+            return MODULE_ERROR~;
+        }
+        mod.is_json = true;
+        mod.json_value = parsed;
+        // Sole export: `default`, a plain (non-lexical, non-indirect) binding.
+        mod.exports[0].local_name = "default";
+        mod.exports[0].export_name = "default";
+        mod.exports[0].is_indirect = false;
+        mod.exports[0].req_module_idx = 0;
+        mod.exports[0].is_lexical = false;
+        mod.export_count = 1;
+        // Create + root the env now and declare `default`, so build_namespace_object
+        // and install_live_binding see the value even before link_module runs. A
+        // JSON module never runs code, so its env needs no scope-chain parent.
+        EnvRecord*? env_opt = env::env_create_declarative(heap, null);
+        if (catch err = env_opt) return MODULE_ERROR~;
+        mod.env = env_opt;
+        if (mod.env.bindings != null) {
+            heap.register_gc_root(mod.env.bindings.as_header());
+        }
+        HString* def_key = heap.str_intern("default");
+        if (def_key != null) {
+            env::env_declare(mod.env, def_key, mod.json_value);
+        }
+        call_on_module_loaded(heap, mod);
+        mod.status = ModuleStatus.LOADED;
+        return mod;
+    }
 
     // 5. Compile
     Lexer lex = lexer::lexer_init(source, heap);
@@ -353,7 +403,7 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name) {
     // 7. Recursively resolve dependencies
     for (uint i = 0; i < mod.req_module_count; i++) {
         ReqModuleEntry* rme = &mod.req_modules[i];
-        ModuleDef*? dep = resolve_module(heap, rme.module_name, normalized);
+        ModuleDef*? dep = resolve_module(heap, rme.module_name, normalized, rme.wants_json);
         if (catch err = dep) {
             return MODULE_ERROR~;
         }
@@ -379,6 +429,17 @@ fn bool link_module(Heap* heap, vm::Vm* vm, ModuleDef* mod, EnvRecord* global_en
     // Re-linking would replace the live mod.env under the running body and
     // downgrade the status so the body re-executes. It is already linked.
     if (mod.status == ModuleStatus.EVALUATING) return true;
+
+    // A JSON module has no body and no dependencies; its env (holding the sole
+    // `default` binding) is created and rooted at resolve time. Just validate
+    // that no importer requests a named binding other than `default` (JSON
+    // modules define no named bindings — ECMA-262; `import {x}` must be a
+    // resolution-phase SyntaxError) and mark it linked.
+    if (mod.is_json) {
+        mod.status = ModuleStatus.LINKED;
+        return true;
+    }
+
     mod.status = ModuleStatus.LINKING;
 
     // Create module env (declarative), parented to the global env so that
@@ -419,6 +480,14 @@ fn bool link_module(Heap* heap, vm::Vm* vm, ModuleDef* mod, EnvRecord* global_en
             // `import * as ns` — create namespace object
             // For now, skip namespace object creation (Phase 2)
             continue;
+        }
+
+        // A JSON module exports only `default`; importing any other named
+        // binding from it is a resolution-phase SyntaxError (ECMA-262: JSON
+        // modules define no named bindings). Fail the link so run_module_file
+        // reports it as a load/resolution error.
+        if (source_mod.is_json && !char_slice_eq(ie.import_name, "default")) {
+            return false;
         }
 
         // Look up the exported name in the source module's env
@@ -540,6 +609,15 @@ fn bool link_module(Heap* heap, vm::Vm* vm, ModuleDef* mod, EnvRecord* global_en
 fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
     if (mod.status == ModuleStatus.EVALUATED) return true;
     if (mod.status == ModuleStatus.EVALUATING) return true; // cycle guard
+
+    // A JSON module has no body to run; its `default` binding was installed at
+    // resolve time. Nothing to evaluate.
+    if (mod.is_json) {
+        mod.status = ModuleStatus.EVALUATED;
+        call_on_module_evaluated(heap, mod);
+        return true;
+    }
+
     mod.status = ModuleStatus.EVALUATING;
 
     // Create module env if not already done, parented to the global env so

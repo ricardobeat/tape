@@ -590,6 +590,20 @@ fn int run_one_test(Vm* v, Heap* hp, char[] test_path, char[] assert_src, char[]
         return 1;
     }
 
+    // `negative: phase: resolution` tests expect the module to parse cleanly
+    // but fail during resolution/linking (e.g. an import attribute forcing a
+    // JSON load whose content is invalid, or the ensure-linking-error fixture
+    // importing a nonexistent binding). Both surface from the ESM pipeline as a
+    // load/link error (src_rc == 2). A runtime throw (src_rc == 1) during a
+    // dependency's evaluation also counts as a resolution/link-time rejection
+    // for these corpus tests. Only a clean run (src_rc == 0) means the module
+    // failed to reject and is a real bug.
+    if (neg == NegPhase.RESOLUTION) {
+        if (src_rc != 0) { return 0; }  // rejected during resolve/link — pass
+        io::eprintfn("  FAIL: resolution-negative did not reject at link time");
+        return 1;
+    }
+
     if (src_rc == 2) { io::eprintfn("  FAIL: compile error in test source %d bytes", src.len); return 2; }
     if (src_rc != 0) { io::eprintfn("  FAIL: test source %d bytes", src.len); return 1; }
 

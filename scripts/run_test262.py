@@ -141,7 +141,7 @@ UNSUPPORTED_PATTERN = re.compile(
     # Stage 3 proposals
     r"Temporal|ShadowRealm|decorators|explicit-resource-management|"
     r"source-phase-imports|source-phase-imports-module-source|"
-    r"import-defer|export-defer|import-attributes|import-text|import-bytes|"
+    r"import-defer|export-defer|import-text|import-bytes|"
     r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
     r""

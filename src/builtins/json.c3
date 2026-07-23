@@ -812,6 +812,48 @@ fn void json_throw_syntax_error(BuiltinContext* ctx, char[] msg) {
 }
 
 /// JSON.parse(text [, reviver]) — ES5 §15.12.2
+faultdef JSON_MODULE_PARSE_ERROR;
+
+/// Parse a whole JSON document (a JSON-module's file contents) into a TVal,
+/// mirroring `JSON.parse(source)` with no reviver (ECMA-262 ParseJSONModule /
+/// AbstractOperation §1.4). Returns JSON_MODULE_PARSE_ERROR on any syntax
+/// error (the module loader converts this into a resolution-phase SyntaxError).
+/// The returned value carries no extra reference — object results are freshly
+/// allocated with their prototype installed, exactly as JSON.parse yields.
+fn TVal? json_parse_module_source(Heap* heap, char[] source) {
+    JsonParseCtx jctx;
+    jctx.src = source.ptr;
+    jctx.pos = 0;
+    jctx.len = (uint)source.len;
+    jctx.heap = heap;
+    jctx.error = false;
+    jctx.record = false;
+
+    TVal result = json_parse_value(&jctx, null);
+    if (jctx.error || (result.is_undefined() && result.get_heapptr() == null)) {
+        return JSON_MODULE_PARSE_ERROR~;
+    }
+    json_skip_ws(&jctx);
+    if (jctx.pos != jctx.len) {
+        // Trailing non-whitespace → SyntaxError.
+        return JSON_MODULE_PARSE_ERROR~;
+    }
+
+    // Install the top-level prototype (nested objects/arrays already got theirs
+    // during parsing), matching builtin_json_parse.
+    if (result.is_object() && result.get_heapptr() != null) {
+        HObject* obj = (HObject*)result.get_heapptr();
+        if (obj.prototype == null) {
+            if (obj.get_class() == hobject::ObjClass.ARRAY) {
+                obj.prototype = heap.array_proto;
+            } else {
+                obj.prototype = heap.object_proto;
+            }
+        }
+    }
+    return result;
+}
+
 fn void builtin_json_parse(BuiltinContext* ctx) {
     // Step 1: Coerce first argument to string
     if (ctx.argc < 1) {
