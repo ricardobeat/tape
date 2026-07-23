@@ -709,6 +709,25 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
 fn TVal vm_call_handler_fn_impl(void* vm_ptr, TVal handler, TVal* arg) {
     TVal undef;
     undef.set_undefined();
+    // Each PromiseReactionJob (ES2015+ §27.2.2.1) is an independent microtask:
+    // it takes its input as `arg` and reports a throw via its return value or
+    // (for a native handler) heap.has_error — never via a pre-existing entry in
+    // the VM's error-propagation channels. A prior job may have left those
+    // channels set: e.g. an async function whose for-await step rejected leaves
+    // heap.has_error / vm.throw_pending populated with the rejection reason.
+    // Clear ALL of them before this handler runs, so a stale error cannot
+    // resurface — either inside the handler (an ADD re-firing throw_pending via
+    // vm_check_to_number_throw) or after it (promise_microtask_after seeing a
+    // stale heap.has_error and wrongly rejecting the handler's downstream, which
+    // dropped the onRejected result of `.then(onF, onR)` on a for-await
+    // rejection). This mirrors promise_clear_error_channels.
+    Vm* vm = (Vm*)vm_ptr;
+    if (vm != null) {
+        vm.throw_pending = false;
+        vm.throw_value.set_undefined();
+        vm.has_error = false;
+        if (vm.heap != null) vm.heap.has_error = false;
+    }
     return vm_call_fn_impl(vm_ptr, handler, arg, 1, undef);
 }
 

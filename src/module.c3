@@ -38,6 +38,7 @@ enum ModuleStatus : char {
     LINKED,        // ready for evaluation
     EVALUATING,    // being executed
     EVALUATED,     // fully executed
+    ERRORED,       // evaluation threw; eval_error holds the cached rejection reason
 }
 
 // ============================================================================
@@ -150,6 +151,14 @@ struct ModuleDef {
     // module so link/execute can install the synthetic default binding.
     bool                          is_json;
     TVal                          json_value;
+
+    // Cached evaluation error (ECMA-262 16.2.1.5 [[EvaluationError]]). When a
+    // module body (or a dependency's) throws, the module transitions to ERRORED
+    // and the thrown value is stored here with a ModuleDef-owned reference
+    // (rooting it for the module's lifetime). Every later Evaluate() of the same
+    // module must re-reject with this same value rather than re-running the body.
+    bool                          has_eval_error;
+    TVal                          eval_error;
 }
 
 // ============================================================================
@@ -605,9 +614,35 @@ fn bool link_module(Heap* heap, vm::Vm* vm, ModuleDef* mod, EnvRecord* global_en
     return true;
 }
 
+/// Record a module's evaluation error and mark it ERRORED. The thrown value is
+/// captured out of the heap error channel with a ModuleDef-owned reference so it
+/// survives GC and can re-reject every later Evaluate() of the same module.
+/// Leaves the error channel populated (the caller still surfaces the throw for
+/// the current evaluation). Always returns false for use in `return`.
+fn bool module_record_eval_error(Heap* heap, ModuleDef* mod) {
+    mod.status = ModuleStatus.ERRORED;
+    if (!mod.has_eval_error) {
+        mod.eval_error.set_undefined();
+        if (heap.has_error || heap.error_value.is_object() || heap.error_value.is_string()) {
+            heap.tval_copy_ref(&mod.eval_error, &heap.error_value);
+        }
+        mod.has_eval_error = true;
+    }
+    return false;
+}
+
 /// Execute a module: run dependencies first, then resolve imports, then run body.
 fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
     if (mod.status == ModuleStatus.EVALUATED) return true;
+    // A module whose evaluation previously threw must re-reject with the SAME
+    // cached error (ECMA-262 16.2.1.5.1 step 5). Restore it into the error
+    // channel and report failure without re-running the body.
+    if (mod.status == ModuleStatus.ERRORED) {
+        heap.error_value.set_undefined();
+        heap.tval_copy_ref(&heap.error_value, &mod.eval_error);
+        heap.has_error = true;
+        return false;
+    }
     if (mod.status == ModuleStatus.EVALUATING) return true; // cycle guard
 
     // A JSON module has no body to run; its `default` binding was installed at
@@ -641,7 +676,7 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
         if (rme.resolved == null) continue;
         ModuleDef* dep = (ModuleDef*)rme.resolved;
         if (dep.status != ModuleStatus.EVALUATED) {
-            if (!execute_module(heap, vm, dep)) return false;
+            if (!execute_module(heap, vm, dep)) return module_record_eval_error(heap, mod);
         }
     }
 
@@ -716,16 +751,16 @@ fn bool execute_module(Heap* heap, Vm* vm, ModuleDef* mod) {
             // and execute_in_env take over activations[0]/valstack[0] and are
             // unsafe to call here; execute_module_nested is re-entrant.
             bool? ok = vm.execute_module_nested(mod.func, mod.env);
-            if (catch err = ok) return false;
-            if (!ok) return false;  // rejected — reason is in heap.error_value
+            if (catch err = ok) return module_record_eval_error(heap, mod);
+            if (!ok) return module_record_eval_error(heap, mod);  // rejected — reason is in heap.error_value
         } else if (mod.func.is_async()) {
             bool? ok = vm.execute_module_async(mod.func, mod.env);
-            if (catch err = ok) return false;
-            if (!ok) return false;  // rejected — reason is in heap.error_value
+            if (catch err = ok) return module_record_eval_error(heap, mod);
+            if (!ok) return module_record_eval_error(heap, mod);  // rejected — reason is in heap.error_value
         } else {
             TVal? res = vm.execute_in_env(mod.func, mod.env);
             if (catch err = res) {
-                return false;
+                return module_record_eval_error(heap, mod);
             }
         }
     }

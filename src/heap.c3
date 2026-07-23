@@ -5,6 +5,7 @@ import duktape::hstring;
 import duktape::hobject;
 import duktape::bytecode;
 import duktape::re_bindings;
+import duktape::esm;
 import std::io;
 import std::core::mem::mempool;
 import std::core::mem::allocators;
@@ -2262,6 +2263,21 @@ fn void Heap.mark_roots(&self) {
     for (uint gsi = 0; gsi < self.gen_init_stack_depth; gsi++) {
         if (self.gen_init_stack_obj[gsi] != null) {
             self.mark_hobject((HObject*)self.gen_init_stack_obj[gsi]);
+        }
+    }
+
+    // Mark cached module state. ModuleDefs live in a separate malloc'd cache
+    // (not the GC heap) that the sweep never scans, so any TVal they hold must
+    // be marked here or it would be collected. `eval_error` is the cached
+    // [[EvaluationError]] of an ERRORED module (re-rejected on every later
+    // import); `json_value` is a JSON module's default value.
+    if (self.module_cache != null) {
+        esm::ModuleDef** cache = (esm::ModuleDef**)self.module_cache;
+        for (uint i = 0; i < self.module_cache_count; i++) {
+            esm::ModuleDef* mod = cache[i];
+            if (mod == null) continue;
+            if (mod.has_eval_error) { self.mark_tval(&mod.eval_error); }
+            if (mod.is_json)        { self.mark_tval(&mod.json_value); }
         }
     }
 
