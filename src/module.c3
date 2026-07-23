@@ -423,6 +423,120 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name, bo
     return mod;
 }
 
+// ResolveExport (ECMA-262 16.2.1.6.3) outcome. NULL means the name is not
+// resolvable (either genuinely absent or a circular self-reference detected via
+// the resolveSet); AMBIGUOUS means two or more `export *` stars provide the name
+// from distinct bindings. Both are static-semantics (SyntaxError) failures when
+// they occur for an indirect export.
+enum ResolveExportKind : char {
+    RESOLVED,
+    NULL,
+    AMBIGUOUS,
+}
+struct ResolveExportResult {
+    ResolveExportKind kind;
+    ModuleDef*        owner;        // owning module (RESOLVED only)
+    char[]            binding_name; // local binding name in `owner` (RESOLVED only)
+}
+
+const uint RESOLVE_SET_MAX = 64;
+struct ResolveSetEntry {
+    ModuleDef* owner_mod;
+    char[]     export_name;
+}
+
+/// ResolveExport(exportName, resolveSet) — ECMA-262 16.2.1.6.3 for a
+/// SourceTextModuleRecord. Returns a resolution binding, or NULL/AMBIGUOUS.
+/// `set`/`set_len` carry the resolveSet across the recursion to break circular
+/// import requests (step 2: if the same {module, exportName} is already in the
+/// set, this is a circular request → NULL).
+fn ResolveExportResult resolve_export(ModuleDef* mod, char[] export_name,
+                                      ResolveSetEntry* set, uint set_len) {
+    // Step 2: circular-request guard.
+    for (uint i = 0; i < set_len; i++) {
+        if (set[i].owner_mod == mod && char_slice_eq(set[i].export_name, export_name)) {
+            return { ResolveExportKind.NULL, null, {} };
+        }
+    }
+    if (set_len < RESOLVE_SET_MAX) {
+        set[set_len] = { mod, export_name };
+        set_len++;
+    }
+
+    // Step 4: local (direct, non-indirect) exports own their binding in `mod`.
+    for (uint i = 0; i < mod.export_count; i++) {
+        ExportEntry* ee = &mod.exports[i];
+        if (ee.is_indirect) continue;
+        if (char_slice_eq(ee.export_name, export_name)) {
+            return { ResolveExportKind.RESOLVED, mod, ee.local_name };
+        }
+    }
+
+    // Step 5: indirect exports (`export { x } from './other'`). Delegate to the
+    // imported module's ResolveExport for the re-exported name.
+    for (uint i = 0; i < mod.export_count; i++) {
+        ExportEntry* ee = &mod.exports[i];
+        if (!ee.is_indirect) continue;
+        if (!char_slice_eq(ee.export_name, export_name)) continue;
+        if (ee.req_module_idx >= mod.req_module_count) return { ResolveExportKind.NULL, null, {} };
+        ReqModuleEntry* rme = &mod.req_modules[ee.req_module_idx];
+        if (rme.resolved == null) return { ResolveExportKind.NULL, null, {} };
+        ModuleDef* imported = (ModuleDef*)rme.resolved;
+        // `export { x } from` re-exports the name `ee.local_name` from `imported`.
+        return resolve_export(imported, ee.local_name, set, set_len);
+    }
+
+    // Step 6: `default` is never provided by `export *`.
+    if (char_slice_eq(export_name, "default")) {
+        return { ResolveExportKind.NULL, null, {} };
+    }
+
+    // Step 7-8: star exports (`export * from './z'`). Gather resolutions from
+    // every star target; multiple distinct bindings for the same name are
+    // AMBIGUOUS.
+    ResolveExportResult star_resolution = { ResolveExportKind.NULL, null, {} };
+    for (uint i = 0; i < mod.star_export_count; i++) {
+        StarExportEntry* se = &mod.star_exports[i];
+        if (se.req_module_idx >= mod.req_module_count) continue;
+        ReqModuleEntry* rme = &mod.req_modules[se.req_module_idx];
+        if (rme.resolved == null) continue;
+        ModuleDef* imported = (ModuleDef*)rme.resolved;
+        ResolveExportResult r = resolve_export(imported, export_name, set, set_len);
+        if (r.kind == ResolveExportKind.AMBIGUOUS) return r;
+        if (r.kind == ResolveExportKind.RESOLVED) {
+            if (star_resolution.kind == ResolveExportKind.NULL) {
+                star_resolution = r;
+            } else if (star_resolution.owner != r.owner ||
+                       !char_slice_eq(star_resolution.binding_name, r.binding_name)) {
+                return { ResolveExportKind.AMBIGUOUS, null, {} };
+            }
+        }
+    }
+    return star_resolution;
+}
+
+/// Validate a module's indirect exports (ECMA-262 16.2.1.6.2
+/// InitializeEnvironment step 4): each `export { x } from './y'` must resolve to
+/// exactly one binding. A NULL or AMBIGUOUS resolution is a SyntaxError. On
+/// failure parks a SyntaxError on the heap error channel and returns false.
+fn bool validate_indirect_exports(Heap* heap, ModuleDef* mod) {
+    for (uint i = 0; i < mod.export_count; i++) {
+        ExportEntry* ee = &mod.exports[i];
+        if (!ee.is_indirect) continue;
+        ResolveSetEntry[RESOLVE_SET_MAX] set;
+        ResolveExportResult r = resolve_export(mod, ee.export_name, &set[0], 0);
+        if (r.kind != ResolveExportKind.RESOLVED) {
+            TVal se = module_syntax_error(heap,
+                "indirect export does not resolve to a single binding");
+            heap.error_value.set_undefined();
+            heap.tval_copy_ref(&heap.error_value, &se);
+            heap.has_error = true;
+            return false;
+        }
+    }
+    return true;
+}
+
 /// Link a module: resolve import bindings from source modules' envs.
 /// Phase 1 (initial): import bindings are copied at link time.
 fn bool link_module(Heap* heap, vm::Vm* vm, ModuleDef* mod, EnvRecord* global_env) {
@@ -476,6 +590,12 @@ fn bool link_module(Heap* heap, vm::Vm* vm, ModuleDef* mod, EnvRecord* global_en
             if (!link_module(heap, vm, dep, global_env)) return false;
         }
     }
+
+    // Static-semantics validation of indirect exports (16.2.1.6.2 step 4):
+    // every `export { x } from './y'` must resolve to exactly one binding. A
+    // NULL (circular / absent) or AMBIGUOUS resolution is a SyntaxError, parked
+    // on the heap error channel for dynamic_import to surface as the rejection.
+    if (!validate_indirect_exports(heap, mod)) return false;
 
     // Resolve import bindings: copy values from source module's env
     for (uint i = 0; i < mod.import_count; i++) {
@@ -1025,8 +1145,23 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier, bool wants_json = 
     }
 
     if (!rejected) {
+        heap.has_error = false;
+        heap.error_value.set_undefined();
         if (!link_module(heap, vm, mod, vm.global_env)) {
-            reason = module_type_error(heap, "cannot link module");
+            // A link failure may have parked a specific static-semantics error
+            // (SyntaxError for an ambiguous/circular indirect export) on the
+            // heap error channel — prefer it over the generic TypeError, and
+            // clear the channel so the fault becomes a promise rejection rather
+            // than leaking to the enclosing frame.
+            if (heap.has_error || heap.error_value.is_object() || heap.error_value.is_string()) {
+                reason.set_undefined();
+                heap.tval_copy_ref(&reason, &heap.error_value);
+                clear_reason_ref = true;
+            } else {
+                reason = module_type_error(heap, "cannot link module");
+            }
+            heap.error_value.set_undefined();
+            heap.has_error = false;
             rejected = true;
         }
     }
@@ -1090,6 +1225,17 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier, bool wants_json = 
 /// degraded rejection reason is acceptable since the promise is still
 /// rejected.
 fn TVal module_type_error(Heap* heap, char[] msg) {
+    return module_error_with_proto(heap, heap.type_err_proto, msg);
+}
+
+/// Build a SyntaxError value for a module static-semantics failure (a link-phase
+/// early error such as an ambiguous or circular indirect export). ECMA-262
+/// surfaces these as SyntaxError.
+fn TVal module_syntax_error(Heap* heap, char[] msg) {
+    return module_error_with_proto(heap, heap.syntax_err_proto, msg);
+}
+
+fn TVal module_error_with_proto(Heap* heap, HObject* proto, char[] msg) {
     TVal result;
     HObject*? err_raw = heap.alloc_object(hobject::ObjClass.ERROR);
     if (catch err = err_raw) {
@@ -1097,7 +1243,7 @@ fn TVal module_type_error(Heap* heap, char[] msg) {
         return result;
     }
     HObject* err = err_raw;
-    err.prototype = heap.type_err_proto;
+    err.prototype = proto;
     HString* msg_str = heap.str_intern(msg);
     if (msg_str != null) {
         TVal msg_val;
