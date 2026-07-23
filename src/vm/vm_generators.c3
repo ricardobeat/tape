@@ -758,6 +758,24 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             // rely on it alone.
             GeneratorState* gs_yield = (GeneratorState*)ds.act.async_gen_state;
             if (gs_yield == null) { gs_yield = vm.heap.resume_gen; }
+            // Yield inside a non-generator inner function (a default-expression
+            // thunk, e.g. `[x = yield]` in an async-generator's `for await`
+            // head): ds.act is the thunk and heap.resume_gen was consumed when
+            // the body last resumed. Walk the parent activation chain to recover
+            // the enclosing generator's state. The sync-generator case reaches
+            // this via resume_gen, but an async generator's body is re-driven by
+            // async_gen_resume_body/AWAIT, which clears resume_gen before the
+            // thunk runs — so the parent walk is the only surviving link.
+            if (gs_yield == null) {
+                Activation* walk_ag = ds.act.parent;
+                while (walk_ag != null) {
+                    if (walk_ag.async_gen_state != null) {
+                        gs_yield = (GeneratorState*)walk_ag.async_gen_state;
+                        break;
+                    }
+                    walk_ag = walk_ag.parent;
+                }
+            }
             if (gs_yield != null) {
                 GeneratorState* gs = gs_yield;
                 // Clear heap.resume_gen if it still points at this gs to avoid

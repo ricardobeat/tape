@@ -388,6 +388,19 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                             frame[i].set_undefined();
                         }
                     }
+                    // If the yield fired inside a non-generator inner function
+                    // (a default-expression thunk, e.g. `[x = yield]`), the
+                    // saved PC points just after the thunk's CALL in the
+                    // generator body. Place the resume value into that CALL's
+                    // result register so the post-CALL code reads it. This is
+                    // the async-generator counterpart of the sync-generator
+                    // handling in vm_calls.c3's CALL-resume path — async
+                    // generators re-enter here via async_gen_resume_body/call_fn
+                    // rather than through the re-dispatched CALL opcode.
+                    if (gs_r.pending_resume_reg != 0xFFFF && gs_r.pending_resume_reg < nregs) {
+                        vm.heap.tval_copy_ref(&frame[gs_r.pending_resume_reg], &gs_r.resume_value);
+                        gs_r.pending_resume_reg = 0xFFFF;
+                    }
                     // Put the resume value into register 0 (LOAD_RESUME will read it)
                     // The resume value is read by LOAD_RESUME from gs_r.resume_value
                     // into the A operand register, so no need to pre-populate frame[0].
