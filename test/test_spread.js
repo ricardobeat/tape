@@ -97,8 +97,32 @@ assertEq(add4(1, 2, ...i1), 10, "T8: add4(1,2,...[3,4])");
 // TEST 9: Call spread — empty array
 // ============================================================
 function noArgs() { return "ok"; }
+function collectArgs() {
+    var result = [];
+    for (var n = 0; n < arguments.length; n++) {
+        result[n] = arguments[n];
+    }
+    return result;
+}
 var j1 = [];
 assertEq(noArgs(...j1), "ok", "T9: noArgs(...[])");
+
+// ============================================================
+// TEST 9b: Call spread — trailing plain argument
+// ============================================================
+var j2 = collectArgs(1, ...[2, 3, 4, 5], 99);
+assertEq(j2.length, 6, "T9b: length");
+assertEq(j2[4], 5, "T9b: spread tail");
+assertEq(j2[5], 99, "T9b: trailing argument");
+
+// ============================================================
+// TEST 9c: Call spread — multiple spreads and trailing argument
+// ============================================================
+var j3 = collectArgs(...[1, 2], ...[3, 4], 5);
+assertEq(j3.length, 5, "T9c: length");
+assertEq(j3[0], 1, "T9c: first spread");
+assertEq(j3[2], 3, "T9c: second spread");
+assertEq(j3[4], 5, "T9c: trailing argument");
 
 // ============================================================
 // TEST 10: Array spread preserves element types
