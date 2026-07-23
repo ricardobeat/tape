@@ -3692,6 +3692,16 @@ fn void builtin_object_seal(BuiltinContext* ctx) {
         ctx.result.set_object(obj);
         return;
     }
+    // Integer-Indexed exotic SetIntegrityLevel(O, sealed) — same gap as
+    // freeze: [[PreventExtensions]] returns false for a non-fixed-length
+    // view (§10.4.5.1), and [[DefineOwnProperty]] with {configurable:false}
+    // on an in-bounds element returns false (§10.4.5.3), so seal throws for
+    // exactly the same condition; only a fixed-length zero-length view seals.
+    if (is_typed_array_class(obj.get_class())
+        && (!ta_is_fixed_length(obj) || ta_element_count(obj) > 0)) {
+        builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot seal this TypedArray");
+        return;
+    }
     obj.seal();
     ctx.result.set_object(obj);
 }
