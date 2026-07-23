@@ -55,6 +55,58 @@ fn void mark_activation_regs(heap::Heap* h, Activation* act, TVal* frame_end) @i
     }
 }
 
+/// Mark heap references held in an Activation's own struct fields (not the
+/// register span, not the env chain). These slots can be the sole surviving
+/// root for a value across a safepoint GC:
+///  - this_binding: owned ref (ACT_FLAG_THIS_OWNED); for getters/setters the
+///    receiver is copied ONLY here (registers are cleared, no arg slot holds it).
+///  - this_binding (construct): the freshly allocated constructor instance is
+///    parked here by a raw assign and, under GC pressure inside the constructor
+///    body, is otherwise collected — its [[Prototype]] then reads as freed
+///    memory (confirmed via a Reflect.construct/derived-class stress repro).
+///  - new_target: an HObject* for the constructor/newTarget. Defensive — every
+///    repro attempted co-rooted it via a caller register or the class binding,
+///    but marking it removes the dependence on that incidental rooting.
+///  - async_promise: the async function/module's outer Promise, owned while the
+///    activation is live and settled only after the body returns. Defensive:
+///    co-rooted by the microtask queue / resolve-reject closures in practice.
+///  - async_gen_state: the GeneratorState this frame is resuming; mark its
+///    contents so a suspended-then-resumed async generator is not swept mid-body.
+///    Defensive: the gs is normally reachable via its owning generator object.
+///  - Catcher.thrown_val: an in-flight exception parked in a catcher across a
+///    GC that runs while unwinding (e.g. allocation-heavy finally blocks) —
+///    confirmed collectible without this mark via a throw-through-finally repro.
+/// Marking a null/undefined slot is a harmless no-op (mark_tval/mark_hobject and
+/// mark_generator_state all null-check).
+fn void mark_activation_fields(heap::Heap* h, Activation* act) @inline {
+    // this_binding can be the sole root of a heap value in two cases:
+    //  - ACT_FLAG_THIS_OWNED: the frame incref'd `this` into this slot
+    //    (getters/setters, inline CALL) — the register copy may be gone.
+    //  - ACT_FLAG_CONSTRUCT: the freshly allocated instance is stored here by a
+    //    raw assign (vm_execute construct entry) and is not reliably in any
+    //    register during the constructor body (verified collectible under GC).
+    // An ordinary call's `this` was copied from a register/env that still roots
+    // it, so deep non-method recursion (this === undefined, both flags clear)
+    // stays free of the per-frame mark.
+    if ((act.flags & (ACT_FLAG_THIS_OWNED | ACT_FLAG_CONSTRUCT)) != 0) {
+        h.mark_tval(&act.this_binding);
+    }
+    if (act.new_target != null) { h.mark_hobject(act.new_target); }
+    if (act.async_promise != null) { h.mark_hobject(act.async_promise); }
+    if (act.async_gen_state != null) {
+        h.mark_generator_state((heap::GeneratorState*)act.async_gen_state);
+    }
+    // Walk the catcher chain: an in-flight exception parked in Catcher.thrown_val
+    // (set by THROW, not yet consumed by CATCH) is not on the valstack and would
+    // otherwise be collected across a safepoint GC that runs while unwinding.
+    Catcher* c = (Catcher*)act.cat;
+    while (c != null) {
+        h.mark_tval(&c.thrown_val);
+        h.mark_tval(&c.return_val);
+        c = c.parent;
+    }
+}
+
 /// Mark all env bindings held by live activation records.
 /// Called from heap's mark_roots to keep per-call var_envs alive during GC.
 /// Also marks saved activations stored in vm_call_fn_impl's shadow frame list
@@ -78,6 +130,7 @@ fn void vm_mark_activations(void* vm_ptr, void* heap_ptr) {
     // valstack (see below — staged-argument scratch is not tracked precisely).
     for (uint i = 0; i < vm.activation_count; i++) {
         mark_activation_envs(h, &vm.activations[i]);
+        mark_activation_fields(h, &vm.activations[i]);
         Activation* a = &vm.activations[i];
         // Lower bound on this frame's span: its own declared registers plus the
         // builtin arg/scratch margin. valstack_top can sit BELOW an outer (or
@@ -112,6 +165,7 @@ fn void vm_mark_activations(void* vm_ptr, void* heap_ptr) {
     while (shadow != null) {
         for (uint i = 0; i < shadow.count; i++) {
             mark_activation_envs(h, &shadow.acts[i]);
+            mark_activation_fields(h, &shadow.acts[i]);
             Activation* sa = &shadow.acts[i];
             if (sa.func != null && sa.bottom != null) {
                 CompiledFunction* scf = (CompiledFunction*)sa.func;
