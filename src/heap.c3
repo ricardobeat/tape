@@ -153,6 +153,16 @@ struct GeneratorState {
     uint pending_resume_reg;
 }
 
+/// One parked Atomics.waitAsync waiter (single-agent). `buffer` is the backing
+/// SharedArrayBuffer HObject, `byte_index` the absolute byte offset in it, and
+/// `promise` the pending Promise resolved by Atomics.notify with "ok".
+struct AtomicsWaiter {
+    hobject::HObject* buffer;
+    hobject::HObject* promise;
+    uint              byte_index;
+    bool              active;
+}
+
 // --- Heap struct ----------------------------------------------------------
 
 struct Heap {
@@ -274,6 +284,7 @@ struct Heap {
     HObject* typedarray_intrinsic; // %TypedArray% abstract constructor
     HObject* uint8array_proto; // %Uint8Array%.prototype (for fromBase64/fromHex result protos)
     HObject* arraybuffer_proto; // ArrayBuffer.prototype
+    HObject* sharedarraybuffer_proto; // SharedArrayBuffer.prototype
     HObject* dataview_proto; // DataView.prototype
 
     // Generator resume state (set by .next()/.throw()/.return() builtins,
@@ -396,6 +407,13 @@ struct Heap {
     uint      microtask_count;
     uint      microtask_capacity;
     bool      microtask_draining;  // re-entrancy guard
+
+    // Atomics.waitAsync async-waiter list (single-agent). Each active waiter
+    // parks a pending Promise on a (SharedArrayBuffer, byte-index) location;
+    // Atomics.notify resolves matching waiters with "ok" (FIFO). All fields are
+    // GC roots while the waiter is active.
+    AtomicsWaiter[64] async_waiters;
+    uint      async_waiter_count;
 
     // Shape (hidden class) system for inline cache support.
     hobject::Shape**    shapes;       // pointer array — each element points to a shape allocation
@@ -620,6 +638,7 @@ fn Heap*? create(
     }
     h.microtask_count = 0;
     h.microtask_draining = false;
+    h.async_waiter_count = 0;
 
     // Initialize object pool allocators (3 size classes).
     {
@@ -1155,6 +1174,7 @@ fn void Heap.reset(&self) {
     }
     self.microtask_count    = 0;
     self.microtask_draining = false;
+    self.async_waiter_count = 0;
 
     // Clear all other heap state (prototypes, GC roots, execution state)
     self.heap_allocated   = null;
@@ -1225,6 +1245,7 @@ fn void Heap.reset(&self) {
     self.typedarray_intrinsic = null;
     self.uint8array_proto = null;
     self.arraybuffer_proto = null;
+    self.sharedarraybuffer_proto = null;
     self.dataview_proto = null;
 
     // Clear builtin string cache
@@ -2013,6 +2034,7 @@ fn void Heap.mark_roots(&self) {
     if (self.typedarray_intrinsic != null) { self.mark_hobject(self.typedarray_intrinsic); }
     if (self.uint8array_proto != null) { self.mark_hobject(self.uint8array_proto); }
     if (self.arraybuffer_proto != null) { self.mark_hobject(self.arraybuffer_proto); }
+    if (self.sharedarraybuffer_proto != null) { self.mark_hobject(self.sharedarraybuffer_proto); }
     if (self.dataview_proto != null) { self.mark_hobject(self.dataview_proto); }
 
     // Scan the VM value stack as a GC root — all live TVal slots
@@ -2033,6 +2055,14 @@ fn void Heap.mark_roots(&self) {
         uint queued_values = self.microtask_count * 3;
         for (uint i = 0; i < queued_values; i++) {
             self.mark_tval(&self.microtask_queue[i]);
+        }
+    }
+
+    // Atomics.waitAsync waiters keep their parked buffer + pending promise alive.
+    for (uint i = 0; i < self.async_waiter_count; i++) {
+        if (self.async_waiters[i].active) {
+            if (self.async_waiters[i].buffer != null) self.mark_hobject(self.async_waiters[i].buffer);
+            if (self.async_waiters[i].promise != null) self.mark_hobject(self.async_waiters[i].promise);
         }
     }
 

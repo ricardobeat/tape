@@ -336,6 +336,7 @@ fn bool builtin_fn_is_constructor(Vm* vm, uint fn_idx) {
         case builtins::Builtin.BIGINT64ARRAY.ordinal:
         case builtins::Builtin.BIGUINT64ARRAY.ordinal:
         case builtins::Builtin.ARRAYBUFFER.ordinal:
+        case builtins::Builtin.SHAREDARRAYBUFFER.ordinal:
         case builtins::Builtin.DATAVIEW.ordinal:
         case builtins::Builtin.PROXY.ordinal:
         case builtins::Builtin.BIGINT.ordinal:

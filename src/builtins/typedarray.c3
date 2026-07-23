@@ -572,7 +572,7 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
     } else {
         HObject* arg_obj = (HObject*)arg0.get_heapptr();
 
-        if (arg_obj != null && is_arraybuffer_obj(arg_obj)) {
+        if (arg_obj != null && is_any_arraybuffer_obj(arg_obj)) {
             // --- Overload 5: ArrayBuffer shared view ---
             TVal off_arg; off_arg.set_undefined();
             if (ctx.argc >= 2) off_arg = ctx.regs[ctx.base_reg + 1];

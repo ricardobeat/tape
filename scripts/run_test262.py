@@ -121,8 +121,9 @@ SKIP_DIRS = {
     "built-ins/AsyncDisposableStack",  # 104   — Stage 3
     "built-ins/SuppressedError",       # 22    — Stage 3
     "built-ins/AbstractModuleSource",  # 8     — Stage 3
-    "built-ins/SharedArrayBuffer",     # 104   — platform-dependent
-    "built-ins/Atomics",               # 390   — platform-dependent
+    # built-ins/SharedArrayBuffer + built-ins/Atomics: implemented single-agent
+    # (no worker threads). Tests using the $262.agent multi-worker harness are
+    # skipped per-file below (see AGENT_HARNESS_RE in skip_reason).
     # built-ins/BigInt: now implemented (plan 056, fixed-width int128).  130/136
     # pass; the rest are out of scope: arbitrary-precision literals (>2^127),
     # Reflect.construct-based is-a-constructor, and $262 cross-realm.
@@ -148,12 +149,12 @@ UNSUPPORTED_PATTERN = re.compile(
     r""
     r"immutable-arraybuffer|"
     r"joint-iteration|"
-    # ES2024+ features (implement later)
-    r"Atomics\.waitAsync|"
     # Complex features deferred.  (BigInt is implemented — plan 056 — so it is
     # no longer filtered here; BigInt64Array/BigUint64Array + DataView BigInt64
     # tests still fail until Phase 3/4 land, but they run rather than skip.)
-    r"SharedArrayBuffer|Atomics|"
+    # SharedArrayBuffer + Atomics are now implemented single-agent; the
+    # Atomics.pause proposal remains filtered above.  Multi-worker `agent`
+    # tests are skipped per-file via AGENT_HARNESS_RE below.
     r"structured-clone|import\.meta|dynamic-import|"
     # Async generators deferred (plan 057 implements the for-await-of *consumer*
     # + Symbol.asyncIterator, but NOT `async function*`). for-await-of tests whose
@@ -808,6 +809,8 @@ PHASES = [
             "built-ins/TypedArrayConstructors",
             "built-ins/DataView",
             "built-ins/Uint8Array",
+            "built-ins/SharedArrayBuffer",
+            "built-ins/Atomics",
         ],
     },
     {
@@ -846,6 +849,11 @@ def resolve_phase_num(n):
 # Match ANY test that declares feature flags — used by --es5 mode to skip
 # all post-ES5 tests.  Tests without `features:` are baseline ES5 behavior.
 ANY_FEATURES_PATTERN = re.compile(r"^features:\s*\[", re.MULTILINE)
+# Multi-worker Atomics/SharedArrayBuffer tests drive a second agent via the
+# $262.agent host hooks (agent.start / agent.broadcast / agent.receiveBroadcast
+# / agent.sleep / agent.monotonicNow). This single-agent engine has no worker
+# threads, so these tests can never pass — skip them by their harness usage.
+AGENT_HARNESS_RE = re.compile(r"\$262\.agent\b|\bagent\.(?:start|broadcast|receiveBroadcast|sleep|monotonicNow|getReport|report|leaving)\b")
 def skip_reason(path, es5_only=False):
     """Return why a test would be skipped by the suite, or None if it runs.
 
@@ -886,6 +894,16 @@ def skip_reason(path, es5_only=False):
         # feature keyword it matched for a useful message.
         feat = _UNSUPPORTED_FEATURE_RE.search(m.group(0))
         return f"unsupported feature ({feat.group(0) if feat else 'deferred'})"
+    # Skip multi-worker agent tests (Atomics/SharedArrayBuffer). The $262.agent
+    # usage is in the test body, not the front-matter, so read the whole file.
+    if rel.startswith("built-ins/Atomics") or rel.startswith("built-ins/SharedArrayBuffer"):
+        try:
+            with open(path) as f:
+                full = f.read()
+        except OSError:
+            full = header
+        if AGENT_HARNESS_RE.search(full):
+            return "multi-worker agent harness ($262.agent) — single-agent engine"
     if es5_only and ANY_FEATURES_PATTERN.search(header):
         return "ES5-only mode: post-ES5 feature flag"
     # Strict-only engine: noStrict tests are intentionally unsupported —
@@ -893,6 +911,12 @@ def skip_reason(path, es5_only=False):
     # params, etc.) which the engine now rejects at parse time.
     if re.search(r"flags:\s*\[.*\bnoStrict\b", header):
         return "noStrict (strict-only engine)"
+    # CanBlockIsFalse tests assume Atomics.wait throws because the agent cannot
+    # suspend. This engine's single main agent has AgentCanSuspend = true (like
+    # QuickJS/V8's shell), so wait returns "timed-out"/"not-equal" instead —
+    # these tests are inapplicable.
+    if re.search(r"flags:\s*\[.*\bCanBlockIsFalse\b", header):
+        return "CanBlockIsFalse (engine agent can suspend)"
     return None
 
 

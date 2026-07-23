@@ -584,6 +584,28 @@ enum Builtin : uint {
     ARRAYBUFFER_PROTO_MAXBYTELENGTH_GET,
     ARRAYBUFFER_PROTO_TRANSFER,
     ARRAYBUFFER_PROTO_TRANSFER_TO_FIXED_LENGTH,
+    // --- SharedArrayBuffer (single-agent) ---
+    SHAREDARRAYBUFFER,
+    SHAREDARRAYBUFFER_PROTO_BYTELENGTH_GET,
+    SHAREDARRAYBUFFER_PROTO_GROWABLE_GET,
+    SHAREDARRAYBUFFER_PROTO_MAXBYTELENGTH_GET,
+    SHAREDARRAYBUFFER_PROTO_GROW,
+    SHAREDARRAYBUFFER_PROTO_SLICE,
+    SHAREDARRAYBUFFER_SPECIES_GET,
+    // --- Atomics ---
+    ATOMICS_ADD,
+    ATOMICS_AND,
+    ATOMICS_COMPAREEXCHANGE,
+    ATOMICS_EXCHANGE,
+    ATOMICS_LOAD,
+    ATOMICS_OR,
+    ATOMICS_STORE,
+    ATOMICS_SUB,
+    ATOMICS_XOR,
+    ATOMICS_ISLOCKFREE,
+    ATOMICS_WAIT,
+    ATOMICS_NOTIFY,
+    ATOMICS_WAITASYNC,
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2683,6 +2705,10 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.ARRAYBUFFER_PROTO_RESIZE.ordinal: return { "resize", 1 };
         case Builtin.ARRAYBUFFER_PROTO_TRANSFER.ordinal: return { "transfer", 0 };
         case Builtin.ARRAYBUFFER_PROTO_TRANSFER_TO_FIXED_LENGTH.ordinal: return { "transferToFixedLength", 0 };
+        // SharedArrayBuffer constructor / prototype
+        case Builtin.SHAREDARRAYBUFFER.ordinal: return { "SharedArrayBuffer", 1 };
+        case Builtin.SHAREDARRAYBUFFER_PROTO_SLICE.ordinal: return { "slice", 2 };
+        case Builtin.SHAREDARRAYBUFFER_PROTO_GROW.ordinal: return { "grow", 1 };
         // DataView constructor / prototype
         case Builtin.DATAVIEW.ordinal: return { "DataView", 1 };
         case Builtin.DATAVIEW_GET_INT8.ordinal: return { "getInt8", 1 };
@@ -3652,6 +3678,28 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ARRAYBUFFER_PROTO_TRANSFER.ordinal] = &builtin_arraybuffer_proto_transfer,
     [Builtin.ARRAYBUFFER_PROTO_TRANSFER_TO_FIXED_LENGTH.ordinal] = &builtin_arraybuffer_proto_transfer_to_fixed_length,
     [Builtin.DETACH_ARRAYBUFFER.ordinal] = &builtin_detach_arraybuffer,
+    // SharedArrayBuffer (single-agent)
+    [Builtin.SHAREDARRAYBUFFER.ordinal] = &builtin_sharedarraybuffer,
+    [Builtin.SHAREDARRAYBUFFER_PROTO_BYTELENGTH_GET.ordinal] = &builtin_sharedarraybuffer_proto_bytelength_get,
+    [Builtin.SHAREDARRAYBUFFER_PROTO_GROWABLE_GET.ordinal] = &builtin_sharedarraybuffer_proto_growable_get,
+    [Builtin.SHAREDARRAYBUFFER_PROTO_MAXBYTELENGTH_GET.ordinal] = &builtin_sharedarraybuffer_proto_maxbytelength_get,
+    [Builtin.SHAREDARRAYBUFFER_PROTO_GROW.ordinal] = &builtin_sharedarraybuffer_proto_grow,
+    [Builtin.SHAREDARRAYBUFFER_PROTO_SLICE.ordinal] = &builtin_sharedarraybuffer_proto_slice,
+    [Builtin.SHAREDARRAYBUFFER_SPECIES_GET.ordinal] = &builtin_sharedarraybuffer_species_get,
+    // Atomics
+    [Builtin.ATOMICS_ADD.ordinal] = &builtin_atomics_add,
+    [Builtin.ATOMICS_AND.ordinal] = &builtin_atomics_and,
+    [Builtin.ATOMICS_COMPAREEXCHANGE.ordinal] = &builtin_atomics_compareexchange,
+    [Builtin.ATOMICS_EXCHANGE.ordinal] = &builtin_atomics_exchange,
+    [Builtin.ATOMICS_LOAD.ordinal] = &builtin_atomics_load,
+    [Builtin.ATOMICS_OR.ordinal] = &builtin_atomics_or,
+    [Builtin.ATOMICS_STORE.ordinal] = &builtin_atomics_store,
+    [Builtin.ATOMICS_SUB.ordinal] = &builtin_atomics_sub,
+    [Builtin.ATOMICS_XOR.ordinal] = &builtin_atomics_xor,
+    [Builtin.ATOMICS_ISLOCKFREE.ordinal] = &builtin_atomics_islockfree,
+    [Builtin.ATOMICS_WAIT.ordinal] = &builtin_atomics_wait,
+    [Builtin.ATOMICS_NOTIFY.ordinal] = &builtin_atomics_notify,
+    [Builtin.ATOMICS_WAITASYNC.ordinal] = &builtin_atomics_waitasync,
     // TypedArray.prototype accessors (plan 049 stage 2)
     [Builtin.TYPEDARRAY_PROTO_LENGTH_GET.ordinal] = &builtin_typedarray_proto_length_get,
     [Builtin.TYPEDARRAY_PROTO_BYTELENGTH_GET.ordinal] = &builtin_typedarray_proto_bytelength_get,
@@ -4139,6 +4187,12 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
 
     // Register ArrayBuffer constructor and prototype (plan 049 stage 1)
     if (!register_arraybuffer(global_env, heap)) return false;
+
+    // Register SharedArrayBuffer constructor and prototype (single-agent)
+    if (!register_sharedarraybuffer(global_env, heap)) return false;
+
+    // Register the Atomics namespace object (single-agent)
+    if (!register_atomics_object(global_env, heap)) return false;
 
     // Register DataView constructor and prototype (plan 049 stage 3)
     if (!register_dataview(global_env, heap)) return false;

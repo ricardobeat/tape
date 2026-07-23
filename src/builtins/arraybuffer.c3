@@ -114,9 +114,18 @@ fn void arraybuffer_throw_range_error(BuiltinContext* ctx, char[] msg) {
     }
 }
 
-/// True iff obj is an ArrayBuffer instance (used by isView negatively and
-/// by slice/detach to validate the receiver).
+/// True iff obj is a non-shared ArrayBuffer instance. ArrayBuffer.prototype
+/// methods (byteLength/slice/resize/detach/…) require this — a SharedArrayBuffer
+/// receiver must throw (it shares ObjClass.ARRAYBUFFER but has is_shared set).
 fn bool is_arraybuffer_obj(HObject* obj) {
+    return obj != null
+        && obj.flags.obj_class == hobject::ObjClass.ARRAYBUFFER
+        && !(*obj.extra_ptr()).ab.is_shared;
+}
+
+/// True iff obj is any ArrayBuffer instance, shared or not. Used by TypedArray
+/// and DataView backing-store validation, which accept both.
+fn bool is_any_arraybuffer_obj(HObject* obj) {
     return obj != null && obj.flags.obj_class == hobject::ObjClass.ARRAYBUFFER;
 }
 
@@ -722,6 +731,330 @@ fn void builtin_detach_arraybuffer(BuiltinContext* ctx) {
 }
 
 // ============================================================================
+// SharedArrayBuffer (ES2024 §25.2) — single-agent variant.
+// Shares ObjClass.ARRAYBUFFER with a distinguishing `is_shared` flag; SABs can
+// never be detached, and "growable" SABs grow in place and never shrink.
+// ============================================================================
+
+/// True iff obj is a SharedArrayBuffer instance.
+fn bool is_shared_arraybuffer_obj(HObject* obj) {
+    return obj != null
+        && obj.flags.obj_class == hobject::ObjClass.ARRAYBUFFER
+        && (*obj.extra_ptr()).ab.is_shared;
+}
+
+/// SharedArrayBuffer(length [, options]) constructor — ES2024 §25.2.2.1.
+fn void builtin_sharedarraybuffer(BuiltinContext* ctx) {
+    if (!ctx.is_constructor) {
+        arraybuffer_throw_type_error(ctx, "Constructor SharedArrayBuffer requires 'new'");
+        return;
+    }
+
+    TVal len_arg;
+    len_arg.set_undefined();
+    if (ctx.argc >= 1) len_arg = ctx.regs[ctx.base_reg];
+
+    double byte_length_wide = 0.0;
+    if (!arraybuffer_to_index_wide(ctx, &len_arg, &byte_length_wide)) {
+        return;
+    }
+
+    // GetArrayBufferMaxByteLengthOption — a present, non-undefined maxByteLength
+    // makes the shared buffer growable.
+    bool has_max = false;
+    double max_wide = 0.0;
+    if (ctx.argc >= 2) {
+        TVal opt = ctx.regs[ctx.base_reg + 1];
+        if (opt.is_object() && opt.get_heapptr() != null) {
+            HObject* opt_obj = (HObject*)opt.get_heapptr();
+            HString* mbl_key = builtin_intern_string(ctx.heap, "maxByteLength");
+            if (try mv = builtins_generic_get(opt_obj, mbl_key, ctx)) {
+                if (ctx.should_throw) return;
+                if (!mv.is_undefined()) {
+                    if (!arraybuffer_to_index_wide(ctx, &mv, &max_wide)) return;
+                    has_max = true;
+                }
+            } else {
+                return;
+            }
+        }
+    }
+
+    uint max_byte_length = 0;
+    if (has_max) {
+        if (max_wide > 2147483647.0) {
+            arraybuffer_throw_range_error(ctx, "Invalid shared array buffer maxByteLength");
+            return;
+        }
+        max_byte_length = (uint)max_wide;
+        if (byte_length_wide > max_wide) {
+            arraybuffer_throw_range_error(ctx, "SharedArrayBuffer length exceeds maxByteLength");
+            return;
+        }
+    }
+
+    HObject* instance_proto = arraybuffer_instance_proto(ctx, ctx.heap.sharedarraybuffer_proto);
+    if (ctx.should_throw) return;
+
+    HObject*? raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAYBUFFER);
+    if (catch err = raw) {
+        ctx.result.set_undefined();
+        return;
+    }
+    HObject* obj = raw;
+    obj.prototype = instance_proto;
+    (*obj.extra_ptr()).ab.data = null;
+    (*obj.extra_ptr()).ab.byte_length = 0;
+    (*obj.extra_ptr()).ab.views_head = null;
+
+    uint byte_length = 0;
+    if (byte_length_wide > 2147483647.0) {
+        arraybuffer_throw_range_error(ctx, "Invalid shared array buffer length");
+        return;
+    }
+    byte_length = (uint)byte_length_wide;
+
+    // For growable SABs, allocate the full maxByteLength up front so the backing
+    // pointer is stable across grow() (grow-in-place, views never see a realloc).
+    uint alloc_len = has_max ? max_byte_length : byte_length;
+    char* data = null;
+    if (alloc_len > 0) {
+        data = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)alloc_len);
+        if (data == null) {
+            arraybuffer_throw_range_error(ctx, "Out of memory allocating SharedArrayBuffer");
+            return;
+        }
+        mem::clear(data, (sz)((usz)alloc_len));
+    }
+    (*obj.extra_ptr()).ab.data = data;
+    (*obj.extra_ptr()).ab.byte_length = byte_length;
+    (*obj.extra_ptr()).ab.resizable = has_max;
+    (*obj.extra_ptr()).ab.max_byte_length = max_byte_length;
+    (*obj.extra_ptr()).ab.is_shared = true;
+
+    ctx.result.set_object(obj);
+}
+
+/// Shared receiver validation for SharedArrayBuffer.prototype methods.
+fn HObject* sab_this(BuiltinContext* ctx, char[] method) {
+    TVal this_val = ctx.this_val;
+    if (!this_val.is_object() || this_val.get_heapptr() == null) {
+        arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype method called on non-object");
+        return null;
+    }
+    HObject* obj = (HObject*)this_val.get_heapptr();
+    if (!is_shared_arraybuffer_obj(obj)) {
+        arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype method called on incompatible receiver");
+        return null;
+    }
+    return obj;
+}
+
+/// SharedArrayBuffer.prototype.byteLength getter — ES2024 §25.2.4.1.
+fn void builtin_sharedarraybuffer_proto_bytelength_get(BuiltinContext* ctx) {
+    HObject* obj = sab_this(ctx, "byteLength");
+    if (obj == null) return;
+    ctx.result.set_fastint((long)(*obj.extra_ptr()).ab.byte_length);
+}
+
+/// SharedArrayBuffer.prototype.growable getter — ES2024 §25.2.4.2.
+fn void builtin_sharedarraybuffer_proto_growable_get(BuiltinContext* ctx) {
+    HObject* obj = sab_this(ctx, "growable");
+    if (obj == null) return;
+    ctx.result.set_boolean((*obj.extra_ptr()).ab.resizable);
+}
+
+/// SharedArrayBuffer.prototype.maxByteLength getter — ES2024 §25.2.4.4.
+fn void builtin_sharedarraybuffer_proto_maxbytelength_get(BuiltinContext* ctx) {
+    HObject* obj = sab_this(ctx, "maxByteLength");
+    if (obj == null) return;
+    if ((*obj.extra_ptr()).ab.resizable) {
+        ctx.result.set_fastint((long)(*obj.extra_ptr()).ab.max_byte_length);
+    } else {
+        ctx.result.set_fastint((long)(*obj.extra_ptr()).ab.byte_length);
+    }
+}
+
+/// SharedArrayBuffer.prototype.grow(newLength) — ES2024 §25.2.4.3.
+/// Growable SABs grow in place (backing store pre-allocated to maxByteLength)
+/// and never shrink.
+fn void builtin_sharedarraybuffer_proto_grow(BuiltinContext* ctx) {
+    HObject* obj = sab_this(ctx, "grow");
+    if (obj == null) return;
+    if (!(*obj.extra_ptr()).ab.resizable) {
+        arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype.grow: buffer is not growable");
+        return;
+    }
+
+    TVal len_arg; len_arg.set_undefined();
+    if (ctx.argc >= 1) len_arg = ctx.regs[ctx.base_reg];
+    uint new_len = 0;
+    // ToIndex (may run user code).
+    if (!arraybuffer_to_index(ctx, &len_arg, &new_len)) return;
+
+    if (new_len > (*obj.extra_ptr()).ab.max_byte_length) {
+        arraybuffer_throw_range_error(ctx, "SharedArrayBuffer.prototype.grow: length exceeds maxByteLength");
+        return;
+    }
+    // Never shrink (§25.2.4.3: newByteLength >= current byteLength).
+    if (new_len < (*obj.extra_ptr()).ab.byte_length) {
+        arraybuffer_throw_range_error(ctx, "SharedArrayBuffer.prototype.grow: cannot shrink");
+        return;
+    }
+    // Grow in place: the store is already maxByteLength bytes, zero-filled.
+    (*obj.extra_ptr()).ab.byte_length = new_len;
+    ctx.result.set_undefined();
+}
+
+/// SharedArrayBuffer.prototype.slice(start, end) — ES2024 §25.2.4.5.
+/// Always produces a (non-shared? no — shared) SharedArrayBuffer via species.
+fn void builtin_sharedarraybuffer_proto_slice(BuiltinContext* ctx) {
+    HObject* obj = sab_this(ctx, "slice");
+    if (obj == null) return;
+
+    long len = (long)(*obj.extra_ptr()).ab.byte_length;
+
+    TVal start_arg; start_arg.set_undefined();
+    TVal end_arg;   end_arg.set_undefined();
+    if (ctx.argc >= 1) start_arg = ctx.regs[ctx.base_reg];
+    if (ctx.argc >= 2) end_arg   = ctx.regs[ctx.base_reg + 1];
+
+    long rel_start = 0;
+    if (!start_arg.is_undefined()) {
+        double d = builtin_to_integer_vm(ctx, &start_arg);
+        if (ctx.should_throw) return;
+        rel_start = (long)d;
+    }
+    long start_idx;
+    if (rel_start < 0) {
+        start_idx = len + rel_start;
+        if (start_idx < 0) start_idx = 0;
+    } else {
+        start_idx = rel_start;
+        if (start_idx > len) start_idx = len;
+    }
+
+    long rel_end = len;
+    if (!end_arg.is_undefined()) {
+        double d = builtin_to_integer_vm(ctx, &end_arg);
+        if (ctx.should_throw) return;
+        rel_end = (long)d;
+    }
+    long end_idx;
+    if (rel_end < 0) {
+        end_idx = len + rel_end;
+        if (end_idx < 0) end_idx = 0;
+    } else {
+        end_idx = rel_end;
+        if (end_idx > len) end_idx = len;
+    }
+
+    long new_len = end_idx - start_idx;
+    if (new_len < 0) new_len = 0;
+
+    // SpeciesConstructor(O, %SharedArrayBuffer%).
+    HString* ctor_key = (HString*)ctx.heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    TVal ctor_val;
+    if (try c = builtins_generic_get(obj, ctor_key, ctx)) {
+        ctor_val = c;
+        if (ctx.should_throw) return;
+    } else {
+        return;
+    }
+
+    bool use_species = false;
+    HObject* species_ctor = null;
+    if (!ctor_val.is_undefined()) {
+        if (!ctor_val.is_object() || ctor_val.get_heapptr() == null) {
+            arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype.slice: constructor is not an object");
+            return;
+        }
+        HObject* c_obj = (HObject*)ctor_val.get_heapptr();
+        HString* species_sym = ensure_species_symbol(ctx.heap);
+        if (species_sym != null) {
+            TVal species_val;
+            if (try s = builtins_generic_get(c_obj, species_sym, ctx)) {
+                species_val = s;
+                if (ctx.should_throw) return;
+            } else {
+                return;
+            }
+            if (!species_val.is_undefined() && !species_val.is_null()) {
+                if (species_val.is_object() && species_val.get_heapptr() != null) {
+                    HObject* s_obj = (HObject*)species_val.get_heapptr();
+                    if (s_obj.is_callable()) {
+                        species_ctor = s_obj;
+                        use_species = true;
+                    }
+                }
+                if (!use_species) {
+                    arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype.slice: species result is not a constructor");
+                    return;
+                }
+            }
+        }
+    }
+
+    HObject* new_buf = null;
+    if (use_species && species_ctor != null) {
+        TVal ctor_tv; ctor_tv.set_object(species_ctor);
+        TVal len_arg; len_arg.set_fastint(new_len);
+        TVal result_tv = ctx.heap.construct_fn(ctx.vm, ctor_tv, &len_arg, 1, ctor_tv);
+        if (ctx.heap.has_error) {
+            ctx.should_throw = true;
+            ctx.throw_value = ctx.heap.error_value;
+            ctx.heap.has_error = false;
+            return;
+        }
+        if (!result_tv.is_object() || result_tv.get_heapptr() == null) {
+            arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype.slice: species constructor did not return an object");
+            return;
+        }
+        new_buf = (HObject*)result_tv.get_heapptr();
+        if (!is_shared_arraybuffer_obj(new_buf)) {
+            arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype.slice: species constructor did not return a SharedArrayBuffer");
+            return;
+        }
+        if (new_buf == obj) {
+            arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype.slice: species constructor returned the same buffer");
+            return;
+        }
+        if ((long)(*new_buf.extra_ptr()).ab.byte_length < new_len) {
+            arraybuffer_throw_type_error(ctx, "SharedArrayBuffer.prototype.slice: new buffer too small");
+            return;
+        }
+    } else {
+        HObject*? new_raw = ctx.heap.alloc_object(hobject::ObjClass.ARRAYBUFFER);
+        if (catch err = new_raw) {
+            ctx.result.set_undefined();
+            return;
+        }
+        new_buf = new_raw;
+        new_buf.prototype = ctx.heap.sharedarraybuffer_proto;
+        char* new_data = null;
+        if (new_len > 0) {
+            new_data = (char*)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)new_len);
+            if (new_data != null) mem::clear(new_data, (sz)((usz)new_len));
+        }
+        (*new_buf.extra_ptr()).ab.data = new_data;
+        (*new_buf.extra_ptr()).ab.byte_length = (uint)new_len;
+        (*new_buf.extra_ptr()).ab.views_head = null;
+        (*new_buf.extra_ptr()).ab.is_shared = true;
+    }
+
+    if (new_len > 0 && (*new_buf.extra_ptr()).ab.data != null) {
+        mem::copy((*new_buf.extra_ptr()).ab.data, (*obj.extra_ptr()).ab.data + start_idx, (sz)((usz)new_len));
+    }
+
+    ctx.result.set_object(new_buf);
+}
+
+/// SharedArrayBuffer[Symbol.species] getter — returns `this`.
+fn void builtin_sharedarraybuffer_species_get(BuiltinContext* ctx) {
+    *ctx.result = ctx.this_val;
+}
+
+// ============================================================================
 // Registration
 // ============================================================================
 
@@ -871,6 +1204,106 @@ fn bool register_arraybuffer(EnvRecord* global_env, Heap* heap) {
         ctor_key = existing;
     } else {
         HString*? new_key = hstring::hstring_alloc(heap, "ArrayBuffer", hash);
+        if (catch err = new_key) return false;
+        heap.str_table_insert(new_key);
+        ctor_key = new_key;
+    }
+    TVal ctor_val;
+    ctor_val.set_object(ctor);
+    env::env_declare_nonenum(global_env, ctor_key, ctor_val);
+
+    return true;
+}
+
+/// Create SharedArrayBuffer.prototype and register the constructor globally.
+fn bool register_sharedarraybuffer(EnvRecord* global_env, Heap* heap) {
+    HObject*? proto_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = proto_raw) return false;
+    HObject* proto = proto_raw;
+    proto.prototype = heap.object_proto;
+    heap.sharedarraybuffer_proto = proto;
+
+    HObject*? ctor_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    if (catch err = ctor_raw) return false;
+    HObject* ctor = ctor_raw;
+    ctor.prototype = heap.function_proto;
+    (*ctor.extra_ptr()).func.builtin_fn_index = (int)Builtin.SHAREDARRAYBUFFER.ordinal;
+
+    // .constructor on the prototype
+    HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
+    TVal constructor_tv;
+    constructor_tv.set_object(ctor);
+    proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
+
+    // .prototype on the constructor (non-writable, non-enumerable, non-configurable)
+    HString* prototype_key = (HString*)heap.strs[heap::BuiltinStr.PROTOTYPE];
+    TVal proto_tv;
+    proto_tv.set_object(proto);
+    PropFlags proto_pflags;
+    proto_pflags.writable = false;
+    proto_pflags.enumerable = false;
+    proto_pflags.configurable = false;
+    proto_pflags.is_accessor = false;
+    ctor.put_prop(prototype_key, proto_tv, proto_pflags);
+
+    // Accessors
+    if (!register_arraybuffer_accessor(proto, heap, "byteLength", Builtin.SHAREDARRAYBUFFER_PROTO_BYTELENGTH_GET.ordinal)) return false;
+    if (!register_arraybuffer_accessor(proto, heap, "growable", Builtin.SHAREDARRAYBUFFER_PROTO_GROWABLE_GET.ordinal)) return false;
+    if (!register_arraybuffer_accessor(proto, heap, "maxByteLength", Builtin.SHAREDARRAYBUFFER_PROTO_MAXBYTELENGTH_GET.ordinal)) return false;
+
+    // Methods
+    if (!register_string_proto_method(proto, heap, "slice", Builtin.SHAREDARRAYBUFFER_PROTO_SLICE.ordinal)) return false;
+    if (!register_string_proto_method(proto, heap, "grow", Builtin.SHAREDARRAYBUFFER_PROTO_GROW.ordinal)) return false;
+
+    // @@toStringTag
+    HString* tag_key = ensure_tostringtag_symbol(heap);
+    if (tag_key != null) {
+        TVal tag_tv;
+        tag_tv.set_string(builtin_intern_string(heap, "SharedArrayBuffer"));
+        proto.put_prop(tag_key, tag_tv, hobject::PROP_FLAGS_NWC);
+    }
+
+    // Static @@species accessor (returns `this` constructor).
+    HString* species_sym = ensure_species_symbol(heap);
+    if (species_sym != null) {
+        HObject*? getter_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+        if (try getter = getter_raw) {
+            getter.flags.callable = true;
+            getter.flags.constructable = false;
+            getter.prototype = heap.function_proto;
+            (*getter.extra_ptr()).func.builtin_fn_index = (int)Builtin.SHAREDARRAYBUFFER_SPECIES_GET.ordinal;
+
+            HString* getter_name = builtin_intern_string(heap, "get [Symbol.species]");
+            if (getter_name != null) {
+                TVal name_tv; name_tv.set_string(getter_name);
+                getter.put_prop((void*)builtin_intern_string(heap, "name"), name_tv, hobject::PROP_FLAGS_NWC);
+            }
+            HString* len_key_sp = (HString*)heap.strs[heap::BuiltinStr.LENGTH];
+            TVal zero_tv; zero_tv.set_fastint(0);
+            getter.put_prop(len_key_sp, zero_tv, hobject::PROP_FLAGS_NWC);
+
+            TVal getter_tv;
+            getter_tv.set_object(getter);
+            TVal undef;
+            undef.set_undefined();
+            hobject::PropFlags acc_flags;
+            acc_flags.writable = false;
+            acc_flags.enumerable = false;
+            acc_flags.configurable = true;
+            acc_flags.is_accessor = true;
+            ctor.put_prop(species_sym, hobject::hobject_create_accessors(heap, getter_tv, undef), acc_flags);
+        }
+    }
+
+    set_func_ctor_name_length(ctor, heap, "SharedArrayBuffer", 1);
+
+    uint hash = heap.hash_string("SharedArrayBuffer");
+    HString* existing = heap.str_table_lookup("SharedArrayBuffer", hash);
+    HString* ctor_key;
+    if (existing != null) {
+        ctor_key = existing;
+    } else {
+        HString*? new_key = hstring::hstring_alloc(heap, "SharedArrayBuffer", hash);
         if (catch err = new_key) return false;
         heap.str_table_insert(new_key);
         ctor_key = new_key;

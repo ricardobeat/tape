@@ -624,6 +624,7 @@ struct HObjectArrayBuffer {
     HObject* views_head;    // intrusive list of views (via HObjectBufferView.next_view)
     uint     max_byte_length; // cap for resizable buffers; unused (0) when !resizable
     bool     resizable;     // true iff constructed with {maxByteLength}
+    bool     is_shared;     // true iff this is a SharedArrayBuffer (never detachable)
 }
 
 /// TypedArray or DataView. Active for INT8ARRAY..FLOAT64ARRAY and DATAVIEW.

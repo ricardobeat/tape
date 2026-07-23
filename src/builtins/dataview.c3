@@ -62,7 +62,7 @@ fn void builtin_dataview(BuiltinContext* ctx) {
         return;
     }
     HObject* buf = (HObject*)buf_arg.get_heapptr();
-    if (!is_arraybuffer_obj(buf)) {
+    if (!is_any_arraybuffer_obj(buf)) {
         arraybuffer_throw_type_error(ctx, "DataView constructor requires an ArrayBuffer argument");
         return;
     }
