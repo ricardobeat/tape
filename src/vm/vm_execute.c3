@@ -1778,23 +1778,12 @@ fn TVal? Vm.run(Vm* vm) {
                             mem::copy(buf, &int_buf, (sz)((usz)int_len));
                             mem::copy(buf + int_len, str.get_cstr(), (sz)(s_len));
                         }
-                        // Skip interning for accumulator (ra == source register),
-                        // intern for new strings that may be used as property keys.
-                        bool is_accum = (ra == rb || ra == rc);
-                        if (is_accum) {
-                            uint hash = vm.heap.hash_string(buf[:total]);
-                            HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
-                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
-                            if (try s = maybe_s) {
-                                vm.heap.set_reg_string(ra, s);
-                            } else {
-                                ra.set_undefined();
-                            }
-                        } else {
-                            HString* interned = intern_string(vm, buf[:total]);
-                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
-                            vm.heap.set_reg_string(ra, interned);
-                        }
+                        // Every string must be interned: string equality across
+                        // the engine (SEQ, indexOf, property keys) is pointer
+                        // identity on the interned HString.
+                        HString* interned = intern_string(vm, buf[:total]);
+                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                        vm.heap.set_reg_string(ra, interned);
                         continue;
                     }
                 }
@@ -1847,23 +1836,12 @@ fn TVal? Vm.run(Vm* vm) {
                         mem::copy(buf + a_len, rs.get_cstr(), (sz)(b_len));
                     }
 
-                    // Skip interning for accumulator (ra == source register),
-                    // intern for new strings that may be used as property keys.
-                    bool is_accum = (ra == rb || ra == rc);
-                    if (is_accum) {
-                        uint hash = vm.heap.hash_string(buf[:total]);
-                        HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
-                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
-                        if (try s = maybe_s) {
-                            vm.heap.set_reg_string(ra, s);
-                        } else {
-                            ra.set_undefined();
-                        }
-                    } else {
-                        HString* interned = intern_string(vm, buf[:total]);
-                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
-                        vm.heap.set_reg_string(ra, interned);
-                    }
+                    // Every string must be interned: string equality across
+                    // the engine (SEQ, indexOf, property keys) is pointer
+                    // identity on the interned HString.
+                    HString* interned = intern_string(vm, buf[:total]);
+                    if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                    vm.heap.set_reg_string(ra, interned);
                 } else {
                     ra.set_undefined();
                 }
@@ -1951,21 +1929,12 @@ fn TVal? Vm.run(Vm* vm) {
                         }
                         mem::copy(buf, str.get_cstr(), (sz)(s_len));
                         mem::copy(buf + s_len, &int_buf, (sz)((usz)int_len));
-                        bool is_accum = (ra == rb);
-                        if (is_accum) {
-                            uint hash = vm.heap.hash_string(buf[:total]);
-                            HString*? maybe_s = hstring::hstring_alloc((void*)vm.heap, buf[:total], hash);
-                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
-                            if (try s = maybe_s) {
-                                vm.heap.set_reg_string(ra, s);
-                            } else {
-                                ra.set_undefined();
-                            }
-                        } else {
-                            HString* interned = intern_string(vm, buf[:total]);
-                            if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
-                            vm.heap.set_reg_string(ra, interned);
-                        }
+                        // Every string must be interned: string equality across
+                        // the engine (SEQ, indexOf, property keys) is pointer
+                        // identity on the interned HString.
+                        HString* interned = intern_string(vm, buf[:total]);
+                        if (heap_allocated) vm.heap.free_func(vm.heap.heap_udata, buf);
+                        vm.heap.set_reg_string(ra, interned);
                         continue;
                     }
                 }
