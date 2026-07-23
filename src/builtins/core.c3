@@ -614,6 +614,10 @@ enum Builtin : uint {
     ASYNC_GENERATOR_FUNCTION,              // %AsyncGeneratorFunction% constructor
     ASYNC_GEN_AWAIT_RESUME,                // native reaction: internal await fulfilled → re-drive body
     ASYNC_GEN_AWAIT_REJECT,                // native reaction: internal await rejected → inject throw
+    ASYNC_GEN_RETURN_FULFILL,              // native reaction: AwaitReturn value fulfilled → settle {value,done:true}
+    ASYNC_GEN_RETURN_REJECT,               // native reaction: AwaitReturn value rejected → reject request
+    ASYNC_GEN_YRET_FULFILL,                // native reaction: yield-resumption return value fulfilled → resume body w/ return
+    ASYNC_GEN_YRET_REJECT,                 // native reaction: yield-resumption return value rejected → resume body w/ throw
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -3839,6 +3843,10 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ASYNC_GENERATOR_FUNCTION.ordinal]       = &builtin_async_generator_function,
     [Builtin.ASYNC_GEN_AWAIT_RESUME.ordinal]         = &builtin_async_gen_await_resume,
     [Builtin.ASYNC_GEN_AWAIT_REJECT.ordinal]         = &builtin_async_gen_await_reject,
+    [Builtin.ASYNC_GEN_RETURN_FULFILL.ordinal]       = &builtin_async_gen_return_fulfill,
+    [Builtin.ASYNC_GEN_RETURN_REJECT.ordinal]        = &builtin_async_gen_return_reject,
+    [Builtin.ASYNC_GEN_YRET_FULFILL.ordinal]         = &builtin_async_gen_yret_fulfill,
+    [Builtin.ASYNC_GEN_YRET_REJECT.ordinal]          = &builtin_async_gen_yret_reject,
     [Builtin.ARRAY_FROM_ASYNC.ordinal]               = &builtin_array_from_async,
     [Builtin.ARRAY_FROM_ASYNC_STEP_FULFILL.ordinal]  = &builtin_array_from_async_step_fulfill,
     [Builtin.ARRAY_FROM_ASYNC_MAP_FULFILL.ordinal]   = &builtin_array_from_async_map_fulfill,

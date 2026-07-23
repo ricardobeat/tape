@@ -3557,6 +3557,13 @@ fn void? CompilerContext.return_statement(&self) {
         self.emit_simple(self.is_user_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     } else {
         ushort val_reg = self.expression()!;
+        // §13.10.1 ReturnStatement step 3: inside an async generator, a
+        // `return Expression;` awaits the value before completing (one tick).
+        // `return;` (RETUNDEF above) and normal fall-off-end do NOT await.
+        if (self.is_async && self.is_user_generator) {
+            self.emit_abc(Opcode.AWAIT, (uint)val_reg, 0, 0);
+            self.emit_abc(Opcode.LOAD_RESUME, (uint)val_reg, 0, 0);
+        }
         // IteratorClose runs after the return value is evaluated but before
         // the frame unwinds (§14.7.5.7 loop completion propagation).
         self.emit_return_iter_closes();

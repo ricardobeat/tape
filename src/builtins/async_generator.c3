@@ -133,14 +133,14 @@ fn bool register_async_generator(EnvRecord* global_env, Heap* heap) {
         HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
         TVal constructor_tv;
         constructor_tv.set_object(ctor);
-        agf_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
+        agf_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_NWC);
     }
     // %AsyncGeneratorPrototype%.constructor → %AsyncGenerator% (§27.6.1.1).
     {
         HString* constructor_key = (HString*)heap.strs[heap::BuiltinStr.CONSTRUCTOR];
         TVal constructor_tv;
         constructor_tv.set_object(agf_proto);
-        ag_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_WC);
+        ag_proto.put_prop(constructor_key, constructor_tv, hobject::PROP_FLAGS_NWC);
     }
     // %AsyncGeneratorFunction%.prototype → %AsyncGenerator%
     // {writable:false, enumerable:false, configurable:false} (§27.4.2.2).
@@ -328,6 +328,8 @@ fn void async_gen_drain(BuiltinContext* ctx, GeneratorState* gs) {
                     async_gen_settle_result(heap, vm, promise, undef, true);
                 }
                 case RETURN:
+                    // §27.6.3.8: await the value before settling {value, done}.
+                    if (async_gen_await_return(ctx, gs, promise, req.value)) return;
                     async_gen_settle_result(heap, vm, promise, req.value, true);
                 case THROW:
                     async_gen_settle_reject(heap, vm, promise, req.value);
@@ -349,12 +351,21 @@ fn void async_gen_drain(BuiltinContext* ctx, GeneratorState* gs) {
             async_gen_settle_reject(heap, vm, promise, req.value);
             continue;
         }
-        // A `.return()` on SUSPENDED_START completes immediately with
-        // {value, done:true} (no body code runs).
+        // A `.return()` on SUSPENDED_START closes the generator without running
+        // any body code, but first awaits the value (§27.6.3.8 AwaitReturn).
         if (gs.state == GEN_SUSPENDED_START && req.completion_kind == RETURN) {
+            if (async_gen_await_return(ctx, gs, promise, req.value)) return;
             gs.state = GEN_COMPLETED;
             async_gen_settle_result(heap, vm, promise, req.value, true);
             continue;
+        }
+
+        // A `.return()` on SUSPENDED_YIELD awaits the value before injecting the
+        // return completion at the yield point (§27.6.3.7
+        // AsyncGeneratorUnwrapYieldResumption). The eventual body resume happens
+        // in the YRET fulfill/reject reaction.
+        if (gs.state == GEN_SUSPENDED_YIELD && req.completion_kind == RETURN) {
+            if (async_gen_yield_return_await(ctx, gs, promise, req.value)) return;
         }
 
         // Hold the request across a possible internal await, then resume.
@@ -406,6 +417,215 @@ fn bool async_gen_finish_body(BuiltinContext* ctx, GeneratorState* gs, HObject* 
     // the next queued request resumes the body again. The while-loop's
     // queue-empty test terminates the single-consumer (for-await) case.
     return true;
+}
+
+/// AsyncGeneratorAwaitReturn (§27.6.3.8): a `.return(v)` request reached the
+/// generator while it was in a state where no body code runs (SUSPENDED_START or
+/// COMPLETED). Rather than settling `{v, done:true}` immediately, spec awaits v
+/// first: `PromiseResolve(%Promise%, v)` then, on fulfillment, settle the
+/// in-flight request `{unwrapped, done:true}`; on rejection, reject it. The
+/// generator stays GEN_AWAITING_RETURN (draining paused) until the await settles.
+/// Returns true if the await was scheduled (drain must pause), false on an
+/// allocation failure (caller falls back to immediate settle).
+fn bool async_gen_await_return(BuiltinContext* ctx, GeneratorState* gs, HObject* promise, TVal value) {
+    Heap* heap = ctx.heap;
+
+    HObject*? resolved_raw = promise_resolve_default_ctor(heap, ctx.vm, value);
+    if (catch err = resolved_raw) return false;
+    HObject* resolved = resolved_raw;
+    if (resolved == null) {
+        // PromiseResolve(%Promise%, value) threw (e.g. a poisoned `constructor`
+        // getter). §27.6.3.8 propagates the abrupt completion by rejecting the
+        // request's promise and completing the generator (AsyncGeneratorReject).
+        if (heap.has_error) {
+            TVal thrown = heap.error_value;
+            heap.has_error = false;
+            gs.state = GEN_COMPLETED;
+            async_gen_settle_reject(heap, ctx.vm, promise, thrown);
+            return true;
+        }
+        return false;
+    }
+
+    HObject*? ff_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    HObject*? rj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    HObject*? rxn_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch e = ff_raw)  return false;
+    if (catch e = rj_raw)  return false;
+    if (catch e = rxn_raw) return false;
+    HObject* ff = ff_raw;
+    (*ff.extra_ptr()).func.builtin_fn_index = (int)Builtin.ASYNC_GEN_RETURN_FULFILL.ordinal;
+    (*ff.extra_ptr()).func.var_env = (EnvRecord*)gs;
+    ff.flags.callable = true;
+    HObject* rj = rj_raw;
+    (*rj.extra_ptr()).func.builtin_fn_index = (int)Builtin.ASYNC_GEN_RETURN_REJECT.ordinal;
+    (*rj.extra_ptr()).func.var_env = (EnvRecord*)gs;
+    rj.flags.callable = true;
+    HObject* rxn = rxn_raw;
+    rxn.prototype = heap.object_proto;
+    TVal ff_tv; ff_tv.set_object(ff);
+    TVal rj_tv; rj_tv.set_object(rj);
+    HString* ff_key = builtin_intern_string(heap, "onFulfilled");
+    HString* rj_key = builtin_intern_string(heap, "onRejected");
+    if (ff_key != null) rxn.put_prop(ff_key, ff_tv, hobject::PROP_FLAGS_WEC);
+    if (rj_key != null) rxn.put_prop(rj_key, rj_tv, hobject::PROP_FLAGS_WEC);
+
+    // Hold the request across the await and pause draining.
+    gs.state = GEN_AWAITING_RETURN;
+    gs.ag_current_request = (void*)promise;
+
+    promise_add_reaction(resolved, rxn, heap);
+    if (promise_get_state(resolved, PROMISE_PENDING) != PROMISE_PENDING) {
+        promise_trigger_reactions(resolved, heap, ctx.vm);
+    }
+    return true;
+}
+
+/// ASYNC_GEN_RETURN_FULFILL native reaction (§27.6.3.8): the awaited `.return()`
+/// value fulfilled — settle the in-flight request `{value, done:true}`, mark the
+/// generator COMPLETED, and resume draining any queued requests.
+fn void builtin_async_gen_return_fulfill(BuiltinContext* ctx) {
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    HObject* promise = (HObject*)gs.ag_current_request;
+    gs.ag_current_request = null;
+    gs.state = GEN_COMPLETED;
+    if (promise != null) async_gen_settle_result(ctx.heap, ctx.vm, promise, arg, true);
+    async_gen_drain(ctx, gs);
+    ctx.result.set_undefined();
+}
+
+/// ASYNC_GEN_RETURN_REJECT native reaction (§27.6.3.8): the awaited `.return()`
+/// value rejected — reject the in-flight request, mark COMPLETED, resume drain.
+fn void builtin_async_gen_return_reject(BuiltinContext* ctx) {
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    HObject* promise = (HObject*)gs.ag_current_request;
+    gs.ag_current_request = null;
+    gs.state = GEN_COMPLETED;
+    if (promise != null) async_gen_settle_reject(ctx.heap, ctx.vm, promise, arg);
+    async_gen_drain(ctx, gs);
+    ctx.result.set_undefined();
+}
+
+/// AsyncGeneratorUnwrapYieldResumption (§27.6.3.7): a `.return(v)` request
+/// reached a generator suspended at a `yield`. Before injecting the return
+/// completion at the yield point, spec awaits v; on fulfillment the body resumes
+/// with a return completion carrying the unwrapped value (running finally
+/// blocks); on rejection the body resumes with a throw completion (catchable).
+/// The generator is held in GEN_AWAITING_RETURN across the await. Returns true
+/// when the await was scheduled (drain must pause); false on allocation failure
+/// (caller falls back to a direct resume).
+fn bool async_gen_yield_return_await(BuiltinContext* ctx, GeneratorState* gs, HObject* promise, TVal value) {
+    Heap* heap = ctx.heap;
+
+    HObject*? resolved_raw = promise_resolve_default_ctor(heap, ctx.vm, value);
+    if (catch err = resolved_raw) return false;
+    HObject* resolved = resolved_raw;
+    if (resolved == null) {
+        // PromiseResolve threw: resume the body with a throw completion at the
+        // yield point so an enclosing try/catch can observe it (§27.6.3.7).
+        if (heap.has_error) {
+            TVal thrown = heap.error_value;
+            heap.has_error = false;
+            gs.ag_current_request = (void*)promise;
+            gs.state = GEN_EXECUTING;
+            // yret_resume writes ctx.result (undefined). In this synchronous
+            // path ctx is the live `.return()` call's context whose result is
+            // the request promise — preserve it across the nested resume.
+            TVal saved_result = *ctx.result;
+            async_gen_yret_resume(ctx, gs, THROW, thrown);
+            *ctx.result = saved_result;
+            return true;
+        }
+        return false;
+    }
+
+    HObject*? ff_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    HObject*? rj_raw = heap.alloc_object(hobject::ObjClass.FUNCTION);
+    HObject*? rxn_raw = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch e = ff_raw)  return false;
+    if (catch e = rj_raw)  return false;
+    if (catch e = rxn_raw) return false;
+    HObject* ff = ff_raw;
+    (*ff.extra_ptr()).func.builtin_fn_index = (int)Builtin.ASYNC_GEN_YRET_FULFILL.ordinal;
+    (*ff.extra_ptr()).func.var_env = (EnvRecord*)gs;
+    ff.flags.callable = true;
+    HObject* rj = rj_raw;
+    (*rj.extra_ptr()).func.builtin_fn_index = (int)Builtin.ASYNC_GEN_YRET_REJECT.ordinal;
+    (*rj.extra_ptr()).func.var_env = (EnvRecord*)gs;
+    rj.flags.callable = true;
+    HObject* rxn = rxn_raw;
+    rxn.prototype = heap.object_proto;
+    TVal ff_tv; ff_tv.set_object(ff);
+    TVal rj_tv; rj_tv.set_object(rj);
+    HString* ff_key = builtin_intern_string(heap, "onFulfilled");
+    HString* rj_key = builtin_intern_string(heap, "onRejected");
+    if (ff_key != null) rxn.put_prop(ff_key, ff_tv, hobject::PROP_FLAGS_WEC);
+    if (rj_key != null) rxn.put_prop(rj_key, rj_tv, hobject::PROP_FLAGS_WEC);
+
+    gs.state = GEN_AWAITING_RETURN;
+    gs.ag_current_request = (void*)promise;
+
+    promise_add_reaction(resolved, rxn, heap);
+    if (promise_get_state(resolved, PROMISE_PENDING) != PROMISE_PENDING) {
+        promise_trigger_reactions(resolved, heap, ctx.vm);
+    }
+    return true;
+}
+
+/// Resume a `.return()`-at-yield body with the settled completion (return on
+/// fulfill, throw on reject), then finish the in-flight request and continue
+/// draining. Shared by the YRET fulfill/reject reactions.
+fn void async_gen_yret_resume(BuiltinContext* ctx, GeneratorState* gs, ResumeKind kind, TVal completion) {
+    Heap* heap = ctx.heap;
+    HObject* promise = (HObject*)gs.ag_current_request;
+
+    heap.ag_did_await = false;
+    gs.ag_suspend_kind = AG_SUSPEND_NONE;
+    TVal result = async_gen_resume_body(ctx, gs, kind, completion);
+
+    // The resumed return/throw completion may itself hit an internal await
+    // (e.g. a finally-block `await`) — stay in flight if so.
+    if (heap.ag_did_await) {
+        heap.ag_did_await = false;
+        ctx.result.set_undefined();
+        return;
+    }
+
+    gs.ag_current_request = null;
+    if (promise != null) {
+        if (async_gen_finish_body(ctx, gs, promise, result)) {
+            async_gen_drain(ctx, gs);
+        }
+    }
+    ctx.result.set_undefined();
+}
+
+/// ASYNC_GEN_YRET_FULFILL native reaction: the awaited `.return()` value settled;
+/// resume the body with a return completion carrying the unwrapped value.
+fn void builtin_async_gen_yret_fulfill(BuiltinContext* ctx) {
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    gs.state = GEN_EXECUTING;
+    async_gen_yret_resume(ctx, gs, RETURN, arg);
+}
+
+/// ASYNC_GEN_YRET_REJECT native reaction: the awaited `.return()` value rejected;
+/// resume the body with a throw completion at the yield point (catchable).
+fn void builtin_async_gen_yret_reject(BuiltinContext* ctx) {
+    GeneratorState* gs = (GeneratorState*)(*ctx.callee_obj.extra_ptr()).func.var_env;
+    if (gs == null) { ctx.result.set_undefined(); return; }
+    TVal arg; arg.set_undefined();
+    if (ctx.argc >= 1) arg = ctx.regs[ctx.base_reg];
+    gs.state = GEN_EXECUTING;
+    async_gen_yret_resume(ctx, gs, THROW, arg);
 }
 
 /// ASYNC_GEN_AWAIT_RESUME native reaction (§27.6): an internal `await` inside an

@@ -346,6 +346,7 @@ fn bool builtin_fn_is_constructor(Vm* vm, uint fn_idx) {
             // target and is checked via flags.constructable before dispatch.
             return true;
         case builtins::Builtin.ASYNC_FUNCTION.ordinal:
+        case builtins::Builtin.ASYNC_GENERATOR_FUNCTION.ordinal:
             // %AsyncFunction% / %AsyncGeneratorFunction% intrinsic constructor.
             return true;
         default:
