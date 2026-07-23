@@ -526,6 +526,13 @@ struct CompilerContext {
     // 0xFFFFFFFF means "not pending".
     uint pending_async_arrow_src;
 
+    // Source offset of the `async` keyword when parsing an async function expression
+    // (`async function ...` / `async function* ...`). Set by primary_expr before
+    // calling function_expr; read by function_expr to override the src_start so
+    // that the retained source text includes the `async` prefix (ES2019 §19.2.3.5).
+    // 0xFFFFFFFF means "not pending".
+    uint pending_async_function_src;
+
     // Module tracking — true when compiling an ESM module body.
     bool is_module;
     void* current_module;  // ModuleDef* (opaque to avoid import cycle)
@@ -591,6 +598,7 @@ fn void CompilerContext.init(&self, Lexer* lex, void* heap) {
     self.call_prop_obj_reg = MAX_REGISTERS;
     self.pushback_count = 0;
     self.pending_async_arrow_src = 0xFFFFFFFF;
+    self.pending_async_function_src = 0xFFFFFFFF;
     // Strict-only engine: all code is strict by default.
     self.is_strict = true;
 

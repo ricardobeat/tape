@@ -2613,7 +2613,13 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // identifier and delegate to function_expr.
                 if (self.peek_type() == TokenType.IDENTIFIER &&
                     self.match_async_function()) {
-                    return self.function_expr(true)!;
+                    // match_async_function() has consumed `async` and token_start
+                    // now points to its start. Save this for function_expr to use
+                    // when retaining source text (ES2019 §19.2.3.5).
+                    self.pending_async_function_src = self.lexer.token_start;
+                    ushort r = self.function_expr(true)!;
+                    self.pending_async_function_src = 0xFFFFFFFF;
+                    return r;
                 }
 
                 // Detect async arrow functions: `async x => ...` or

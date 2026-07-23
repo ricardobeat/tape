@@ -281,6 +281,8 @@ fn void? CompilerContext.statement(&self) {
             // Check for labels: identifier : statement
             // We consume the identifier and check if the next token is ':'
             if (tt == TokenType.IDENTIFIER) {
+                // Save token_start before consuming, in case this is an async function
+                uint id_tok_start = self.lexer.token_start;
                 // Consume the identifier token to check what follows
                 Token id_tok = self.advance()!;
                 if (self.peek_type() == TokenType.COLON) {
@@ -296,7 +298,7 @@ fn void? CompilerContext.statement(&self) {
                     id_tok.str_value[2] == 'y' && id_tok.str_value[3] == 'n' &&
                     id_tok.str_value[4] == 'c') {
                     // id_tok was `async`; next token is `function`
-                    self.function_declaration(true)!;
+                    self.function_declaration(true, id_tok_start)!;
                     break;
                 }
 
@@ -4201,12 +4203,14 @@ fn void? CompilerContext.expression_statement(&self) {
 /// Parse a function declaration (hoisted).
 /// This is called during normal statement parsing for function declarations
 /// that were NOT hoisted during the pre-scan phase.
-fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false) {
+fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false, uint async_kw_start = 0xFFFFFFFF) {
     self.expect(TokenType.FUNCTION)!;
     // Capture the byte offset of the `function` keyword before any subsequent
     // consume (identifier / star) clobbers lexer.token_start. Used downstream
     // by Function.prototype.toString for ES2019 §19.2.3.5 source retention.
-    uint fn_kw_start = self.lexer.token_start;
+    // For async declarations, async_kw_start provides the byte offset of the
+    // `async` keyword, and we use that instead of fn_kw_start.
+    uint fn_kw_start = is_async_decl && async_kw_start != 0xFFFFFFFF ? async_kw_start : self.lexer.token_start;
 
     // Check if this function declaration was already hoisted during pre-scan
     // If so, skip it entirely to avoid duplicate compilation.

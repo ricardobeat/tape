@@ -3228,8 +3228,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
 fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
     self.expect(TokenType.FUNCTION)!;
     // Capture the byte offset of `function` — used by Function.prototype.toString
-    // for ES2019 §19.2.3.5 source-text retention.
-    uint fexpr_src_start = self.lexer.token_start;
+    // for ES2019 §19.2.3.5 source-text retention. For async function expressions,
+    // use the `async` keyword's offset if pending_async_function_src is set.
+    uint fexpr_src_start = (is_async_expr && self.pending_async_function_src != 0xFFFFFFFF)
+        ? self.pending_async_function_src
+        : self.lexer.token_start;
 
     // Save and reset generator state
     bool saved_is_generator = self.is_generator;
