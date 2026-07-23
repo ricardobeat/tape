@@ -126,6 +126,21 @@ fn bool CompilerContext.match(&self, TokenType tt) {
     return false;
 }
 
+/// Terminate a statement or class field per automatic semicolon insertion
+/// (ES2024 §12.10.1). An explicit `;` is consumed. Otherwise termination is
+/// only legal when the offending token is `}` or EOF, or a line terminator
+/// precedes it — ASI never glues two tokens on the same line together, so
+/// anything else is a SyntaxError (e.g. `using x = 1`, `class A { accessor
+/// x }`). The do-while trailing semicolon is exempt (§12.10.1 note 1) and
+/// does NOT go through this helper.
+fn void? CompilerContext.expect_semicolon_or_asi(&self) {
+    if (self.match(TokenType.SEMICOLON)) return;
+    TokenType next = self.peek_type();
+    if (next == TokenType.RBRACE || next == TokenType.EOF_TOKEN) return;
+    if (self.lexer.seen_line_term) return;
+    return self.fail("expected ';' or line break after statement")~;
+}
+
 /// Peek at the next token type without consuming.
 fn TokenType CompilerContext.peek_type(&self) {
     // Check pushback buffer first

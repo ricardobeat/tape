@@ -558,11 +558,10 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                 target_ctx.emit_abc(Opcode.LDUNDEF, (uint)init_reg, 0, 0);
             }
 
-            // Optional semicolon between field declarations; a missing one is
-            // ASI (the outer loop's `while` condition/`RBRACE` check and the
-            // next iteration's own token dispatch tolerate the omission the
-            // same way method declarations do).
-            target_ctx.match(TokenType.SEMICOLON);
+            // Field terminator: explicit `;`, the class body's `}`, or ASI at
+            // a line terminator (ES2024 §12.10.1). A same-line token with no
+            // separator (`#x = 1 y`) is a SyntaxError.
+            target_ctx.expect_semicolon_or_asi()!;
 
             // this[#name_sym] = init_reg — PrivateFieldAdd bypasses setters,
             // proxies, and the extensibility check (INITPROP_PRIV). For a
@@ -1027,8 +1026,10 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
                 target_ctx.inferred_name_len = 0;
             }
 
-            // Optional semicolon between field declarations.
-            target_ctx.match(TokenType.SEMICOLON);
+            // Field terminator: explicit `;`, the class body's `}`, or ASI at
+            // a line terminator (ES2024 §12.10.1). A same-line token with no
+            // separator (`accessor x = 1`) is a SyntaxError.
+            target_ctx.expect_semicolon_or_asi()!;
 
             // The actual install goes into the init function:
             //   __field_init__:  this[propname] = init_reg;   (WEC, own)

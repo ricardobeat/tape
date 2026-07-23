@@ -278,7 +278,7 @@ fn void? CompilerContext.statement(&self) {
         case TokenType.DEBUGGER:
             self.advance()!;
             self.emit_simple(Opcode.DEBUGGER);
-            self.match(TokenType.SEMICOLON);
+            self.expect_semicolon_or_asi()!;
         default:
             // Check for labels: identifier : statement
             // We consume the identifier and check if the next token is ':'
@@ -1308,7 +1308,7 @@ fn void? CompilerContext.var_declaration(&self) {
         }
     }
 
-    self.match(TokenType.SEMICOLON);
+    self.expect_semicolon_or_asi()!;
 }
 
 
@@ -3522,7 +3522,7 @@ fn void? CompilerContext.return_statement(&self) {
         // code (the loop increment/condition), clobbering the variable.
     }
 
-    self.match(TokenType.SEMICOLON);
+    self.expect_semicolon_or_asi()!;
 }
 
 /// Parse throw statement.
@@ -3533,7 +3533,7 @@ fn void? CompilerContext.throw_statement(&self) {
     self.emit_abc(Opcode.THROW, (uint)val_reg, 0, 0);
     // Note: do NOT free_reg(val_reg) here, same reason as return_statement.
 
-    self.match(TokenType.SEMICOLON);
+    self.expect_semicolon_or_asi()!;
 }
 
 /// Parse try/catch/finally statement.
@@ -4106,7 +4106,7 @@ fn void? CompilerContext.break_statement(&self) {
                 uint jump_addr = self.emit_jump(Opcode.BREAK);
                 self.loop_stack[loop_idx].break_patch_head =
                     self.add_patch(self.loop_stack[loop_idx].break_patch_head, jump_addr);
-                self.match(TokenType.SEMICOLON);
+                self.expect_semicolon_or_asi()!;
                 return;
             }
         }
@@ -4137,7 +4137,7 @@ fn void? CompilerContext.break_statement(&self) {
     uint jump_addr = self.emit_jump(Opcode.BREAK);
     self.add_break_patch(jump_addr);
 
-    self.match(TokenType.SEMICOLON);
+    self.expect_semicolon_or_asi()!;
 }
 
 /// Parse continue statement.
@@ -4177,7 +4177,7 @@ fn void? CompilerContext.continue_statement(&self) {
                 uint jump_addr = self.emit_jump(Opcode.CONTINUE);
                 self.loop_stack[loop_idx].continue_patch_head =
                     self.add_patch(self.loop_stack[loop_idx].continue_patch_head, jump_addr);
-                self.match(TokenType.SEMICOLON);
+                self.expect_semicolon_or_asi()!;
                 return;
             }
         }
@@ -4206,7 +4206,7 @@ fn void? CompilerContext.continue_statement(&self) {
         return COMPILE_ERROR~;
     }
 
-    self.match(TokenType.SEMICOLON);
+    self.expect_semicolon_or_asi()!;
 }
 
 /// Parse expression statement.
@@ -4232,7 +4232,7 @@ fn void? CompilerContext.expression_statement(&self) {
     if (reg + 1 != self.next_reg || !self.is_local_var_reg(reg)) {
         self.free_reg(reg);
     }
-    self.match(TokenType.SEMICOLON);
+    self.expect_semicolon_or_asi()!;
 }
 
 /// Parse a function declaration (hoisted).

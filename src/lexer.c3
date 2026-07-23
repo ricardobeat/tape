@@ -879,13 +879,24 @@ fn void Lexer.skip_whitespace_and_comments(&self) {
                 }
                 char bc = self.peek_char();
                 if (bc == '\n' || bc == '\r') comment_had_newline = true;
+                // U+2028 / U+2029 (UTF-8: E2 80 A8 / E2 80 A9) also count.
+                if (bc == (char)0xE2 && self.remaining() >= 3 &&
+                    self.source[self.pos + 1] == (char)0x80 &&
+                    (self.source[self.pos + 2] == (char)0xA8 ||
+                     self.source[self.pos + 2] == (char)0xA9)) {
+                    comment_had_newline = true;
+                }
                 self.advance_char();
             }
-            // A block comment that itself contains a line terminator counts
-            // as a line boundary for the purposes of allowing a following
-            // `-->` HTMLCloseComment, even though it does not set
-            // `seen_line_term` (ASI only cares about real line terminators).
-            if (comment_had_newline) self.at_line_start = true;
+            // ES2024 §12.4: if a MultiLineComment contains a line terminator
+            // code point, the entire comment is considered a LineTerminator
+            // for parsing by the syntactic grammar — so it triggers ASI
+            // (seen_line_term) and permits a following `-->`
+            // HTMLCloseComment (at_line_start).
+            if (comment_had_newline) {
+                self.seen_line_term = true;
+                self.at_line_start = true;
+            }
             continue;
         }
 
