@@ -724,6 +724,9 @@ fn TVal vm_call_handler_fn_impl(void* vm_ptr, TVal handler, TVal* arg) {
     Vm* vm = (Vm*)vm_ptr;
     if (vm != null) {
         vm.throw_pending = false;
+        // throw_value holds a strong ref (see the DYN_IMPORT IfAbruptReject
+        // site) — release the discarded error before clearing.
+        if (vm.heap != null) vm.heap.decref_tval(&vm.throw_value);
         vm.throw_value.set_undefined();
         vm.has_error = false;
         if (vm.heap != null) vm.heap.has_error = false;
