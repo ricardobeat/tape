@@ -19,6 +19,10 @@ import duktape::hobject;
 /// "\xFFstate" hidden props) — the sync iterator is stashed as a TVal behind
 /// a hidden, unprintable-prefixed property key that user code cannot spell.
 const char[] ASYNC_FROM_SYNC_ITERATOR_SLOT = "\xFFsyncIterator";
+// Cached sync [[NextMethod]] (§27.1.4.1: the wrapped syncIteratorRecord caches
+// `next` once; every %AsyncFromSyncIteratorPrototype%.next reuses it rather than
+// re-reading iterator.next — an accessor `next` getter fires exactly once).
+const char[] ASYNC_FROM_SYNC_NEXT_SLOT = "\xFFsyncNext";
 
 /// Hidden-prop keys on the native value-unwrap/reject-forward reaction
 /// closures (mirrors promise.c3's promise_create_element_callback pattern).
@@ -63,6 +67,26 @@ fn HObject*? async_from_sync_iterator(Heap* heap, HObject* syncIter, void* vm) {
     TVal sync_tv;
     sync_tv.set_object(syncIter);
     adapter.put_prop(slot_key, sync_tv, hobject::PROP_FLAGS_WEC);
+
+    // §7.4.2 GetIterator: the sync iterator record caches [[NextMethod]] once
+    // (GetV(iterator, "next")). Read it here — at wrapping time, before any
+    // .next() call — and stash it so every AsyncFromSync .next() reuses it
+    // (a `next` accessor getter must fire exactly once, not per iteration).
+    // A throwing getter surfaces via heap.has_error for the caller to propagate.
+    HString* next_key = builtin_intern_string(heap, "next");
+    if (next_key != null) {
+        hobject::PropLookupResult nl = syncIter.get_with_accessors(next_key);
+        TVal next_method; next_method.set_undefined();
+        if (nl.kind == hobject::PropLookupKind.PROP_DATA) {
+            next_method = nl.data_val;
+        } else if (nl.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+            TVal this_tv; this_tv.set_object(syncIter);
+            next_method = heap.call_fn(vm, nl.acc.accessor_fn, null, 0, this_tv);
+            if (heap.has_error) return null; // getter threw — propagate
+        }
+        HString* next_slot = builtin_intern_string(heap, ASYNC_FROM_SYNC_NEXT_SLOT);
+        if (next_slot != null) adapter.put_prop(next_slot, next_method, hobject::PROP_FLAGS_WEC);
+    }
 
     return adapter;
 }
@@ -389,17 +413,14 @@ fn void builtin_async_from_sync_next(BuiltinContext* ctx) {
         return;
     }
 
-    HString* next_key = builtin_intern_string(heap, "next");
-    TVal? next_method_opt = builtins_generic_get(sync_iter, next_key, ctx);
-    if (ctx.should_throw) {
-        ctx.should_throw = false;
-        HObject*? rej = async_from_sync_rejected_promise(heap, ctx.vm, ctx.throw_value);
-        if (catch err = rej) { return; }
-        ctx.result.set_object(rej);
-        return;
+    // §27.1.4.2 step 5: use the cached [[NextMethod]] read once at wrapping
+    // time (see async_from_sync_iterator), not a fresh iterator.next read.
+    HObject* adapter = (HObject*)ctx.this_val.get_heapptr();
+    HString* next_slot = builtin_intern_string(heap, ASYNC_FROM_SYNC_NEXT_SLOT);
+    TVal next_method; next_method.set_undefined();
+    if (next_slot != null && adapter != null) {
+        if (try nm = adapter.get_prop(next_slot)) next_method = nm;
     }
-    TVal next_method;
-    if (try nm = next_method_opt) { next_method = nm; } else { next_method.set_undefined(); }
     if (!next_method.is_object() || !((HObject*)next_method.get_heapptr()).is_callable()) {
         builtin_throw(ctx, heap.type_err_proto, "iterator.next is not a function");
         return;

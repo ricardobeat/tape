@@ -176,7 +176,8 @@ struct GeneratorState {
     // AYS_INACTIVE (0) means no async yield* is in progress on this gs.
     uint ays_step;
     TVal ays_received;        // value to forward into the next inner call
-    TVal ays_result;          // inner IteratorResult awaited from next/throw/return
+    TVal ays_next_method;     // cached delegate [[NextMethod]] (§14.4.14 GetIterator
+                              // reads iterator.next ONCE; reused every iteration)
     // async state
     void* async_promise;      // HObject* — the async function's outer Promise (null for generators)
     // async-generator state (ES2018 §27.6): true for `async function*` bodies.
@@ -1835,6 +1836,9 @@ fn void Heap.mark_generator_state(&self, GeneratorState* gs) {
     self.mark_tval(&gs.resume_value);
     self.mark_tval(&gs.throw_value);
     self.mark_tval(&gs.return_value);
+    // async yield* delegation state (held across suspensions)
+    self.mark_tval(&gs.ays_received);
+    self.mark_tval(&gs.ays_next_method);
     // Mark heap object pointers
     if (gs.delegated_iter != null) {
         self.mark_hobject((HObject*)gs.delegated_iter);

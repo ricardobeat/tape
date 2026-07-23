@@ -1352,8 +1352,18 @@ fn TVal? dispatch_misc(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, In
             if (!sync_iter.is_object() || sync_iter.get_heapptr() == null) {
                 return throw_type_error_at(vm, ds, "sync iterator is not an object");
             }
-            // Build %AsyncFromSyncIterator% around the sync iterator.
+            // Build %AsyncFromSyncIterator% around the sync iterator. This reads
+            // the sync iterator's `next` once (§7.4.2 GetIterator) — a throwing
+            // `next` getter surfaces via heap.has_error and must propagate.
             HObject*? wrapped = builtins::async_from_sync_iterator(vm.heap, (HObject*)sync_iter.get_heapptr(), (void*)vm);
+            if (vm.heap.has_error) {
+                TVal thrown = vm.heap.error_value;
+                vm.has_error = false; vm.heap.has_error = false;
+                if (!vm_throw_value(vm, thrown, ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return vm_uncaught_error(vm, &thrown);
+                }
+                return (TVal){};
+            }
             if (catch _e = wrapped) {
                 return throw_type_error_at(vm, ds, "could not create async-from-sync iterator");
             }

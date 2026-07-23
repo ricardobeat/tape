@@ -25,7 +25,6 @@ const uint AYS_AWAIT_RETURN   = 3; // resuming after Await(iter.return(v))
 const uint AYS_YIELD          = 5; // resuming after GeneratorYield (consumer .next/throw/return)
 const uint AYS_AWAIT_CLOSE    = 6; // resuming after AsyncIteratorClose's Await (missing-throw path)
 const uint AYS_AWAIT_RETVAL   = 7; // resuming after Await(received.value) (missing-return path)
-const uint AYS_AWAIT_RESUMPTION = 8; // resuming after AsyncGeneratorUnwrapYieldResumption's Await (RETURN resumption)
 
 /// Suspend an async-generator body onto its request-queue GeneratorState at an
 /// internal Await (ES2018 §27.6). Attaches ASYNC_GEN_AWAIT_RESUME/REJECT
@@ -1669,8 +1668,30 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                     ds.needs_restart = true; return (TVal){};
                 }
                 gs.delegated_iter = iter_val.get_heapptr();
-                gs.ays_received.set_undefined();          // first .next(undefined)
-                gs.resume_kind = NEXT;                     // seed: call .next()
+                // §14.4.14 step 1 (GetIterator): read iterator.next ONCE and
+                // cache it as [[NextMethod]]; every delegated .next() reuses this
+                // (an accessor `next` getter must fire exactly once, not per
+                // iteration). A throwing getter propagates into the body.
+                {
+                    HObject* seed_iter = (HObject*)gs.delegated_iter;
+                    HString* next_k0 = intern_string(vm, "next");
+                    bool nm_err = false;
+                    TVal nm0 = ays_get_prop(vm, seed_iter, next_k0, &nm_err);
+                    if (nm_err) {
+                        gs.delegated_iter = null;
+                        if (!ays_throw_into_body(ds, gs, nm0)) { return VM_ERROR~; }
+                        return (TVal){};
+                    }
+                    gs.ays_next_method = nm0;
+                }
+                // §14.4.14 step 6: the initial received completion is
+                // NormalCompletion(undefined) — the delegate's first .next() is
+                // always called with undefined, regardless of the argument the
+                // consumer passed to the async generator's first .next(). (Only
+                // resumptions AFTER a delegated yield thread the consumer value.)
+                gs.ays_received.set_undefined();
+                gs.resume_kind = NEXT;                     // seed: call .next(undefined)
+                gs.resume_value.set_undefined();           // discard the outer .next() arg
             }
 
             HObject* iterator = (HObject*)gs.delegated_iter;
@@ -1774,46 +1795,27 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             // ── Resumption after a GeneratorYield (or first NEXT seed): the ──
             // consumer resumed via .next(v)/.throw(v)/.return(v). Choose the
             // inner method to invoke based on the resumption completion.
-            ResumeKind consumer_kind;
+            //
+            // §27.6.3.7 AsyncGeneratorUnwrapYieldResumption (Awaiting a RETURN
+            // resumption's value, and converting a rejected await to a THROW) is
+            // performed by the async-generator drain BEFORE the body is resumed
+            // (async_gen_yield_return_await + the YRET fulfill/reject reactions).
+            // So the value delivered here is already unwrapped — do NOT Await it
+            // again, or the delegate's return() would see a double-awaited value
+            // and the observable tick/getter order would gain an extra Await.
+            ResumeKind consumer_kind = gs.resume_kind;
             TVal fwd_val;
-            if (step == AYS_AWAIT_RESUMPTION) {
-                // §27.6.3.7 AsyncGeneratorUnwrapYieldResumption: a RETURN
-                // resumption's value was Awaited. A fulfilled await yields a
-                // RETURN completion with the awaited value; a rejected await
-                // becomes a THROW completion (spec: awaited.[[Type]] is throw).
-                if (gs.resume_kind == THROW) {
-                    consumer_kind = THROW; fwd_val = gs.throw_value;
-                } else {
-                    consumer_kind = RETURN; fwd_val = gs.resume_value;
-                }
-                gs.resume_kind = NEXT; gs.resume_value.set_undefined();
-                gs.ays_step = AYS_INACTIVE;
-            } else {
-                consumer_kind = gs.resume_kind;
-                if (consumer_kind == THROW) { fwd_val = gs.throw_value; }
-                else if (consumer_kind == RETURN) { fwd_val = gs.return_value; }
-                else { fwd_val = gs.resume_value; }
-                gs.resume_kind = NEXT; gs.resume_value.set_undefined();
-                gs.ays_step = AYS_INACTIVE;
-                // §27.6.3.7: a RETURN resumption is unwrapped by Awaiting its
-                // value before delegation. (NEXT/THROW pass through unchanged.)
-                if (consumer_kind == RETURN) {
-                    if (!ays_await(ds, gs, fwd_val, AYS_AWAIT_RESUMPTION)) { return (TVal){}; }
-                    return (TVal){};
-                }
-            }
+            if (consumer_kind == THROW) { fwd_val = gs.throw_value; }
+            else if (consumer_kind == RETURN) { fwd_val = gs.return_value; }
+            else { fwd_val = gs.resume_value; }
+            gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+            gs.ays_step = AYS_INACTIVE;
 
             if (consumer_kind == NEXT) {
-                // Call iterator.next(fwd_val), Await the result.
-                HString* next_k = intern_string(vm, "next");
-                bool merr = false; bool found = false;
-                TVal nm = ays_get_method(vm, iterator, next_k, &found, &merr);
-                if (merr) {
-                    gs.delegated_iter = null;
-                    if (!ays_throw_into_body(ds, gs, nm)) { return VM_ERROR~; }
-                    return (TVal){};
-                }
-                if (!found) {
+                // Call iterator.next(fwd_val) using the cached [[NextMethod]]
+                // (read once at GetIterator, §14.4.14 step 1), then Await it.
+                TVal nm = gs.ays_next_method;
+                if (!ays_is_callable(nm)) {
                     // §7.4.2 IteratorNext: a non-callable `next` is a TypeError.
                     gs.delegated_iter = null;
                     if (!ays_throw_type(ds, gs, "iterator.next is not a function")) {

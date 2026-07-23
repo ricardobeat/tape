@@ -388,6 +388,13 @@ fn void builtin_array_from_async(BuiltinContext* ctx) {
         HObject* iter_obj = sync_or_async_iter;
         if (wrap_sync) {
             HObject*? adapter = async_from_sync_iterator(heap, sync_or_async_iter, ctx.vm);
+            if (heap.has_error) {
+                // The sync `next` getter threw while caching [[NextMethod]] —
+                // reject the fromAsync promise with the thrown value.
+                TVal thrown = heap.error_value; heap.has_error = false;
+                afa_reject_outer(heap, ctx.vm, state, thrown);
+                return;
+            }
             if (catch err = adapter) { afa_reject_outer_alloc(heap, ctx.vm, state); return; }
             iter_obj = adapter;
         }
