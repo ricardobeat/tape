@@ -3472,13 +3472,13 @@ fn void? CompilerContext.return_statement(&self) {
     if (next == TokenType.SEMICOLON || next == TokenType.RBRACE ||
         next == TokenType.EOF_TOKEN || self.lexer.seen_line_term) {
         self.emit_return_iter_closes();
-        self.emit_simple((self.is_generator && !self.is_async) ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
+        self.emit_simple(self.is_user_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     } else {
         ushort val_reg = self.expression()!;
         // IteratorClose runs after the return value is evaluated but before
         // the frame unwinds (§14.7.5.7 loop completion propagation).
         self.emit_return_iter_closes();
-        self.emit_abc((self.is_generator && !self.is_async) ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
+        self.emit_abc(self.is_user_generator ? Opcode.RET_GEN : Opcode.RET, (uint)val_reg, 0, 0);
         // Note: do NOT free_reg(val_reg) here.  The return value register may
         // be a live local variable (e.g. `return i` inside a for-loop body).
         // Calling free_reg would let the allocator reuse it for subsequent
@@ -4248,7 +4248,9 @@ fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false)
     // Save and reset generator state: nested function declarations
     // inside a generator do not inherit the generator flag.
     bool saved_is_generator = self.is_generator;
+    bool saved_is_user_generator = self.is_user_generator;
     self.is_generator = false;
+    self.is_user_generator = false;
 
     // Save the enclosing function's async flag — it must survive this
     // declaration (finish() reads it when the enclosing body completes).
@@ -4268,12 +4270,9 @@ fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false)
     // Generator functions are never constructable (ES2015 §14.4) — `new` on
     // one must throw TypeError, so is_constructable must flip to false here.
     if (self.match(TokenType.STAR)) {
-        // Async generator functions (`async function*`) are not supported
-        // (same policy as async generator methods).
-        if (is_async_decl) {
-            return self.fail("async generator functions are not supported")~;
-        }
+        // `function*` and `async function*` are both syntactic generators.
         self.is_generator = true;
+        self.is_user_generator = true;
         self.is_constructable = false;
     }
 
@@ -4293,6 +4292,7 @@ fn void? CompilerContext.function_declaration(&self, bool is_async_decl = false)
 
     // Restore generator flag
     self.is_generator = saved_is_generator;
+    self.is_user_generator = saved_is_user_generator;
     // Restore constructable flag (arrow fns/methods strip it via their own save/restore)
     self.is_constructable = saved_is_constructable;
 
@@ -4608,7 +4608,7 @@ fn void? CompilerContext.export_declaration(&self) {
             // clobber lexer.token_start. Used by Function.prototype.toString.
             uint export_fn_src_start = self.lexer.token_start;
             bool is_gen = self.match(TokenType.STAR);
-            if (is_gen) self.is_generator = true;
+            if (is_gen) { self.is_generator = true; self.is_user_generator = true; }
 
             // Check for named function expression
             char[] fn_name;
@@ -4630,6 +4630,7 @@ fn void? CompilerContext.export_declaration(&self) {
             self.is_constructable = saved_is_constructable;
             self.is_async = saved_is_async;
             self.is_generator = false;
+            self.is_user_generator = false;
 
             uint inner_idx = self.add_inner_func(inner);
 
@@ -4758,7 +4759,7 @@ fn void? CompilerContext.export_declaration(&self) {
         // consumes clobber lexer.token_start. Used by toString.
         uint named_export_src_start = self.lexer.token_start;
         bool is_gen = self.match(TokenType.STAR);
-        if (is_gen) self.is_generator = true;
+        if (is_gen) { self.is_generator = true; self.is_user_generator = true; }
 
         bool saved_is_async = self.is_async;
         self.is_async = false;
@@ -4774,6 +4775,7 @@ fn void? CompilerContext.export_declaration(&self) {
         self.is_constructable = saved_is_constructable;
         self.is_async = saved_is_async;
         self.is_generator = false;
+        self.is_user_generator = false;
 
         uint inner_idx = self.add_inner_func(inner);
 

@@ -482,7 +482,10 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             void* cfn_saved_gen_initial_rv  = vm.heap.gen_initial_retval;
             TVal cfn_gen_result_slot; cfn_gen_result_slot.set_undefined();
             bool cfn_is_gen_initial = false;
-            if (!did_resume && target.is_generator() && !target.is_async()
+            // Sync generators and async generators both create their instance
+            // object here and suspend at GEN_START; plain async functions run
+            // their body immediately (handled elsewhere), so exclude those.
+            if (!did_resume && (target.is_sync_generator() || target.is_async_gen())
                 && vm.heap.gen_initial_gs == null) {
                 void* cfn_gs_raw = vm.heap.alloc_func(vm.heap.heap_udata, GeneratorState::size);
                 if (cfn_gs_raw != null) {
@@ -509,7 +512,13 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
                             // default-parameter side effect on functionObject.prototype
                             // is observed; default to the shared Generator.prototype
                             // here, corrected by GEN_START if needed.
-                            cfn_gen_obj.prototype = vm.heap.generator_proto;
+                            if (target.is_async_gen()) {
+                                cfn_gs.is_async_gen = true;
+                                cfn_gen_obj.prototype = (vm.heap.async_generator_proto != null)
+                                    ? vm.heap.async_generator_proto : vm.heap.generator_proto;
+                            } else {
+                                cfn_gen_obj.prototype = vm.heap.generator_proto;
+                            }
                             (*cfn_gen_obj.extra_ptr()).gen.generator_data = cfn_gs;
                             vm.heap.gen_initial_gs  = cfn_gs;
                             vm.heap.gen_initial_obj = cfn_gen_obj;

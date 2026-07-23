@@ -417,6 +417,12 @@ struct CompilerContext {
 
     // Generator tracking
     bool is_generator;          // true when compiling a generator function (function*)
+                                // OR an async function (async also runs on the
+                                // suspend/resume generator machinery via AWAIT).
+    bool is_user_generator;     // true only when the function was written with a
+                                // syntactic `*` (function*, async function*, or a
+                                // `*`/`async *` method). Distinguishes async
+                                // generators from plain async functions.
 
     // Lexical environment depth: incremented when block() / for-in / for-of /
     // class body etc. push a PUSH_LEX, decremented on POP_LEX. Tracked so
@@ -535,6 +541,24 @@ struct CompilerContext {
     // `g_disable_optimize` so finish() can just read either source; the
     // per-context field is set in init() from the global.
     bool disable_optimize;
+}
+
+// ============================================================================
+// CompilerContext — generator/async kind predicates
+// ============================================================================
+
+/// True for an async generator body (`async function*` / `async *m(){}`):
+/// written with a `*` and async. The single predicate that replaces scattered
+/// flag-combination checks in the compiler.
+macro bool CompilerContext.is_async_gen(&self) {
+    return self.is_async && self.is_user_generator;
+}
+
+/// True for a spec sync GeneratorFunction body (`function*` / `*m(){}`):
+/// a syntactic `*` that is NOT async. Equivalent to the historical
+/// `is_generator && !is_async` idiom.
+macro bool CompilerContext.is_sync_generator(&self) {
+    return self.is_user_generator && !self.is_async;
 }
 
 // ============================================================================
@@ -1213,6 +1237,7 @@ fn CompiledFunction*? CompilerContext.finish(&self) {
     // stamps the flag directly on the constructor's CompiledFunction
     // (make_default_constructor and the explicit-ctor path in class.c3).
     func.flags.is_generator = self.is_generator;
+    func.flags.is_user_generator = self.is_user_generator;
     func.flags.is_async = self.is_async;
     func.flags.is_arrow = self.is_arrow;
     func.flags.is_strict = self.is_strict;

@@ -606,6 +606,12 @@ enum Builtin : uint {
     ATOMICS_WAIT,
     ATOMICS_NOTIFY,
     ATOMICS_WAITASYNC,
+    // --- Async generators (plan 060, ES2018 §27.6) ---
+    ASYNC_ITERATOR_PROTO_SYMBOL_ASYNCITER, // %AsyncIteratorPrototype%[@@asyncIterator]() → this
+    ASYNC_GENERATOR_PROTO_NEXT,            // %AsyncGeneratorPrototype%.next(value)
+    ASYNC_GENERATOR_PROTO_RETURN,          // %AsyncGeneratorPrototype%.return(value)
+    ASYNC_GENERATOR_PROTO_THROW,           // %AsyncGeneratorPrototype%.throw(value)
+    ASYNC_GENERATOR_FUNCTION,              // %AsyncGeneratorFunction% constructor
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -2812,6 +2818,12 @@ fn BuiltinMeta builtin_get_metadata(uint idx) {
         case Builtin.ASYNC_FROM_SYNC_THROW.ordinal: return { "throw", 1 };
         case Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal: return { "", 1 };
         case Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal: return { "", 1 };
+        // Async generators (plan 060, ES2018 §27.6)
+        case Builtin.ASYNC_ITERATOR_PROTO_SYMBOL_ASYNCITER.ordinal: return { "[Symbol.asyncIterator]", 0 };
+        case Builtin.ASYNC_GENERATOR_PROTO_NEXT.ordinal: return { "next", 1 };
+        case Builtin.ASYNC_GENERATOR_PROTO_RETURN.ordinal: return { "return", 1 };
+        case Builtin.ASYNC_GENERATOR_PROTO_THROW.ordinal: return { "throw", 1 };
+        case Builtin.ASYNC_GENERATOR_FUNCTION.ordinal: return { "AsyncGeneratorFunction", 1 };
         // Array.fromAsync + its internal reaction closures
         case Builtin.ARRAY_FROM_ASYNC.ordinal: return { "fromAsync", 1 };
         case Builtin.ARRAY_FROM_ASYNC_STEP_FULFILL.ordinal: return { "", 1 };
@@ -3818,6 +3830,11 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ASYNC_FROM_SYNC_THROW.ordinal]          = &builtin_async_from_sync_throw,
     [Builtin.ASYNC_FROM_SYNC_VALUE_UNWRAP.ordinal]   = &builtin_async_from_sync_value_unwrap,
     [Builtin.ASYNC_FROM_SYNC_REJECT_FORWARD.ordinal] = &builtin_async_from_sync_reject_forward,
+    [Builtin.ASYNC_ITERATOR_PROTO_SYMBOL_ASYNCITER.ordinal] = &builtin_async_iterator_proto_symbol_asynciter,
+    [Builtin.ASYNC_GENERATOR_PROTO_NEXT.ordinal]     = &builtin_async_generator_proto_next,
+    [Builtin.ASYNC_GENERATOR_PROTO_RETURN.ordinal]   = &builtin_async_generator_proto_return,
+    [Builtin.ASYNC_GENERATOR_PROTO_THROW.ordinal]    = &builtin_async_generator_proto_throw,
+    [Builtin.ASYNC_GENERATOR_FUNCTION.ordinal]       = &builtin_async_generator_function,
     [Builtin.ARRAY_FROM_ASYNC.ordinal]               = &builtin_array_from_async,
     [Builtin.ARRAY_FROM_ASYNC_STEP_FULFILL.ordinal]  = &builtin_array_from_async_step_fulfill,
     [Builtin.ARRAY_FROM_ASYNC_MAP_FULFILL.ordinal]   = &builtin_array_from_async_map_fulfill,
@@ -4181,6 +4198,11 @@ fn bool register_builtins(EnvRecord* global_env, Heap* heap) {
     // Register %AsyncFromSyncIteratorPrototype% (ES2018 §27.1.4) — wraps a
     // sync iterator so `for await` can drive it.
     if (!register_async_from_sync_iterator_prototype(heap)) return false;
+
+    // Register the async-generator prototype chain (plan 060, ES2018 §27.4/§27.6):
+    // %AsyncIteratorPrototype%, %AsyncGeneratorPrototype%, %AsyncGenerator%,
+    // %AsyncGeneratorFunction%.
+    if (!register_async_generator(global_env, heap)) return false;
 
     // Register TypedArray constructors (Int8Array, Uint8Array, etc.)
     if (!register_typed_array_constructors(global_env, heap)) return false;

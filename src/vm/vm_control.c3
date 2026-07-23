@@ -242,7 +242,10 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
 
     // Generator function objects inherit from GeneratorFunction.prototype,
     // all other functions inherit from Function.prototype (ES6 §25.2.3).
-    if (template.is_async() && vm.heap.async_func_proto != null) {
+    if (template.is_async_gen() && vm.heap.async_generator_func_proto != null) {
+        // %AsyncGeneratorFunction.prototype% (= %AsyncGenerator%) (§27.4.3).
+        func_obj.prototype = vm.heap.async_generator_func_proto;
+    } else if (template.is_async() && vm.heap.async_func_proto != null) {
         func_obj.prototype = vm.heap.async_func_proto;
     } else if (template.is_generator() && vm.heap.generator_func_proto != null) {
         func_obj.prototype = vm.heap.generator_func_proto;
@@ -296,12 +299,12 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
     // `is_generator()` is overloaded at compile time (compile_inner_function /
     // arrow contexts): async functions also set it so the body can use the
     // same YIELD/LOAD_RESUME suspend machinery as real generators via AWAIT.
-    // `is_generator() && !is_async()` is the idiom used elsewhere in the VM
-    // (see the CALL_FN generator-init check in vm_execute.c3) to mean "really
-    // is a spec GeneratorFunction" — async generators aren't supported by
-    // this engine (rejected at parse time), so a true generator never has
-    // is_async() set.
-    bool is_true_generator = template.is_generator() && !template.is_async();
+    // `is_sync_generator()` (was: `is_generator() && !is_async()`) means "really
+    // is a spec sync GeneratorFunction"; `is_async_gen()` is `async function*`.
+    // Both expose a `.prototype` (§25.4.3 / §27.4.3.2), but linked to different
+    // prototypes.
+    bool is_true_generator = template.is_sync_generator();
+    bool is_async_generator = template.is_async_gen();
 
     // Constructable functions, plus generator functions (which are never
     // constructable but still expose a `.prototype` used as the generator
@@ -310,7 +313,7 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
     // generator) methods/accessors are not constructable and must not have
     // .prototype (ES6 §14.2.16, ES2017 §14.7.5, ES2015 §14.3.9 —
     // DefineMethod creates functions without .prototype).
-    if (template.is_constructable() || is_true_generator) {
+    if (template.is_constructable() || is_true_generator || is_async_generator) {
         // ES5 §13.2.2 step 15: create .prototype property on the function
         // (plain object with .constructor).  For regular functions the
         // flags are {writable:true, enumerable:false, configurable:false}.
@@ -327,6 +330,10 @@ fn HObject* instantiate_closure(Vm* vm, CompiledFunction* template, EnvRecord* v
                 proto_obj.prototype = vm.heap.generator_proto;
                 // .constructor is inherited from Generator.prototype,
                 // no need to set it here.
+            } else if (is_async_generator && vm.heap.async_generator_proto != null) {
+                // §27.4.3.2: async generator fn .prototype inherits from
+                // %AsyncGeneratorPrototype%. .constructor is inherited.
+                proto_obj.prototype = vm.heap.async_generator_proto;
             } else {
                 proto_obj.prototype = vm.heap.object_proto;
                 // Set .constructor on the prototype object

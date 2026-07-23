@@ -1099,6 +1099,17 @@ bitstruct FuncFlags : uint {
     /// methods whose super base is the SUPERCLASS prototype (not the
     /// receiver's prototype).
     bool  super_is_home_object : 27;
+    /// Function was written with a `*` (syntactic generator): `function*`,
+    /// `*m(){}`, `async function*`, or `async *m(){}`. Distinct from
+    /// `is_generator`, which is ALSO set on plain async functions so they can
+    /// reuse the suspend/resume (YIELD/LOAD_RESUME) machinery via AWAIT. The
+    /// pair distinguishes the four kinds:
+    ///   plain function     : !is_generator, !is_async, !is_user_generator
+    ///   sync generator     :  is_generator, !is_async,  is_user_generator
+    ///   async function     :  is_generator,  is_async, !is_user_generator
+    ///   async generator    :  is_generator,  is_async,  is_user_generator
+    /// See `is_async_gen()`.
+    bool  is_user_generator    : 28;
 }
 
 /// A compiled function template — the immutable bytecode representation of
@@ -1281,6 +1292,27 @@ macro bool CompiledFunction.is_generator(&self) {
 /// Returns `true` when the function is async.
 macro bool CompiledFunction.is_async(&self) {
     return self.flags.is_async;
+}
+
+/// Returns `true` when the function was written with a syntactic `*`
+/// (`function*`, `async function*`, or a `*`/`async *` method).
+macro bool CompiledFunction.is_user_generator(&self) {
+    return self.flags.is_user_generator;
+}
+
+/// Returns `true` for an async generator (`async function*` / `async *m(){}`):
+/// both `async` and a syntactic `*`. The single predicate that replaces the
+/// scattered flag-combination checks throughout the VM/compiler.
+macro bool CompiledFunction.is_async_gen(&self) {
+    return self.flags.is_async && self.flags.is_user_generator;
+}
+
+/// Returns `true` for a spec sync GeneratorFunction (`function*` / `*m(){}`):
+/// a syntactic `*` that is NOT async. This is the meaning of the historical
+/// `is_generator() && !is_async()` idiom; both forms are equivalent because a
+/// sync generator has `is_user_generator == is_generator` and `!is_async`.
+macro bool CompiledFunction.is_sync_generator(&self) {
+    return self.flags.is_user_generator && !self.flags.is_async;
 }
 
 /// Returns `true` when the function can be used as a constructor.

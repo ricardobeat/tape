@@ -1044,8 +1044,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                     return (TVal){};
                 }
 
-                // Async initial call: create Promise, fall through to non-generator path
-                if (target.is_async()) {
+                // Async initial call (plain async function, NOT an async
+                // generator): create Promise, fall through to non-generator
+                // path and run the body immediately. Async generators
+                // (is_async && is_user_generator) instead take the generator
+                // initial-call path below — they suspend at GEN_START and
+                // return an AsyncGenerator object without running the body.
+                if (target.is_async() && !target.is_user_generator()) {
                     HObject*? prom_raw = builtins::promise_create(vm.heap);
                     if (try p = prom_raw) {
                         async_prom = p;
@@ -1145,7 +1150,13 @@ fn TVal? dispatch_calls(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, I
                 // between this point and GEN_START, and step 1 must observe that
                 // (generator-created-after-decl-inst.js). Default to the shared
                 // Generator.prototype for now; GEN_START corrects it if needed.
-                gen_obj.prototype = vm.heap.generator_proto;
+                if (target.is_async_gen()) {
+                    gs.is_async_gen = true;
+                    gen_obj.prototype = (vm.heap.async_generator_proto != null)
+                        ? vm.heap.async_generator_proto : vm.heap.generator_proto;
+                } else {
+                    gen_obj.prototype = vm.heap.generator_proto;
+                }
                 (*gen_obj.extra_ptr()).gen.generator_data = gs;
 
                 // If a generator param-init is already in progress (gen_initial_gs

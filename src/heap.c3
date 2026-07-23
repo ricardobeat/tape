@@ -106,6 +106,20 @@ enum GeneratorStateType : char {
     GEN_SUSPENDED_YIELD,
     GEN_EXECUTING,
     GEN_COMPLETED,
+    // Async-generator-only state (ES2018 §27.6): the generator is running the
+    // §27.6.3.7 await-return dance after a `.return()` request while COMPLETED
+    // or suspended, and must not drain further requests until it settles.
+    GEN_AWAITING_RETURN,
+}
+
+/// One entry in an async generator's request queue (ES2018 §27.6.3.1
+/// AsyncGeneratorRequest). Concurrent next/return/throw calls each push a
+/// request and receive their own promise; the queue drains FIFO.
+struct AsyncGenRequest {
+    ResumeKind        completion_kind; // NEXT / RETURN / THROW
+    TVal              value;           // completion value / thrown value
+    void*             capability;      // HObject* — the promise to settle (opaque to avoid a cycle)
+    AsyncGenRequest*  next;            // FIFO link (null == tail)
 }
 
 /// How a generator was resumed — determines what the YIELD opcode does
@@ -146,6 +160,11 @@ struct GeneratorState {
     uint delegated_index;     // current index in delegation loop
     // async state
     void* async_promise;      // HObject* — the async function's outer Promise (null for generators)
+    // async-generator state (ES2018 §27.6): true for `async function*` bodies.
+    // The request queue holds pending next/return/throw calls, drained FIFO.
+    bool  is_async_gen;
+    AsyncGenRequest* agr_head; // FIFO queue head (current in-flight request)
+    AsyncGenRequest* agr_tail; // FIFO queue tail
     // yield-through state: when yield fires inside a non-generator inner
     // function (e.g. a default expression thunk), the resume value must be
     // placed into a specific register in the generator's frame on resume.
@@ -276,6 +295,9 @@ struct Heap {
     HObject* iterator_helper_proto; // %IteratorHelperPrototype% (ES2025 §27.1.2.1)
     HObject* wrap_for_valid_iterator_proto; // %WrapForValidIteratorPrototype% (ES2025 §27.1.3.2.2.1)
     HObject* async_from_sync_iter_proto; // %AsyncFromSyncIteratorPrototype% (ES2018 §27.1.4)
+    HObject* async_iterator_proto;       // %AsyncIteratorPrototype% (ES2018 §27.1.3), has @@asyncIterator
+    HObject* async_generator_proto;      // %AsyncGeneratorPrototype% (ES2018 §27.6.1), next/return/throw
+    HObject* async_generator_func_proto; // %AsyncGeneratorFunction.prototype% = %AsyncGenerator% (ES2018 §27.4.3)
     HObject* array_iterator_proto; // %ArrayIteratorPrototype% (ES6 §22.1.5)
     HObject* map_iterator_proto;   // %MapIteratorPrototype% (ES6 §23.1.5)
     HObject* set_iterator_proto;   // %SetIteratorPrototype% (ES6 §23.2.5)
@@ -1787,6 +1809,17 @@ fn void Heap.mark_generator_state(&self, GeneratorState* gs) {
     if (gs.async_promise != null) {
         self.mark_hobject((HObject*)gs.async_promise);
     }
+    // Async-generator request queue: each pending request holds a completion
+    // value and a promise capability (the promise to settle) that must stay
+    // reachable while queued.
+    AsyncGenRequest* req = gs.agr_head;
+    while (req != null) {
+        self.mark_tval(&req.value);
+        if (req.capability != null) {
+            self.mark_hobject((HObject*)req.capability);
+        }
+        req = req.next;
+    }
 }
 
 /**
@@ -2026,6 +2059,9 @@ fn void Heap.mark_roots(&self) {
     if (self.iterator_helper_proto != null) { self.mark_hobject(self.iterator_helper_proto); }
     if (self.wrap_for_valid_iterator_proto != null) { self.mark_hobject(self.wrap_for_valid_iterator_proto); }
     if (self.async_from_sync_iter_proto != null) { self.mark_hobject(self.async_from_sync_iter_proto); }
+    if (self.async_iterator_proto != null) { self.mark_hobject(self.async_iterator_proto); }
+    if (self.async_generator_proto != null) { self.mark_hobject(self.async_generator_proto); }
+    if (self.async_generator_func_proto != null) { self.mark_hobject(self.async_generator_func_proto); }
     if (self.array_iterator_proto != null) { self.mark_hobject(self.array_iterator_proto); }
     if (self.map_iterator_proto != null) { self.mark_hobject(self.map_iterator_proto); }
     if (self.set_iterator_proto != null) { self.mark_hobject(self.set_iterator_proto); }

@@ -2466,11 +2466,13 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
     self.emit_destruct_bindings(destruct_binds[..], destruct_count,
                                 destruct_group_regs[..], destruct_binding_regs[..]);
 
-    // Generator functions: emit GEN_START after all parameter initialization
-    // so that the VM can run eagerly up to this point on the initial call,
-    // satisfying the spec requirement that FunctionDeclarationInstantiation
-    // (including throwing defaults/destructuring) happens at call time.
-    if (self.is_generator && !self.is_async) {
+    // Generator functions (sync and async): emit GEN_START after all parameter
+    // initialization so the VM can run eagerly up to this point on the initial
+    // call, satisfying the spec requirement that FunctionDeclarationInstantiation
+    // (including throwing defaults/destructuring) happens at call time. Both
+    // sync and async generators suspend at start (SUSPENDED_START); plain async
+    // functions run their body immediately and never emit GEN_START.
+    if (self.is_sync_generator() || self.is_async_gen()) {
         self.emit_simple(Opcode.GEN_START);
     }
 
@@ -2509,7 +2511,7 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
         }
     }
     if (!has_return) {
-        self.emit_simple((self.is_generator && !self.is_async) ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
+        self.emit_simple(self.is_user_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     }
 }
 
@@ -2727,11 +2729,14 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // Propagate generator flag: if the caller is compiling a generator,
     // the inner context (which parses the body) needs to know it's in a generator.
     inner_ctx.is_generator = self.is_generator;
+    // Whether this function was written with a syntactic `*`. Distinguishes an
+    // async generator (is_user_generator && is_async) from a plain async fn.
+    inner_ctx.is_user_generator = self.is_user_generator;
 
     // Propagate async flag: if the caller is compiling an async function,
     // the inner context (which parses the body) needs to know it's in an async function.
-    // Async functions also set is_generator so they can use YIELD/LOAD_RESUME
-    // for suspend/resume via the AWAIT opcode.
+    // Async functions (incl. async generators) also set is_generator so they can
+    // use YIELD/LOAD_RESUME for suspend/resume via the AWAIT opcode.
     inner_ctx.is_async = self.is_async;
     if (inner_ctx.is_async) inner_ctx.is_generator = true;
 
@@ -3057,9 +3062,11 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     inner_ctx.emit_destruct_bindings(inner_destruct_binds[..], inner_destruct_count,
                                      inner_destruct_group_regs[..], inner_destruct_binding_regs[..]);
 
-    // Generator functions: emit GEN_START after all parameter initialization
-    // so the VM can run eagerly up to this point on the initial call.
-    if (inner_ctx.is_generator && !inner_ctx.is_async) {
+    // Generator functions (sync and async): emit GEN_START after all parameter
+    // initialization so the VM can run eagerly up to this point on the initial
+    // call. Both sync and async generators suspend at start; plain async
+    // functions run their body immediately and never emit GEN_START.
+    if (inner_ctx.is_sync_generator() || inner_ctx.is_async_gen()) {
         inner_ctx.emit_simple(Opcode.GEN_START);
     }
 
@@ -3112,7 +3119,7 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
         }
     }
     if (!has_return) {
-        inner_ctx.emit_simple((inner_ctx.is_generator && !inner_ctx.is_async) ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
+        inner_ctx.emit_simple(inner_ctx.is_user_generator ? Opcode.RETUNDEF_GEN : Opcode.RETUNDEF);
     }
 
     CompiledFunction* func = inner_ctx.finish()!;
@@ -3199,7 +3206,9 @@ fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
 
     // Save and reset generator state
     bool saved_is_generator = self.is_generator;
+    bool saved_is_user_generator = self.is_user_generator;
     self.is_generator = false;
+    self.is_user_generator = false;
 
     // Save the enclosing async flag — it must survive this expression (a
     // module body's or async function's flag is read by finish()). The
@@ -3220,14 +3229,9 @@ fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
     // Generator functions are never constructable (ES2015 §14.4) — `new` on
     // one must throw TypeError, so is_constructable must flip to false here.
     if (self.match(TokenType.STAR)) {
-        // Async generator functions (`async function*`) are not supported
-        // (same policy as async generator methods; without this rejection the
-        // expression silently compiled as a plain async function whose result
-        // object has no iterator protocol at all).
-        if (is_async_expr) {
-            return self.fail("async generator functions are not supported")~;
-        }
+        // `function*` and `async function*` are both syntactic generators.
         self.is_generator = true;
+        self.is_user_generator = true;
         self.is_constructable = false;
     }
 
@@ -3285,6 +3289,7 @@ fn ushort? CompilerContext.function_expr(&self, bool is_async_expr = false) {
 
     // Restore generator flag
     self.is_generator = saved_is_generator;
+    self.is_user_generator = saved_is_user_generator;
     // Restore constructable flag
     self.is_constructable = saved_is_constructable;
 

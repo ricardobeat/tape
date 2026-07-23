@@ -3703,6 +3703,7 @@ fn ushort? CompilerContext.object_literal(&self) {
             // inside a generator body must still see is_generator = true), so
             // we must not clear the flags here.
             bool saved_is_generator = self.is_generator;
+            bool saved_is_user_generator = self.is_user_generator;
             bool saved_is_async = self.is_async;
             // ES2015 §12.2.6.1: `__proto__: value` sets the prototype, not an own property.
             bool is_proto_key = false;
@@ -3721,10 +3722,6 @@ fn ushort? CompilerContext.object_literal(&self) {
             // `{ async() {} }` all keep their existing meaning.
             bool is_async_method = self.match_async_method_prefix();
             bool is_generator_method = self.match(TokenType.STAR);
-            // Async generator methods (`{ async *m() {} }`) are not supported.
-            if (is_async_method && is_generator_method) {
-                return self.fail("async generator methods are not supported")~;
-            }
 
             // Parse property key
             ushort key_reg;
@@ -3850,6 +3847,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                     // so an accessor defined inside a generator/async body does
                     // not inherit the enclosing function's kind.
                     self.is_generator = false;
+                    self.is_user_generator = false;
                     self.is_async = false;
                     if (!super_bound) {
                         // Give this object literal's `__super__` binding its own
@@ -3874,6 +3872,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                     self.free_reg(accessor_reg);
                     self.free_reg(key_reg);
                     self.is_generator = saved_is_generator;
+                    self.is_user_generator = saved_is_user_generator;
                     self.is_async = saved_is_async;
 
                     if (!self.match(TokenType.COMMA)) {
@@ -3988,6 +3987,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 // function's flags) and restore the saved flags immediately
                 // after so the next iteration starts clean.
                 self.is_generator = is_generator_method;
+                self.is_user_generator = is_generator_method;
                 self.is_async = is_async_method;
                 // Pass key_src_start so the retained source span starts at the
                 // key token (or `*`, or first computed-key bracket).
@@ -4013,6 +4013,7 @@ fn ushort? CompilerContext.object_literal(&self) {
                 self.free_reg(method_reg);
                 self.free_reg(key_reg);
                 self.is_generator = saved_is_generator;
+                self.is_user_generator = saved_is_user_generator;
                 self.is_async = saved_is_async;
             } else if (is_shorthand_key && (self.check(TokenType.COMMA) || self.check(TokenType.RBRACE))) {
                 // ES2015 §12.2.6.8: IdentifierReference shorthand property

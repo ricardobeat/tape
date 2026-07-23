@@ -302,8 +302,8 @@ fn bool CompilerContext.is_async_arrow_lookahead(&self) {
 /// object literals (ES2017 §14.6): identifier "async" followed — on the
 /// same line, per the [no LineTerminator here] restriction — by a token
 /// that can start a method name: identifier, keyword, string, number,
-/// `[` (computed key), or `*` (async generator — the callers reject that
-/// combination). It is NOT a modifier when followed by `(` (a method
+/// `[` (computed key), or `*` (async generator method). It is NOT a modifier
+/// when followed by `(` (a method
 /// literally named `async`), `:` (property key), `,` / `}` (shorthand
 /// property), or `=` (cover-initializer).
 /// Consumes the `async` token and returns true when it is a modifier;

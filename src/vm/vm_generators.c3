@@ -1310,11 +1310,13 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 HObject* func_obj_g = (HObject*)gs.func_obj;
                 HString* gen_proto_key_g = (HString*)vm.heap.strs[heap::BuiltinStr.PROTOTYPE];
                 TVal? gen_proto_val_g = func_obj_g.get_prop_proto(gen_proto_key_g);
+                HObject* gen_proto_fallback = (gs.is_async_gen && vm.heap.async_generator_proto != null)
+                    ? vm.heap.async_generator_proto : vm.heap.generator_proto;
                 if (try gpv_g = gen_proto_val_g) {
                     if (gpv_g.is_object() && gpv_g.get_heapptr() != null) {
                         gen_obj_g.prototype = (HObject*)gpv_g.get_heapptr();
                     } else {
-                        gen_obj_g.prototype = vm.heap.generator_proto;
+                        gen_obj_g.prototype = gen_proto_fallback;
                     }
                 }
             }

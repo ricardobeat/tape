@@ -588,6 +588,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // (identifier method names, `[expr]` computed keys) runs in the
         // *enclosing* function's context, so we must not clear the flags here.
         bool saved_is_generator = self.is_generator;
+        bool saved_is_user_generator = self.is_user_generator;
         bool saved_is_async = self.is_async;
         // ES2017 §14.6: async-method shorthand — `async m() { await ... }`.
         // `async` is not a keyword; match_async_method_prefix consumes it only
@@ -595,10 +596,6 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // so `async() {}` still parses as a method named "async".
         bool is_async_method = self.match_async_method_prefix();
         bool is_generator_method = self.match(TokenType.STAR);
-        // Async generator methods (`async *m() {}`) are not supported.
-        if (is_async_method && is_generator_method) {
-            return self.fail("async generator methods are not supported")~;
-        }
 
         // Get the method name
         Token method_name;
@@ -1110,6 +1107,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
         // set-on-true): a plain method defined inside a generator/async body
         // must NOT inherit the enclosing function's flags.
         self.is_generator = is_generator_method;
+        self.is_user_generator = is_generator_method;
         self.is_async = is_async_method;
 
         // ES2015 §14.5.13: getter/setter methods in class bodies have a name
@@ -1167,6 +1165,7 @@ fn ushort? CompilerContext.parse_class_tail_with_name(&self, char[] class_name, 
 
         self.is_constructable = saved_constructable;
         self.is_generator = saved_is_generator;
+        self.is_user_generator = saved_is_user_generator;
         self.is_async = saved_is_async;
 
         // Add to inner functions table

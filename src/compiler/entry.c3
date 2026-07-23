@@ -318,6 +318,11 @@ fn CompiledFunction*? compile_function_kind(Lexer* lex, void* heap, bool is_expr
     ctx.init(lex, heap);
     if (!force_strict) ctx.is_strict = false;
     ctx.is_generator = is_generator;
+    // Dynamic functions: `is_generator` reflects a syntactic generator here
+    // (GeneratorFunction / AsyncGeneratorFunction constructors), so it also
+    // sets is_user_generator — distinguishing an async generator from a plain
+    // async function built via the AsyncFunction constructor.
+    ctx.is_user_generator = is_generator;
     ctx.is_async = is_async;
     ctx.is_constructable = false;
 

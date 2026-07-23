@@ -98,9 +98,11 @@ fn void builtin_dynamic_gen_function(BuiltinContext* ctx, bool is_gen, bool is_a
     // [[Prototype]] is Sub.prototype, not %GeneratorFunction.prototype%):
     // async functions → AsyncFunction.prototype, generator functions → GeneratorFunction.prototype
     HObject* default_fn_proto;
-    if (is_async && ctx.heap.async_func_proto != null) {
+    if (is_async && is_gen && ctx.heap.async_generator_func_proto != null) {
+        default_fn_proto = ctx.heap.async_generator_func_proto;
+    } else if (is_async && ctx.heap.async_func_proto != null) {
         default_fn_proto = ctx.heap.async_func_proto;
-    } else if (ctx.heap.generator_func_proto != null) {
+    } else if (is_gen && ctx.heap.generator_func_proto != null) {
         default_fn_proto = ctx.heap.generator_func_proto;
     } else {
         default_fn_proto = ctx.heap.function_proto;
@@ -111,7 +113,10 @@ fn void builtin_dynamic_gen_function(BuiltinContext* ctx, bool is_gen, bool is_a
     // non-enumerable, non-configurable — matches Function instances).
     HObject*? gen_proto_raw = ctx.heap.alloc_object(hobject::ObjClass.OBJECT);
     if (try gen_proto = gen_proto_raw) {
-        gen_proto.prototype = ctx.heap.generator_proto;
+        // Async generators link their instance prototype to
+        // %AsyncGeneratorPrototype%; sync generators to %GeneratorPrototype%.
+        gen_proto.prototype = (is_async && is_gen && ctx.heap.async_generator_proto != null)
+            ? ctx.heap.async_generator_proto : ctx.heap.generator_proto;
         HString* proto_key = builtin_intern_string(ctx.heap, "prototype");
         TVal proto_tv;
         proto_tv.set_object(gen_proto);
