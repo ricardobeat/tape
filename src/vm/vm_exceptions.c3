@@ -56,9 +56,17 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
         }
 
         case Opcode.ENDTRY: {
-            // Pop the catcher (normal exit from try block)
+            // Normal fall-through out of the try body. A catcher that owns a
+            // finally block must survive until its ENDFINALLY: the finally
+            // handler reads that catcher's saved_lex_env (to rebalance the lex
+            // chain on abrupt entry) and pending-completion flags, and ENDFINALLY
+            // pops it. Freeing it here would leave the following FINALLY reading
+            // the *enclosing* catcher — corrupting the lex chain when an outer
+            // try (e.g. a for-of iterator-close guard) sits above a block-scoped
+            // destructuring whose own iterator-close finally runs on the normal
+            // path. Only catchers without a finally are popped here.
             Catcher* cat = (Catcher*)ds.act.cat;
-            if (cat != null) {
+            if (cat != null && cat.finally_pc == null) {
                 ds.act.cat = (void*)cat.parent;
                 vm.heap.free_func(vm.heap.heap_udata, cat);
             }
