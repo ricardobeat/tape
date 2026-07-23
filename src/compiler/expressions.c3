@@ -3114,6 +3114,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // SetFunctionName check (which also requires !lhs_was_member)
                 // doesn't fire for a grouped identifier.
                 self.last_lhs_name_len = 0;
+                // A parenthesized arrow is a CoverParenthesizedExpression —
+                // a PrimaryExpression — so it IS legal as a binary operand
+                // (`"x" in (() => {})`). Clear the marker the inner arrow set;
+                // the arrow-as-binary-operand check only targets bare arrows.
+                self.last_was_arrow_expr = false;
                 return inner2;
             }
             // Check for arrow with params: (id) => or (id, id, ...) => ...
@@ -3234,6 +3239,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // SetFunctionName check (which also requires !lhs_was_member)
                 // doesn't fire for a grouped identifier.
                 self.last_lhs_name_len = 0;
+                // A parenthesized arrow is a CoverParenthesizedExpression —
+                // a PrimaryExpression — so it IS legal as a binary operand
+                // (`"x" in (() => {})`). Clear the marker the inner arrow set;
+                // the arrow-as-binary-operand check only targets bare arrows.
+                self.last_was_arrow_expr = false;
                 return inner2;
             }
             // Check for arrow with destructured params: ({a, b}) => or ([a, b]) =>
@@ -3283,6 +3293,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // SetFunctionName check (which also requires !lhs_was_member)
                 // doesn't fire for a grouped identifier.
                 self.last_lhs_name_len = 0;
+                // A parenthesized arrow is a CoverParenthesizedExpression —
+                // a PrimaryExpression — so it IS legal as a binary operand
+                // (`"x" in (() => {})`). Clear the marker the inner arrow set;
+                // the arrow-as-binary-operand check only targets bare arrows.
+                self.last_was_arrow_expr = false;
                 return inner2;
             } else {
                 // Not arrow: parse as grouping expression
@@ -3303,6 +3318,11 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 // SetFunctionName check (which also requires !lhs_was_member)
                 // doesn't fire for a grouped identifier.
                 self.last_lhs_name_len = 0;
+                // A parenthesized arrow is a CoverParenthesizedExpression —
+                // a PrimaryExpression — so it IS legal as a binary operand
+                // (`"x" in (() => {})`). Clear the marker the inner arrow set;
+                // the arrow-as-binary-operand check only targets bare arrows.
+                self.last_was_arrow_expr = false;
                 return inner2;
             }
         }
