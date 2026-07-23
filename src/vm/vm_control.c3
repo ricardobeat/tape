@@ -82,6 +82,35 @@ fn void vm_complete_generator_return(Dispatch* ds, TVal* val) {
     ds.needs_restart = true;
 }
 
+/// Scan forward from a FINALLY opcode to find the matching ENDFINALLY that
+/// terminates its finally block.  Nested try/finally blocks inside the body
+/// each contribute a balanced FINALLY/ENDFINALLY pair, so we track depth.
+/// TRY opcodes are two words (the second is a NOP jump slot holding the
+/// finally offset), so we skip that slot to avoid misreading it as an opcode.
+/// Returns null if no matching ENDFINALLY is found (should not happen for
+/// well-formed bytecode).
+fn Instruction* find_matching_endfinally(Instruction* finally_pc, Instruction* code_end) {
+    // finally_pc points at the FINALLY marker; scan from the instruction after.
+    Instruction* p = finally_pc + 1;
+    int depth = 0;
+    while (p < code_end) {
+        Opcode op = p.op;
+        if (op == Opcode.TRY) {
+            // TRY consumes an extra word (the NOP jump slot) at runtime.
+            p += 2;
+            continue;
+        }
+        if (op == Opcode.FINALLY) {
+            depth++;
+        } else if (op == Opcode.ENDFINALLY) {
+            if (depth == 0) return p;
+            depth--;
+        }
+        p++;
+    }
+    return null;
+}
+
 /// Sub-dispatch for the generator return opcodes RET_GEN/RETUNDEF_GEN.
 /// The hot non-generator RET/RETUNDEF paths are inlined directly in Vm.run
 /// (src/vm/vm_execute.c3) since they dominate recursion-heavy workloads.
@@ -103,7 +132,17 @@ fn TVal? dispatch_returns(Dispatch* ds, Opcode op, TVal* ra) {
                     if ((ret_cat.flags & CATCHER_FLAG_IN_FINALLY) == 0) {
                         ds.curr_pc = ret_cat.finally_pc;
                         ds.act.curr_pc = ds.curr_pc;
+                    } else if (ret_cat.endfinally_pc != null) {
+                        // Return inside the finally body — abort the rest and
+                        // jump to ENDFINALLY (see plain RET for details).
+                        ds.curr_pc = ret_cat.endfinally_pc;
+                        ds.act.curr_pc = ds.curr_pc;
                     }
+                } else if ((ret_cat.flags & CATCHER_FLAG_IN_FINALLY) != 0
+                           && ret_cat.endfinally_pc != null) {
+                    ret_cat.flags |= CATCHER_FLAG_PENDING_RETURN_GEN;
+                    ds.curr_pc = ret_cat.endfinally_pc;
+                    ds.act.curr_pc = ds.curr_pc;
                 }
                 return (TVal){};
             }
@@ -122,7 +161,15 @@ fn TVal? dispatch_returns(Dispatch* ds, Opcode op, TVal* ra) {
                     if ((ret_cat2.flags & CATCHER_FLAG_IN_FINALLY) == 0) {
                         ds.curr_pc = ret_cat2.finally_pc;
                         ds.act.curr_pc = ds.curr_pc;
+                    } else if (ret_cat2.endfinally_pc != null) {
+                        ds.curr_pc = ret_cat2.endfinally_pc;
+                        ds.act.curr_pc = ds.curr_pc;
                     }
+                } else if ((ret_cat2.flags & CATCHER_FLAG_IN_FINALLY) != 0
+                           && ret_cat2.endfinally_pc != null) {
+                    ret_cat2.flags |= CATCHER_FLAG_PENDING_RETURN_GEN;
+                    ds.curr_pc = ret_cat2.endfinally_pc;
+                    ds.act.curr_pc = ds.curr_pc;
                 }
                 return (TVal){};
             }

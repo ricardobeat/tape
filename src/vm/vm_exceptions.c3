@@ -48,6 +48,7 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
             cat.thrown_val.set_undefined();
             cat.catch_pc = catch_pc;
             cat.finally_pc = finally_pc;
+            cat.endfinally_pc = null;
             cat.saved_lex_env = (void*)ds.act.lex_env;
 
             ds.act.cat = (void*)cat;
@@ -160,6 +161,15 @@ fn TVal? dispatch_exceptions(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 Catcher* fin_cat = (Catcher*)ds.act.cat;
                 if (fin_cat != null) {
                     fin_cat.flags |= CATCHER_FLAG_IN_FINALLY;
+                    // Cache the PC of this finally's ENDFINALLY so a `return`
+                    // inside the finally body can jump there to abort the rest
+                    // of the body (matching break/continue/throw override
+                    // semantics).  ds.curr_pc points just past this FINALLY
+                    // marker; scan from the marker itself.
+                    if (fin_cat.endfinally_pc == null) {
+                        fin_cat.endfinally_pc =
+                            find_matching_endfinally(ds.curr_pc - 1, ds.code_end);
+                    }
                     // Clear CATCH_ENABLED: once we enter the finally block, the
                     // try block has already completed (normal, abrupt, or via
                     // catch). A throw inside the finally must NOT be caught by

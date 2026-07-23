@@ -3166,7 +3166,24 @@ fn TVal? Vm.run(Vm* vm) {
                     if ((ret_cat.flags & CATCHER_FLAG_IN_FINALLY) == 0) {
                         ds.curr_pc = ret_cat.finally_pc;
                         ds.act.curr_pc = ds.curr_pc;
+                    } else if (ret_cat.endfinally_pc != null) {
+                        // A `return` executed inside the finally body itself.
+                        // It overrides the finally's earlier pending completion
+                        // and must abort the remaining finally statements —
+                        // jump straight to ENDFINALLY (which will complete this
+                        // return), mirroring break/continue/throw.
+                        ds.curr_pc = ret_cat.endfinally_pc;
+                        ds.act.curr_pc = ds.curr_pc;
                     }
+                } else if ((ret_cat.flags & CATCHER_FLAG_IN_FINALLY) != 0
+                           && ret_cat.endfinally_pc != null) {
+                    // PENDING_RETURN was already set (the finally was entered
+                    // because of an earlier return) and now a second `return`
+                    // runs inside the finally body.  The new value already
+                    // overwrote return_val above; abort the rest of the body
+                    // and jump to ENDFINALLY to complete with it.
+                    ds.curr_pc = ret_cat.endfinally_pc;
+                    ds.act.curr_pc = ds.curr_pc;
                 }
                 continue;
             }

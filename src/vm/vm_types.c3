@@ -152,6 +152,12 @@ struct Catcher {
     Instruction* catch_pc;
     /// Absolute PC of the finally handler (FINALLY instruction), or null if none.
     Instruction* finally_pc;
+    /// Absolute PC of the ENDFINALLY that terminates this finally block, or
+    /// null until lazily computed (by the FINALLY opcode).  A `return` executed
+    /// inside the finally body jumps here to abort the rest of the body and run
+    /// the ENDFINALLY completion, matching the abrupt-completion-override
+    /// semantics that break/continue/throw already have.
+    Instruction* endfinally_pc;
     /// Saved return value for return-through-finally (set by RET).
     TVal return_val;
     /// Saved PC target for break/continue-through-finally.
