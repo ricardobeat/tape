@@ -25,11 +25,6 @@ faultdef CONST_OVERFLOW;
 
 const uint MAX_REGISTERS  = 512;
 const uint MAX_PARAMS     = 32;
-/// Conservative worst-case spread argument size (in slots) used by the
-/// argument parser to reserve space above the spread destination window so
-/// trailing arg evaluations don't allocate into the live spread area. The
-/// runtime count may be smaller; this is purely a compile-time reservation.
-const uint SPREAD_MAX_SLOTS = 256;
 // Initial capacities for growable compiler arrays.
 // These are the starting sizes; the arrays double when full.
 const uint INITIAL_CODE        = 512;
