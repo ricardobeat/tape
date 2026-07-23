@@ -582,6 +582,11 @@ fn void typed_array_construct(BuiltinContext* ctx, hobject::ObjClass obj_class) 
                 if (buf == null) { ctx.result.set_undefined(); return; }
                 byte_offset = 0;
                 byte_length = 0;
+            } else if (view_is_out_of_bounds(arg_obj)) {
+                // §23.2.5.1.2 InitializeTypedArrayFromTypedArray: an
+                // out-of-bounds source view throws TypeError.
+                arraybuffer_throw_type_error(ctx, "TypedArray constructor: source is out of bounds");
+                return;
             } else {
                 uint count = ta_element_count(arg_obj);
                 uint total_bytes = count * elem_size;
@@ -1117,6 +1122,12 @@ fn void builtin_ta_proto_set(BuiltinContext* ctx) {
             HObject* src_buf = (*src_obj.extra_ptr()).view.buffer;
             if (src_buf == null || ((*src_buf.extra_ptr()).ab.byte_length == 0xFFFFFFFFu)) {
                 arraybuffer_throw_type_error(ctx, "TypedArray.set: source buffer is detached");
+                return;
+            }
+            // §23.2.3.26.1 step 8: an out-of-bounds source view (fixed view
+            // over a shrunk resizable buffer) throws TypeError.
+            if (view_is_out_of_bounds(src_obj)) {
+                arraybuffer_throw_type_error(ctx, "TypedArray.set: source is out of bounds");
                 return;
             }
             uint src_len = ta_element_count(src_obj);
