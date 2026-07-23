@@ -4632,9 +4632,11 @@ fn void? CompilerContext.export_declaration(&self) {
 
             // Check for named function expression
             char[] fn_name;
+            bool is_named = false;
             if (self.peek_type() == TokenType.IDENTIFIER) {
                 Token name_tok = self.advance()!;
                 fn_name = name_tok.str_value;
+                is_named = true;
             } else {
                 fn_name = "*default*";
             }
@@ -4654,15 +4656,20 @@ fn void? CompilerContext.export_declaration(&self) {
 
             uint inner_idx = self.add_inner_func(inner);
 
-            ushort func_reg = self.declare_var("*default*", VAR);
-            // `export default function` is a hoisted function declaration bound
-            // to *default* at link time (ECMA-262 16.2.1.5.5 step 17). Record
-            // it for the linker and suppress body CLOSURE+DECLVAR so a cyclic
-            // early import of the default export sees the hoisted function.
-            mod_register_func_decl(mod, "*default*", inner_idx);
+            // `export default function name` binds its own declared name in the
+            // module scope (ECMA-262 §16.2.3.7 / ExportDeclaration), so the
+            // function body can reference/reassign `name` and the "default"
+            // export is a live binding of that same name. An anonymous
+            // `export default function` binds the synthetic `*default*` slot.
+            // Either way it is a hoisted function declaration bound at link
+            // time (16.2.1.5.5 step 17); record it for the linker and suppress
+            // body CLOSURE+DECLVAR so a cyclic early import sees the function.
+            char[] local_name = is_named ? fn_name : "*default*";
+            ushort func_reg = self.declare_var(local_name, VAR);
+            mod_register_func_decl(mod, local_name, inner_idx);
             self.free_reg(func_reg);
 
-            mod_register_export(mod, "*default*", "default", false, 0);
+            mod_register_export(mod, local_name, "default", false, 0);
             self.match(TokenType.SEMICOLON);
             return;
         }
@@ -4670,16 +4677,26 @@ fn void? CompilerContext.export_declaration(&self) {
         // export default class {} or export default class Foo {}
         if (next == TokenType.CLASS) {
             // allow_anonymous: `export default class {}` has no BindingIdentifier
-            // and binds to *default* (§16.2.3.7). A named default class still
-            // binds its own name too, but the export always tracks *default*.
+            // and binds to *default* (§16.2.3.7). A named `export default class
+            // Foo {}` binds `Foo` in the module scope; the "default" export is a
+            // live binding of that same name — so track the actual bound name
+            // (class_declaration returns it), not always *default*.
             char[] dflt_class_name;
             self.class_declaration(&dflt_class_name, true)!;
-            mod_register_export(mod, "*default*", "default", false, 0);
+            mod_register_export(mod, dflt_class_name, "default", false, 0);
             self.match(TokenType.SEMICOLON);
             return;
         }
 
         // export default <expr>
+        // If the expression is an anonymous function/class definition, its
+        // inferred name is "default" (ECMA-262 §16.2.3.7: NamedEvaluation with
+        // "default"). Seed the inferred-name slot so the anonymous definition
+        // picks it up; a named/non-anonymous expression clears it itself.
+        self.has_inferred_name = true;
+        self.inferred_name_len = 7; // "default"
+        char[] dflt_infer = "default";
+        for (ushort i = 0; i < 7; i++) self.inferred_name_buf[i] = dflt_infer[i];
         ushort val_reg = self.assignment_expr()!;
         uint def_name_idx = self.add_string_constant("*default*");
         self.emit_a_bc(Opcode.DECLVAR, (uint)val_reg, def_name_idx);

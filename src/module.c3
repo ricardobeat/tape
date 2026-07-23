@@ -791,7 +791,159 @@ fn int run_module_file(Heap* heap, Vm* vm, char[] path) {
 /// Relative specifiers resolve against the running module's name: the
 /// currently executing function's filename when it has one, else
 /// heap.current_module_name (maintained by execute_module around body runs).
-fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
+/// Capture the current thrown value out of every error channel into a
+/// caller-owned `*out` and clear the channels, so a pending fault does not
+/// leak past the point where it is turned into a promise rejection. When no
+/// value is present, `*out` is set to a fresh TypeError with `fallback_msg`.
+fn void capture_and_clear_error(Heap* heap, Vm* vm, TVal* out, char[] fallback_msg) {
+    if (heap.has_error || heap.error_value.is_object() || heap.error_value.is_string()) {
+        out.set_undefined();
+        heap.tval_copy_ref(out, &heap.error_value);
+    } else {
+        *out = module_type_error(heap, fallback_msg);
+    }
+    heap.error_value.set_undefined();
+    heap.has_error = false;
+    vm.throw_pending = false;
+    vm.throw_value.set_undefined();
+}
+
+/// Validate the ES2025 import-call options argument and its `with` attributes
+/// (§13.3.10 EvaluateImportCall / GetImportAttributes). Returns true on
+/// success. On any abrupt completion (non-object options/with, a throwing
+/// `with` getter or `ownKeys`, or a non-String attribute value) returns false
+/// with `*reason` set to a caller-owned rejection value and every error
+/// channel cleared. `options` may be undefined (no attributes → success).
+///
+/// Attributes are validated but not otherwise applied: this engine's loader
+/// carries no per-attribute behavior beyond the already-supported JSON module
+/// type inferred from the specifier, so a well-formed `with` clause is a
+/// no-op here (matching the module resolution level already in place).
+fn bool validate_import_options(Heap* heap, Vm* vm, TVal* options, TVal* reason, bool* wants_json) {
+    *wants_json = false;
+    if (options.is_undefined()) return true;
+    if (!options.is_object()) {
+        *reason = module_type_error(heap, "import options must be an object");
+        return false;
+    }
+    HObject* opts_obj = (HObject*)options.get_heapptr();
+    if (opts_obj == null) return true;
+
+    // attributesObj = Get(options, "with")
+    HString* with_key = heap.str_intern("with");
+    if (with_key == null) return true;
+    TVal with_val;
+    with_val.set_undefined();
+    if (!builtins::js_get((void*)vm, heap, opts_obj, with_key, &with_val)) {
+        capture_and_clear_error(heap, vm, reason, "import options getter threw");
+        return false;
+    }
+    if (with_val.is_undefined()) return true;
+    if (!with_val.is_object()) {
+        *reason = module_type_error(heap, "import 'with' must be an object");
+        return false;
+    }
+    HObject* with_obj = (HObject*)with_val.get_heapptr();
+    if (with_obj == null) return true;
+
+    // keys = OwnPropertyKeys(attributesObj) — proxy `ownKeys` may throw.
+    HObject* keys_arr = null;
+    HString** ord_keys = null;
+    uint n = 0;
+    if (with_obj.flags.exotic_proxyobj) {
+        if (!builtins::proxy_mop_own_keys((void*)vm, heap, with_obj, &keys_arr)) {
+            capture_and_clear_error(heap, vm, reason, "import 'with' ownKeys threw");
+            return false;
+        }
+        n = keys_arr != null ? keys_arr.array_used : 0;
+    } else {
+        n = builtins::ordinary_own_keys(heap, with_obj, &ord_keys);
+    }
+
+    bool ok = true;
+    for (uint i = 0; i < n; i++) {
+        HString* key = null;
+        if (keys_arr != null) {
+            TVal? kv_opt = keys_arr.get_array_idx(i);
+            if (catch e = kv_opt) continue;
+            TVal kv = kv_opt;
+            if (!kv.is_string()) continue;
+            key = (HString*)kv.get_heapptr();
+        } else {
+            key = ord_keys[i];
+        }
+        if (key == null) continue;
+        // Only String keys participate; a Symbol is a STRING-tagged HString
+        // with is_symbol set — skip it (and never invoke its getter).
+        if (key.is_symbol()) continue;
+
+        // Only enumerable String-keyed own properties participate
+        // (EnumerableOwnProperties). getOwnPropertyDescriptor may be a proxy
+        // trap that throws.
+        builtins::ProxyDesc desc;
+        if (!builtins::own_property_desc((void*)vm, heap, with_obj, key, &desc)) {
+            capture_and_clear_error(heap, vm, reason, "import 'with' descriptor threw");
+            ok = false;
+            break;
+        }
+        if (!desc.found || !desc.enumerable) continue;
+
+        // value = Get(attributesObj, key); a getter may throw.
+        TVal av;
+        av.set_undefined();
+        if (!builtins::js_get((void*)vm, heap, with_obj, key, &av)) {
+            capture_and_clear_error(heap, vm, reason, "import 'with' value getter threw");
+            ok = false;
+            break;
+        }
+        // A Symbol is a STRING-tagged HString with is_symbol set; it is not a
+        // String value and must reject.
+        bool is_str_value = av.is_string();
+        if (is_str_value) {
+            HString* avs = (HString*)av.get_heapptr();
+            if (avs != null && avs.is_symbol()) is_str_value = false;
+        }
+        if (!is_str_value) {
+            *reason = module_type_error(heap, "import attribute value must be a string");
+            ok = false;
+            break;
+        }
+        // Recognize the `type: "json"` attribute so the loader parses the
+        // referenced file as a JSON module (ES2025). Other attributes are
+        // accepted (well-formed) but carry no loader behavior here.
+        if (char_slice_eq(key.get_data(), "type")) {
+            HString* avs2 = (HString*)av.get_heapptr();
+            if (avs2 != null && char_slice_eq(avs2.get_data(), "json")) {
+                *wants_json = true;
+            }
+        }
+    }
+
+    if (ord_keys != null) heap.free_func(heap.heap_udata, ord_keys);
+    return ok;
+}
+
+/// Build a Promise (as a TVal carrying one caller-owned reference — the caller
+/// must decref after storing it) already rejected with `reason`. Used by the
+/// DYN_IMPORT opcode for the IfAbruptRejectPromise steps of §13.3.10: an abrupt
+/// completion from evaluating the specifier or from ToString(specifier) does
+/// not throw synchronously — it rejects the returned promise. On promise
+/// allocation failure returns a fault.
+fn TVal? dynamic_import_reject(Heap* heap, Vm* vm, TVal* reason) {
+    HObject*? prom_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
+    if (catch err = prom_raw) return MODULE_ERROR~;
+    HObject* prom = prom_raw;
+    prom.prototype = heap.promise_proto;
+    builtins::promise_init(prom);
+    prom.as_header().incref();  // caller-owned reference
+    builtins::promise_settle(prom, builtins::PROMISE_REJECTED, reason, heap);
+    builtins::promise_trigger_reactions(prom, heap, (void*)vm);
+    TVal result;
+    result.set_object(prom);
+    return result;
+}
+
+fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier, bool wants_json = false) {
     HObject*? prom_raw = heap.alloc_object(hobject::ObjClass.PROMISE);
     if (catch err = prom_raw) return MODULE_ERROR~;
     HObject* prom = prom_raw;
@@ -822,10 +974,14 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
     if (base_name.len == 0) base_name = heap.current_module_name;
 
     TVal reason;
+    reason.set_undefined();
     bool rejected = false;
+    // True when `reason` holds a reference we own (copied out of an error
+    // channel) that must be dropped after promise_settle increfs its own copy.
+    bool clear_reason_ref = false;
 
     ModuleDef* mod = null;
-    ModuleDef*? mod_opt = resolve_module(heap, dup_spec, base_name);
+    ModuleDef*? mod_opt = resolve_module(heap, dup_spec, base_name, wants_json);
     if (catch err = mod_opt) {
         reason = module_type_error(heap, "cannot resolve module");
         rejected = true;
@@ -846,7 +1002,18 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
         bool ok = execute_module(heap, vm, mod);
         if (!ok) {
             if (heap.has_error || heap.error_value.is_object() || heap.error_value.is_string()) {
-                reason = heap.error_value;
+                // Take ownership of the thrown value: copy it out, then clear
+                // every error channel so the VM does not see a lingering fault
+                // once dynamic_import returns the (rejected) promise. Without
+                // this the enclosing script/module observes a spurious uncaught
+                // throw right after `import(x)` returns.
+                reason.set_undefined();
+                heap.tval_copy_ref(&reason, &heap.error_value);
+                heap.error_value.set_undefined();
+                heap.has_error = false;
+                vm.throw_pending = false;
+                vm.throw_value.set_undefined();
+                clear_reason_ref = true;
             } else {
                 reason = module_type_error(heap, "module evaluation failed");
             }
@@ -856,6 +1023,7 @@ fn TVal? dynamic_import(Heap* heap, Vm* vm, char[] specifier) {
 
     if (rejected) {
         builtins::promise_settle(prom, builtins::PROMISE_REJECTED, &reason, heap);
+        if (clear_reason_ref) heap.decref_tval(&reason);
         builtins::promise_trigger_reactions(prom, heap, (void*)vm);
         TVal result;
         result.set_object(prom);
@@ -1025,6 +1193,13 @@ fn bool export_name_less(char[] a, char[] b) {
 /// (which walks the prop table in insertion order) yields the spec-required
 /// sorted order; @@toStringTag is the only symbol key and is added last.
 fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
+    // A module has exactly one Module Namespace Object (ECMA-262 §10.4.6.12
+    // GetModuleNamespace: cached in module.[[Namespace]]). Repeated `import * as`
+    // / dynamic imports of the same module must observe the SAME object
+    // identity — build it once and cache it on the ModuleDef.
+    if (source_mod.namespace_obj != null) {
+        return source_mod.namespace_obj;
+    }
     HObject*? ns_opt = heap.alloc_object(hobject::ObjClass.OBJECT);
     if (catch err = ns_opt) return MODULE_ERROR~;
     HObject* ns = ns_opt;
@@ -1094,6 +1269,16 @@ fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
         tag_val.set_string(builtins::builtin_intern_string(heap, "Module"));
         ns.put_prop(tostrtag_sym, tag_val, hobject::PROP_FLAGS_NNC);
     }
+
+    // Module namespace exotic objects are not extensible (ECMA-262 §10.4.6):
+    // [[IsExtensible]] always returns false and [[PreventExtensions]] is a
+    // no-op success. Set the flag after all own properties are installed.
+    ns.flags.extensible = false;
+
+    // Cache for identity: subsequent GetModuleNamespace returns this object.
+    // Root it with a reference the ModuleDef owns for its lifetime.
+    ns.as_header().incref();
+    source_mod.namespace_obj = ns;
 
     return ns;
 }

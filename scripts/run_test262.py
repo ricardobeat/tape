@@ -155,7 +155,7 @@ UNSUPPORTED_PATTERN = re.compile(
     # SharedArrayBuffer + Atomics are now implemented single-agent; the
     # Atomics.pause proposal remains filtered above.  Multi-worker `agent`
     # tests are skipped per-file via AGENT_HARNESS_RE below.
-    r"structured-clone|import\.meta|dynamic-import|"
+    r"structured-clone|import\.meta|"
     # Async generators (`async function*`) implemented — plan 060. The
     # `async-generator` feature token no longer forces a skip.
     # Class features not yet implemented (private fields/methods/accessors/
@@ -616,6 +616,7 @@ PHASES = [
             "language/statements/return", "language/statements/variable",
             "language/statements/while", "language/statements/do-while",
             "language/future-reserved-words", "language/arguments-object",
+            "language/expressions/dynamic-import",
         ],
     },
     {
@@ -1051,6 +1052,12 @@ def build_phase_tests(phase_idx, es5_only=False):
         for dirpath, _dirnames, filenames in os.walk(full):
             for entry in filenames:
                 if not entry.endswith(".js"):
+                    continue
+                # `_FIXTURE.js` files are support modules imported by other
+                # tests (dynamic-import, module-code), never run standalone —
+                # they carry no test262 header, so executing them as tests is
+                # meaningless. This is the standard test262 convention.
+                if entry.endswith("_FIXTURE.js"):
                     continue
                 path = os.path.join(dirpath, entry)
                 if should_skip(path, es5_only=es5_only):

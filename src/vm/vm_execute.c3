@@ -3115,10 +3115,27 @@ fn TVal? Vm.run(Vm* vm) {
             HString*? spec_opt = vm_to_string(vm, &spec_tv);
             // vm_to_string can call a user toString (re-enters the VM) — refresh.
             ds.regs_base = ds.act.bottom;
+            // §13.3.10 step 6-7: an abrupt completion from ToString(specifier)
+            // does NOT throw synchronously — IfAbruptRejectPromise rejects the
+            // returned promise with the thrown value. Capture it, clear the
+            // pending throw, and hand back an already-rejected promise.
             if (vm.throw_pending) {
-                if (!vm_check_to_number_throw(vm, ds.act, &ds.curr_pc, &ds.needs_restart)) {
-                    return vm_uncaught_error(vm, &vm.throw_value);
+                TVal reason = vm.throw_value;
+                vm.throw_pending = false;
+                vm.throw_value.set_undefined();
+                TVal? rej_opt = esm::dynamic_import_reject(vm.heap, vm, &reason);
+                ds.regs_base = ds.act.bottom;
+                vm.heap.decref_tval(&reason);
+                if (catch err = rej_opt) {
+                    if (!vm_throw_error(vm, vm.heap.type_err_proto, "dynamic import failed", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                    continue;
                 }
+                TVal rej_tv = rej_opt;
+                TVal* rej_dst = ds.regs_base + (uint)insn.a;
+                vm.heap.tval_copy_ref(rej_dst, &rej_tv);
+                vm.heap.decref_tval(&rej_tv);
                 continue;
             }
             HString* spec_str = null;
@@ -3129,7 +3146,35 @@ fn TVal? Vm.run(Vm* vm) {
                 }
                 continue;
             }
-            TVal? prom_opt = esm::dynamic_import(vm.heap, vm, spec_str.get_data());
+            // §13.3.10 GetImportAttributes: validate the options argument (C
+            // operand). A non-object options/with, a throwing `with`/attribute
+            // getter or `ownKeys`, or a non-String attribute value rejects the
+            // promise (IfAbruptRejectPromise) rather than throwing. Snapshot the
+            // string data first: validation can re-enter the VM and move the
+            // interned string's backing, and rc reads from the register file.
+            TVal opts_tv = *rc;
+            TVal opt_reason;
+            opt_reason.set_undefined();
+            bool wants_json = false;
+            if (!esm::validate_import_options(vm.heap, vm, &opts_tv, &opt_reason, &wants_json)) {
+                ds.regs_base = ds.act.bottom;
+                TVal? orej_opt = esm::dynamic_import_reject(vm.heap, vm, &opt_reason);
+                ds.regs_base = ds.act.bottom;
+                vm.heap.decref_tval(&opt_reason);
+                if (catch err = orej_opt) {
+                    if (!vm_throw_error(vm, vm.heap.type_err_proto, "dynamic import failed", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                    continue;
+                }
+                TVal orej_tv = orej_opt;
+                TVal* orej_dst = ds.regs_base + (uint)insn.a;
+                vm.heap.tval_copy_ref(orej_dst, &orej_tv);
+                vm.heap.decref_tval(&orej_tv);
+                continue;
+            }
+            ds.regs_base = ds.act.bottom;
+            TVal? prom_opt = esm::dynamic_import(vm.heap, vm, spec_str.get_data(), wants_json);
             // The nested module evaluation may have reallocated the valstack.
             ds.regs_base = ds.act.bottom;
             if (catch err = prom_opt) {

@@ -529,8 +529,17 @@ fn ushort? CompilerContext.assignment_expr(&self) {
             self.emit_abc(member_store_op, (uint)lhs_member_obj, (uint)lhs_member_prop, (uint)right);
             self.free_reg(lhs_member_prop);
             self.free_reg(lhs_member_obj);
+            // The assignment expression evaluates to the assigned value. When
+            // `right` is a live local's own register we must not return it (a
+            // later free would alias it); when it is a temp we must copy the
+            // value into a freshly allocated result BEFORE freeing `right`,
+            // otherwise the returned register is dangling (freed, reusable by
+            // the next alloc) and reads back as whatever last landed there.
+            // This surfaced via `import(o.p = x)`: the specifier read undefined.
+            ushort assign_result = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)assign_result, (uint)right, 0);
             if (!right_is_local) { self.free_reg(right); }
-            left = right;
+            left = assign_result;
         } else {
             if (lhs_ref_reg != MAX_REGISTERS) {
                 self.emit_a_bc(Opcode.THROW_UNRESOLVED, (uint)lhs_ref_reg, lhs_getvar_name_idx);
@@ -3203,24 +3212,44 @@ fn ushort? CompilerContext.primary_expr(&self) {
             if (!self.match(TokenType.LPAREN)) {
                 return self.fail("'import' as an expression must be followed by '(' (dynamic import)")~;
             }
-            ushort spec_reg = self.assignment_expr()!;
-            // Optional second argument: import(specifier, options).
-            // Per ES2025 the options AssignmentExpression IS evaluated (it
-            // may have side effects, e.g. an awaited expression), but full
-            // import-attribute semantics (applying `with: {type: ...}`) are
-            // deferred — the result is simply discarded here.
+            // Materialize the specifier into a fresh temp immediately. A bare
+            // `import(x = a)` returns a live local's register (assignment_expr
+            // aliases the RHS local), so freeing that register and reusing it
+            // for `result` would clobber the local. Copying into a dedicated
+            // temp isolates the DYN_IMPORT operands from any live binding.
+            ushort spec_raw = self.assignment_expr()!;
+            ushort spec_reg = self.alloc_reg();
+            self.emit_abc(Opcode.LDREG, (uint)spec_reg, (uint)spec_raw, 0);
+            self.free_reg(spec_raw);
+            // Optional second argument: import(specifier, options). Per ES2025
+            // §13.3.10 the options AssignmentExpression IS evaluated (it may
+            // have side effects) and its `with`/import-attributes are validated
+            // at runtime; validation failures reject the returned promise. When
+            // no second argument is present, pass `undefined` (no attributes).
+            ushort options_reg = self.alloc_reg();
+            bool have_options = false;
             if (self.match(TokenType.COMMA)) {
                 if (!self.check(TokenType.RPAREN)) {
-                    ushort options_reg = self.assignment_expr()!;
-                    self.free_reg(options_reg);
+                    ushort opt = self.assignment_expr()!;
+                    self.emit_abc(Opcode.LDREG, (uint)options_reg, (uint)opt, 0);
+                    self.free_reg(opt);
+                    have_options = true;
                     // Allow a further trailing comma: import(x, opts,)
                     self.match(TokenType.COMMA);
                 }
             }
+            if (!have_options) {
+                self.emit_abc(Opcode.LDUNDEF, (uint)options_reg, 0, 0);
+            }
             self.expect(TokenType.RPAREN)!;
+            // Read order at runtime: A (result) may reuse spec_reg's slot, so
+            // the opcode reads B (spec) and C (options) before writing A. Both
+            // spec_reg and options_reg are private temps, so nothing live is
+            // clobbered even when result aliases spec_reg.
+            self.free_reg(options_reg);
             self.free_reg(spec_reg);
             ushort result = self.alloc_reg();
-            self.emit_abc(Opcode.DYN_IMPORT, (uint)result, (uint)spec_reg, 0);
+            self.emit_abc(Opcode.DYN_IMPORT, (uint)result, (uint)spec_reg, (uint)options_reg);
             // ImportCall produces a value, not a Reference (ES2024 §13.3.10):
             // it is not a SimpleAssignmentTarget. Clear the same flags a call
             // expression clears after emit_call so the assignment/update
