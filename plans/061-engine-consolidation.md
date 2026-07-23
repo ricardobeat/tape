@@ -34,7 +34,24 @@ Ordering: A1 → A2 → A3 (mechanical, independently verifiable) → A5 → A4 
 - **C4 Throw-helper unification** — 7+ per-module {type,range}-error wrapper families → shared builtin_throw_type/range; retire the 72 hand-rolled alloc(ERROR) blocks onto builtin_throw. Keep the result-changing vs no-result split (load-bearing).
 - **C5 AB/SAB merge** — ctor/slice/resize-grow parameterized by (obj_class, is_shared, allow_shrink, alloc_full_max); preserve SAB grow-in-place stable-pointer invariant + detach/RangeError ordering.
 - **C6 (none needed)** — keyed collections already model-consolidated (coll_* + one canonicalizer); use as the reference pattern.
-## D. VM/heap conventions (survey pending)
+## D. VM/heap conventions (survey complete)
+
+- **D1 (URGENT, dispatched as bug-fix ahead of the plan) Missing GC roots** — six more fields of the return_val class unmarked: Activation.{this_binding,new_target,async_promise,tv_func}, Catcher.thrown_val chains, heap.{error_value,yield_value}; plus verify resume_gen/gen_initial_gs-only reachability. Pure fix, near-zero risk.
+- **D2 Single PendingThrow error channel** — FIVE channels today (vm.has_error, heap.has_error+error_value, vm.throw_pending+throw_value, ctx.should_throw+throw_value, return_val-as-payload) with 4 hand-copied conversion epilogues and documented workaround comments; collapse to one heap-owned {value, active} + a commit_throw(ctx). Kills afa_clear_stale_error and the boundary-clear workaround; the coercion-path visibility invariant is the one to protect. Biggest semantic item in the whole plan — do LAST, after everything is green and baselined.
+- **D3 reload_dispatch_for_act(Dispatch*)** — the 8-line CompiledFunction→ds reload copied 8× (overlaps A1; do together); plus pop_frame_head for the ~30 decref+count-- pairs. RET twins share only the head; their async/super tails stay inline.
+- **D4 ta_base_ptr(HObject*) getter** — consolidates the ab.data+byte_offset math at 6+ fast-path sites WITHOUT touching the deliberate resizable-length branch (bench-gated).
+- **D5 (cosmetic, optional) PropFlags** — conventions clean; ~88 inline mutations could start from named constants.
+- **Untouchable without bench proof:** TA length fast-path branch; RET twins' refcount fast paths.
+
+## Synthesis — execution order
+
+1. **D1 GC roots** (bug fix, dispatched immediately).
+2. **A1+D3** pop/reload epilogue helpers (mechanical, 15+ copies).
+3. **B2** in_formal_params ownership; **B4** TemplateScan rollout; **B5** error-message normalization (each small, independent).
+4. **C1** BuiltinDef table; **C3** registrar merge; **C4** throw helpers; **C2** ToObject ladder (builtins tier, independent of VM work).
+5. **A2/A3** suspend + reaction factories; **B1** ParamListPlan (the two big structural merges — golden-bytecode-gated).
+6. **A4/A5/A6** generator state-model collapse; **C5** AB/SAB merge; **B3** CallableCtx frames.
+7. **D2** single error channel — last, on a fully green baseline.
 
 ## Execution rules
 

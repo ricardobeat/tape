@@ -27,6 +27,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ### Todo — small (batch 2, one agent each)
 
+- [x] **ENDTRY freed finally-owning catchers on normal fall-through** — enclosing-catcher lexical env restored early in try-finally-under-try shapes (`for(let x of..){let [a]=arr}` lost bindings); catcher now survives to ENDFINALLY. Found via the 'resizable dstr' test — generic control-flow bug, not TA.
 - [x] **`change-array-by-copy` un-skip** — fully landed: TypedArray side (incl. with() coercion order) + all 15 Array-side residuals (holes-as-own-props, toSorted via shared array_sort_compare, toSpliced arg/limit semantics); phases 5/6/22 all 0 fails.
 - [x] **`Uint8Array.fromBase64`/`toBase64`/hex** (`uint8array-base64`) — 69/71 (2 need immutable-arraybuffer); Uint8Array dir added to phase 22.
 - [x] **`JSON.parse` source access** (`json-parse-with-source`) — reviver context.source spans + JSON.rawJSON/isRawJSON; 21/22 (last is cross-realm staging); also fixed pre-existing `JSON.parse('{}', reviver)` → undefined (zero-alloc mistaken for OOM).
@@ -78,9 +79,8 @@ Method: read-only Explore survey per subsystem → ranked plan → small fix age
 - [ ] **Arrow-rejection flag over-eager on `prototype-rules.js`** — phase 11's 1 CE (`arrow function in expression position not allowed` on a legal form); surfaced when the lexer-arena fix removed the masking crash; part of the arrows-at-precedence cleanup.
 - [>] **`[...arguments]` fails on the re-entrant call_fn path** — arguments object built there lacks @@iterator (divergent construction site); blocks the last ~72 async-gen spread-fixture tests. Opus agent running (unify all arguments builders).
 - [x] **AsyncGenerator `.return()` on suspendedStart awaiting promise** — already covered by the landed AwaitReturn work (verified 19/19 in the return/ dir; earlier fail reports were stale worktree bases).
-- [ ] **Top-level `async function*` DECLARATION toString prints [native code]** — expression + test262-covered forms retained; the bare top-level decl path misses span capture (found verifying eedfc05).
 - [x] **`arguments` empty in async-gen bodies (~60 tests)** — fixed: the shared call_fn re-entry rebuilt arguments unconditionally on resume (argc=0), shadowing the call-time object restored via gs.var_env; now gated on !did_resume. 60/60 family, identity stable across yields.
-- [>] **fromAsync × real async-generator source crashes worker (exit 138)** — 3 tests; interleaved native reactions of the two state machines; Opus agent running.
+- [x] **fromAsync × async-generator crash (exit 138)** — was COMPILE-time: statement() read a stale lexer token_start after peek-dispatch for nested `async function*` decls → src_start past EOF → unsigned span underflow → OOB read; fixed via refresh_token_start + a span-sanity guard. Same root cause also fixed the toString-declaration [native code] gap.
 - [ ] **Grep audit: `&slice[0]` on possibly-empty slices** — the join trap is a general C3 pattern hidden by optimized builds; all join sites now guarded, rest of codebase unaudited.
 - [x] **Lexer returned token slices into dead stack frames** — escaped strings/templates decoded into 64KB stack buffers whose slices escaped via Token.str_value/raw_value; fixed with a lexer arena (pointer-held so lexer snapshot/restore keeps allocations), freed at compile end; dead str_owns_memory removed; ASan-verified across 400+ escape/template tests.
 
