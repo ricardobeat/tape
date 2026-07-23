@@ -3055,13 +3055,21 @@ fn ushort? CompilerContext.primary_expr(&self) {
             if (is_delegate) {
                 ushort iterable_reg = self.assignment_expr()!;
                 if (self.is_async_gen()) {
-                    // async `yield* EXPR` (ES2018 §27.6.3.8): delegate over the
-                    // *async* iterator protocol — the sync YIELD_STAR opcode
-                    // can't await each inner .next(). Desugar to a delegation
-                    // loop over GET_ITER_ASYNC (AsyncFromSync wraps sync sources).
-                    ushort r = self.emit_async_yield_star(iterable_reg)!;
+                    // async `yield* EXPR` (ES2018 §14.4.14 async / §27.6.3.8):
+                    // delegate over the *async* iterator protocol. GET_ITER_ASYNC
+                    // does GetIterator(EXPR, async) — preferring @@asyncIterator
+                    // and wrapping a sync source in %AsyncFromSyncIterator%. The
+                    // YIELD_STAR_ASYNC opcode is then a resumable state machine
+                    // that Awaits every inner next/throw/return result, Awaits
+                    // each yielded value (AsyncGeneratorYield), and forwards the
+                    // consumer's throw/return completions to the delegate.
+                    ushort iter_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.GET_ITER_ASYNC, (uint)iter_reg, (uint)iterable_reg, 0);
                     self.free_reg(iterable_reg);
-                    return r;
+                    ushort result_reg = self.alloc_reg();
+                    self.emit_abc(Opcode.YIELD_STAR_ASYNC, (uint)result_reg, (uint)iter_reg, 0);
+                    self.free_reg(iter_reg);
+                    return result_reg;
                 }
                 // yield* iterable — delegate to the inner iterable via the ES6 iterator protocol.
                 // The YIELD_STAR opcode handles Getting the iterator, calling .next() in a

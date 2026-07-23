@@ -169,6 +169,14 @@ struct GeneratorState {
     // yield* delegation state
     void* delegated_iter;     // HObject* — iterator being delegated to
     uint delegated_index;     // current index in delegation loop
+    // async yield* delegation sub-state (ES2018 §14.4.14 / §27.6.3.8). The
+    // YIELD_STAR_ASYNC opcode is a resumable state machine: each spec Await is a
+    // real suspension that re-enters the same opcode, so the "program counter"
+    // of the delegation lives here. See AsyncYieldStarStep in vm_generators.c3.
+    // AYS_INACTIVE (0) means no async yield* is in progress on this gs.
+    uint ays_step;
+    TVal ays_received;        // value to forward into the next inner call
+    TVal ays_result;          // inner IteratorResult awaited from next/throw/return
     // async state
     void* async_promise;      // HObject* — the async function's outer Promise (null for generators)
     // async-generator state (ES2018 §27.6): true for `async function*` bodies.

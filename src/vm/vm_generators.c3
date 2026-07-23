@@ -13,6 +13,309 @@ import std::math;
 // ============================================================================
 // vm_generators — generator opcodes
 // ============================================================================
+
+// Async yield* delegation sub-states (ES2018 §14.4.14 / §27.6.3.8). The
+// YIELD_STAR_ASYNC opcode is a resumable state machine driven by the async-gen
+// request drain: each spec Await is a real suspension that re-enters the opcode.
+// gs.ays_step records where in the delegation we are on re-entry.
+const uint AYS_INACTIVE       = 0; // no async yield* in progress (first entry)
+const uint AYS_AWAIT_NEXT     = 1; // resuming after Await(iter.next(v))
+const uint AYS_AWAIT_THROW    = 2; // resuming after Await(iter.throw(v))
+const uint AYS_AWAIT_RETURN   = 3; // resuming after Await(iter.return(v))
+const uint AYS_YIELD          = 5; // resuming after GeneratorYield (consumer .next/throw/return)
+const uint AYS_AWAIT_CLOSE    = 6; // resuming after AsyncIteratorClose's Await (missing-throw path)
+const uint AYS_AWAIT_RETVAL   = 7; // resuming after Await(received.value) (missing-return path)
+const uint AYS_AWAIT_RESUMPTION = 8; // resuming after AsyncGeneratorUnwrapYieldResumption's Await (RETURN resumption)
+
+/// Suspend an async-generator body onto its request-queue GeneratorState at an
+/// internal Await (ES2018 §27.6). Attaches ASYNC_GEN_AWAIT_RESUME/REJECT
+/// reactions to `await_obj`, saves the body state with `saved_pc = save_pc`,
+/// signals the drain (ag_did_await), pops the async-gen activation, and returns
+/// control to the drain's caller. `save_pc` is the instruction to re-enter on
+/// resolution — the LOAD_RESUME after AWAIT, or the YIELD_STAR_ASYNC opcode
+/// itself for the delegation state machine. Returns false on OOM (the caller
+/// should treat that as a no-op continuation, matching AWAIT's OOM handling).
+fn bool ag_suspend_on_await(Dispatch* ds, GeneratorState* gs, HObject* await_obj, bool await_was_settled, void* save_pc) {
+    Vm* vm = ds.vm;
+    gs.saved_pc = save_pc;
+    gs.var_env = ds.act.var_env;
+    gs.lex_env = ds.act.lex_env;
+    gs.cat = ds.act.cat;
+    vm.heap.tval_copy_ref(&gs.this_binding, &ds.act.this_binding);
+    TVal* ag_regs_src = ds.act.bottom;
+    for (uint i = 0; i < gs.num_regs; i++) {
+        vm.heap.tval_copy_ref(&gs.saved_regs[i], &ag_regs_src[i]);
+    }
+    if (gs.state != GEN_AWAITING_RETURN) gs.state = GEN_SUSPENDED_YIELD;
+    gs.ag_suspend_kind = AG_SUSPEND_AWAIT;
+
+    HObject*? agr_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
+    HObject*? agj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
+    HObject*? agx_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch _e = agr_raw) { return false; }
+    if (catch _e = agj_raw) { return false; }
+    if (catch _e = agx_raw) { return false; }
+    HObject* ag_resume_fn = agr_raw;
+    (*ag_resume_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_GEN_AWAIT_RESUME.ordinal;
+    (*ag_resume_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
+    ag_resume_fn.flags.is_async_state = true;
+    HObject* ag_reject_fn = agj_raw;
+    (*ag_reject_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_GEN_AWAIT_REJECT.ordinal;
+    (*ag_reject_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
+    ag_reject_fn.flags.is_async_state = true;
+    HObject* ag_rxn = agx_raw;
+    ag_rxn.prototype = vm.heap.object_proto;
+    TVal agr_tv; agr_tv.set_object(ag_resume_fn);
+    TVal agj_tv; agj_tv.set_object(ag_reject_fn);
+    HString* ag_ff = builtins::builtin_intern_string(vm.heap, "onFulfilled");
+    HString* ag_rj = builtins::builtin_intern_string(vm.heap, "onRejected");
+    if (ag_ff != null) ag_rxn.put_prop(ag_ff, agr_tv, hobject::PROP_FLAGS_WEC);
+    if (ag_rj != null) ag_rxn.put_prop(ag_rj, agj_tv, hobject::PROP_FLAGS_WEC);
+    builtins::promise_add_reaction(await_obj, ag_rxn, vm.heap);
+    if (await_was_settled) {
+        builtins::promise_trigger_reactions(await_obj, vm.heap, (void*)vm);
+    }
+
+    vm.heap.ag_did_await = true;
+    if (vm.heap.resume_gen == gs) vm.heap.resume_gen = null;
+    decref_callee_regs(vm, ds.act);
+    vm.activation_count--;
+    if (vm.activation_count == 0) {
+        TVal undef_ag;
+        undef_ag.set_undefined();
+        vm.heap.tval_copy_ref(&vm.return_val, &undef_ag);
+        ds.halt = true;
+        ds.halt_value = vm.return_val;
+        return true;
+    }
+    ds.act = &vm.activations[vm.activation_count - 1];
+    vm.valstack_bottom = ds.act.bottom;
+    vm.valstack_top = ds.act.caller_valstack_top;
+    CompiledFunction* ag_caller_f = (CompiledFunction*)ds.act.func;
+    if (ag_caller_f != vm.current_func) {
+        vm.current_func = ag_caller_f;
+        ds.code_base = ag_caller_f.code;
+        ds.code_count = ag_caller_f.code_count;
+        ds.code_end = ds.code_base + ds.code_count;
+        ds.constants = ag_caller_f.constants;
+        ds.ic_base = (hobject::ICEntry*)ag_caller_f.ic_entries;
+        ds.var_ic_base = (hobject::VarICEntry*)ag_caller_f.var_ic_entries;
+        ds.nregs = ag_caller_f.num_regs;
+    }
+    ds.curr_pc = ds.act.curr_pc;
+    ds.regs_base = ds.act.bottom;
+    ds.needs_restart = true;
+    return true;
+}
+
+/// True if `v` is a callable value (a lightfunc or a callable object).
+fn bool ays_is_callable(TVal v) {
+    if (v.is_lightfunc()) return true;
+    return v.is_object() && v.get_heapptr() != null &&
+           ((HObject*)v.get_heapptr()).is_callable();
+}
+
+/// Accessor-aware property read on `obj` (walks the proto chain). Invokes a
+/// getter when the property is an accessor; on a getter throw, sets *err=true
+/// and leaves the thrown value in vm.return_val (vm.has_error is cleared here so
+/// the caller can route it). Returns undefined for an absent property.
+fn TVal ays_get_prop(Vm* vm, HObject* obj, HString* key, bool* err) {
+    *err = false;
+    TVal out; out.set_undefined();
+    hobject::PropLookupResult res = obj.get_prop_or_accessor_proto(key, true);
+    if (res.kind == hobject::PropLookupKind.PROP_ACCESSOR) {
+        TVal acc_fn = res.acc.accessor_fn;
+        if (!acc_fn.is_undefined() && !acc_fn.is_null()) {
+            TVal this_tv; this_tv.set_object(obj);
+            out = vm.heap.call_fn(vm, acc_fn, null, 0, this_tv);
+            if (vm.has_error) {
+                vm.heap.tval_copy_ref(&out, &vm.return_val);
+                vm.has_error = false; vm.heap.has_error = false;
+                *err = true;
+                return out;
+            }
+        }
+    } else if (res.kind == hobject::PropLookupKind.PROP_DATA) {
+        out = res.data_val;
+    }
+    return out;
+}
+
+/// GetMethod(obj, key) (ES §7.3.10): accessor-aware read, then require the
+/// result be undefined/null (→ *found=false) or callable (→ *found=true).
+/// A non-callable, non-nullish value is a TypeError — but that check is left to
+/// callers that need it (the async yield* fallbacks only branch on presence).
+fn TVal ays_get_method(Vm* vm, HObject* obj, HString* key, bool* found, bool* err) {
+    *found = false;
+    TVal m = ays_get_prop(vm, obj, key, err);
+    if (*err) return m;
+    if (ays_is_callable(m)) *found = true;
+    return m;
+}
+
+/// Save the async-gen body state back into the request-queue gs, ready to be
+/// re-entered at `save_pc`. Shared by the async yield* Await/Yield suspensions.
+fn void ays_save_body(Dispatch* ds, GeneratorState* gs, void* save_pc) {
+    Vm* vm = ds.vm;
+    for (uint i = 0; i < gs.num_regs; i++) {
+        vm.heap.tval_copy_ref(&gs.saved_regs[i], &ds.act.bottom[i]);
+    }
+    gs.saved_pc = save_pc;
+    gs.var_env = ds.act.var_env;
+    gs.lex_env = ds.act.lex_env;
+    gs.cat = ds.act.cat;
+    vm.heap.tval_copy_ref(&gs.this_binding, &ds.act.this_binding);
+    gs.state = GEN_SUSPENDED_YIELD;
+}
+
+/// Pop the async-gen activation, writing `result` back to the caller (the
+/// drain's call_fn context), and return control there. Shared tail of the async
+/// yield* Yield suspension and body completions.
+fn void ays_pop_to_caller(Dispatch* ds, TVal result) {
+    Vm* vm = ds.vm;
+    Activation* yact = &vm.activations[vm.activation_count - 1];
+    if (yact.retval != null) { vm.heap.tval_copy_ref(yact.retval, &result); }
+    else { vm.heap.tval_copy_ref(&vm.return_val, &result); }
+    vm.activation_count--;
+    if (vm.activation_count == 0) {
+        ds.halt = true;
+        ds.halt_value = vm.return_val;
+        return;
+    }
+    Activation* caller = &vm.activations[vm.activation_count - 1];
+    vm.valstack_bottom = caller.bottom;
+    if (caller.func != null) {
+        CompiledFunction* cf = (CompiledFunction*)caller.func;
+        vm.valstack_top = caller.bottom + cf.num_regs;
+    }
+    ds.needs_restart = true;
+}
+
+/// Throw `errval` at the async yield* point (ES2018 `? ...` rethrows). Finds a
+/// catcher within the async-gen body; if none, surfaces the throw via
+/// heap.has_error so the drain rejects the in-flight request (mirrors the
+/// async-gen LOAD_RESUME uncaught-throw path). Returns false only on a hard VM
+/// error the caller must propagate.
+fn bool ays_throw_into_body(Dispatch* ds, GeneratorState* gs, TVal errval) {
+    Vm* vm = ds.vm;
+    if (vm_throw_value(vm, errval, ds.act, &ds.curr_pc, &ds.needs_restart, true)) {
+        // Caught inside the body — resume there.
+        ds.needs_restart = true;
+        return true;
+    }
+    // Uncaught: complete the generator and reject the in-flight request.
+    gs.state = GEN_COMPLETED;
+    vm.heap.resume_gen = null;
+    decref_callee_regs(vm, ds.act);
+    vm.activation_count--;
+    vm.has_error = true;
+    vm.heap.has_error = true;
+    vm.heap.tval_copy_ref(&vm.heap.error_value, &errval);
+    if (vm.activation_count == 0) {
+        ds.halt = true;
+        ds.halt_value = (TVal){};
+        return true;
+    }
+    Activation* caller = &vm.activations[vm.activation_count - 1];
+    vm.valstack_bottom = caller.bottom;
+    if (caller.func != null) {
+        CompiledFunction* cf = (CompiledFunction*)caller.func;
+        vm.valstack_top = caller.bottom + cf.num_regs;
+    }
+    ds.halt = true;
+    ds.halt_value = (TVal){};
+    return true;
+}
+
+/// Throw a fresh TypeError with `msg` at the async yield* point (protocol
+/// violations: missing throw method, non-object iterator result).
+fn bool ays_throw_type(Dispatch* ds, GeneratorState* gs, char[] msg) {
+    Vm* vm = ds.vm;
+    HObject*? te_raw = vm.heap.alloc_object(hobject::ObjClass.ERROR);
+    if (catch _e = te_raw) { return false; }
+    HObject* te = te_raw;
+    te.prototype = vm.heap.type_err_proto;
+    HString* mk = (HString*)vm.heap.strs[heap::BuiltinStr.MESSAGE];
+    TVal mv; mv.set_string(intern_string(vm, msg));
+    if (mk != null) te.put_prop(mk, mv, hobject::PROP_FLAGS_WEC);
+    TVal tv; tv.set_object(te);
+    return ays_throw_into_body(ds, gs, tv);
+}
+
+/// GeneratorYield inside the async yield* state machine (ES2018 §14.4.14 async
+/// step 7.a.v): settle the in-flight request with the yielded `value` and
+/// suspend, re-entering YIELD_STAR_ASYNC when the consumer resumes. `value` is
+/// the already-read IteratorValue of the inner result — it is NOT re-Awaited
+/// (a manually-implemented async iterator that yields a promise surfaces it
+/// unwrapped) and is placed into a fresh {value, done:false} so the drain's
+/// finish step reads plain data props (never re-invoking the inner getters,
+/// which this opcode already read once). Caller sets gs.ays_step = AYS_YIELD.
+fn void ays_do_yield(Dispatch* ds, GeneratorState* gs, TVal value) {
+    Vm* vm = ds.vm;
+    ays_save_body(ds, gs, ds.curr_pc - 1); // re-enter this opcode on resume
+    gs.ag_suspend_kind = AG_SUSPEND_YIELD;
+    vm.heap.resume_gen = null;
+    vm.heap.did_yield = true;
+    vm.heap.tval_copy_ref(&vm.heap.yield_value, &value);
+
+    HObject*? robj_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
+    TVal wrapped;
+    if (try robj = robj_raw) {
+        robj.prototype = vm.heap.object_proto;
+        HString* vk = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+        if (vk != null) robj.put_prop(vk, value, hobject::PROP_FLAGS_WEC);
+        HString* dk = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+        TVal df; df.set_boolean(false);
+        if (dk != null) robj.put_prop(dk, df, hobject::PROP_FLAGS_WEC);
+        wrapped.set_object(robj);
+    } else {
+        wrapped = value;
+    }
+    ays_pop_to_caller(ds, wrapped);
+}
+
+/// Await `value` inside the async yield* state machine: PromiseResolve it and
+/// suspend, re-entering YIELD_STAR_ASYNC at `next_step` when it settles.
+/// Returns false on OOM (the caller should treat that as a no-op continuation).
+fn bool ays_await(Dispatch* ds, GeneratorState* gs, TVal value, uint next_step) {
+    Vm* vm = ds.vm;
+    HObject*? resolved_raw = builtins::promise_resolve_default_ctor(vm.heap, (void*)vm, value);
+    if (vm.heap.has_error) {
+        // PromiseResolve threw (bad thenable getter): throw into the body.
+        TVal err = vm.heap.error_value; vm.heap.has_error = false;
+        gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+        ays_throw_into_body(ds, gs, err);
+        return true;
+    }
+    if (catch _e = resolved_raw) { return false; }
+    HObject* obj = resolved_raw;
+    bool settled = builtins::promise_get_state(obj, 0) != builtins::PROMISE_PENDING;
+    gs.ays_step = next_step;
+    ag_suspend_on_await(ds, gs, obj, settled, ds.curr_pc - 1);
+    return true;
+}
+
+/// Return `value` from the async yield* point (ES2018 §14.4.14 step 7.c: the
+/// delegate's return() completed, or it had no return method). Routes through
+/// any enclosing try/finally in the body (like an injected `return`), else
+/// completes the generator now so the drain settles {value, done:true}.
+fn void ays_return_from_body(Dispatch* ds, GeneratorState* gs, TVal value) {
+    Catcher* cat = (Catcher*)ds.act.cat;
+    if (cat != null && cat.finally_pc != null) {
+        cat.return_val = value;
+        if (!(cat.flags & CATCHER_FLAG_PENDING_RETURN)) {
+            cat.flags |= CATCHER_FLAG_PENDING_RETURN | CATCHER_FLAG_PENDING_RETURN_GEN;
+            ds.curr_pc = cat.finally_pc;
+            ds.act.curr_pc = ds.curr_pc;
+        }
+        ds.needs_restart = true;
+        return;
+    }
+    gs.state = GEN_COMPLETED;
+    ds.vm.heap.resume_gen = null;
+    vm_complete_generator_return(ds, &value);
+}
+
 /// Sub-dispatch for LOAD_RESUME, AWAIT, YIELD, YIELD_STAR opcodes.
 fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* rc, Instruction insn) {
     Vm* vm = ds.vm;
@@ -111,6 +414,20 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                                         vm.heap.tval_copy_ref(caller_act.retval, &throw_val);
                                     }
                                 }
+                            } else {
+                                // No caller frame in this Vm.run invocation — the
+                                // generator body was resumed via the re-entrant
+                                // call_fn path (e.g. an AsyncFromSync adapter's
+                                // .throw() calling this sync generator's .throw()).
+                                // Surface the uncaught throw via has_error so
+                                // vm_call_fn_impl propagates it to its caller and
+                                // halt, instead of silently returning a stale value.
+                                vm.has_error = true;
+                                vm.heap.has_error = true;
+                                vm.heap.tval_copy_ref(&vm.heap.error_value, &throw_val);
+                                vm.heap.tval_copy_ref(&vm.return_val, &throw_val);
+                                ds.halt = true;
+                                ds.halt_value = (TVal){};
                             }
                         }
                     } else {
@@ -238,84 +555,10 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 GeneratorState* ag_gs = (GeneratorState*)ds.act.async_gen_state;
                 bool is_ag_await = ag_gs != null && ag_gs.is_async_gen;
                 if (is_ag_await) {
-                    GeneratorState* gs = ag_gs;
-                    CompiledFunction* ag_func = (CompiledFunction*)ds.act.func;
-                    // Save the body's execution state back into the request-
-                    // queue gs (its saved_regs array already sized num_regs).
-                    gs.saved_pc = ds.curr_pc; // points to LOAD_RESUME
-                    gs.var_env = ds.act.var_env;
-                    gs.lex_env = ds.act.lex_env;
-                    gs.cat = ds.act.cat;
-                    vm.heap.tval_copy_ref(&gs.this_binding, &ds.act.this_binding);
-                    TVal* ag_regs_src = ds.act.bottom;
-                    for (uint i = 0; i < gs.num_regs; i++) {
-                        vm.heap.tval_copy_ref(&gs.saved_regs[i], &ag_regs_src[i]);
-                    }
-                    // AWAITING_RETURN is preserved (a .return()-triggered await
-                    // must stay in that state); otherwise mark SUSPENDED_YIELD.
-                    if (gs.state != GEN_AWAITING_RETURN) gs.state = GEN_SUSPENDED_YIELD;
-                    gs.ag_suspend_kind = AG_SUSPEND_AWAIT;
-
-                    // Attach resume/reject reactions carrying gs.
-                    HObject*? agr_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
-                    HObject*? agj_raw = vm.heap.alloc_object(hobject::ObjClass.FUNCTION);
-                    HObject*? agx_raw = vm.heap.alloc_object(hobject::ObjClass.OBJECT);
-                    if (catch _e = agr_raw) { return (TVal){}; }
-                    if (catch _e = agj_raw) { return (TVal){}; }
-                    if (catch _e = agx_raw) { return (TVal){}; }
-                    HObject* ag_resume_fn = agr_raw;
-                    (*ag_resume_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_GEN_AWAIT_RESUME.ordinal;
-                    (*ag_resume_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
-                    ag_resume_fn.flags.is_async_state = true;
-                    HObject* ag_reject_fn = agj_raw;
-                    (*ag_reject_fn.extra_ptr()).func.builtin_fn_index = (int)builtins::Builtin.ASYNC_GEN_AWAIT_REJECT.ordinal;
-                    (*ag_reject_fn.extra_ptr()).func.var_env = (EnvRecord*)gs;
-                    ag_reject_fn.flags.is_async_state = true;
-                    HObject* ag_rxn = agx_raw;
-                    ag_rxn.prototype = vm.heap.object_proto;
-                    TVal agr_tv; agr_tv.set_object(ag_resume_fn);
-                    TVal agj_tv; agj_tv.set_object(ag_reject_fn);
-                    HString* ag_ff = builtins::builtin_intern_string(vm.heap, "onFulfilled");
-                    HString* ag_rj = builtins::builtin_intern_string(vm.heap, "onRejected");
-                    if (ag_ff != null) ag_rxn.put_prop(ag_ff, agr_tv, hobject::PROP_FLAGS_WEC);
-                    if (ag_rj != null) ag_rxn.put_prop(ag_rj, agj_tv, hobject::PROP_FLAGS_WEC);
-                    builtins::promise_add_reaction(await_obj, ag_rxn, vm.heap);
-                    if (await_was_settled) {
-                        builtins::promise_trigger_reactions(await_obj, vm.heap, (void*)vm);
-                    }
-
-                    // Signal the drain that the body suspended internally, then
-                    // pop the async-gen activation and return to the drain's
-                    // call_fn (or the caller if at top).
-                    vm.heap.ag_did_await = true;
-                    if (vm.heap.resume_gen == gs) vm.heap.resume_gen = null;
-                    decref_callee_regs(vm, ds.act);
-                    vm.activation_count--;
-                    if (vm.activation_count == 0) {
-                        TVal undef_ag;
-                        undef_ag.set_undefined();
-                        vm.heap.tval_copy_ref(&vm.return_val, &undef_ag);
-                        ds.halt = true;
-                        ds.halt_value = vm.return_val;
-                        return (TVal){};
-                    }
-                    ds.act = &vm.activations[vm.activation_count - 1];
-                    vm.valstack_bottom = ds.act.bottom;
-                    vm.valstack_top = ds.act.caller_valstack_top;
-                    CompiledFunction* ag_caller_f = (CompiledFunction*)ds.act.func;
-                    if (ag_caller_f != vm.current_func) {
-                        vm.current_func = ag_caller_f;
-                        ds.code_base = ag_caller_f.code;
-                        ds.code_count = ag_caller_f.code_count;
-                        ds.code_end = ds.code_base + ds.code_count;
-                        ds.constants = ag_caller_f.constants;
-                        ds.ic_base = (hobject::ICEntry*)ag_caller_f.ic_entries;
-                        ds.var_ic_base = (hobject::VarICEntry*)ag_caller_f.var_ic_entries;
-                        ds.nregs = ag_caller_f.num_regs;
-                    }
-                    ds.curr_pc = ds.act.curr_pc;
-                    ds.regs_base = ds.act.bottom;
-                    ds.needs_restart = true;
+                    // Suspend onto the request-queue gs; re-enter at the
+                    // LOAD_RESUME after this AWAIT on resolution. (OOM → no-op
+                    // continuation, matching the sync suspend path below.)
+                    ag_suspend_on_await(ds, ag_gs, await_obj, await_was_settled, ds.curr_pc);
                     return (TVal){};
                 }
 
@@ -1377,6 +1620,288 @@ fn TVal? dispatch_generators(Dispatch* ds, Opcode op, TVal* ra, TVal* rb, TVal* 
                 ds.needs_restart = true;
             }
             return (TVal){};
+        }
+
+        case Opcode.YIELD_STAR_ASYNC: {
+            // async `yield* B` (ES2018 §14.4.14 async form / §27.6.3.8).
+            // A = result_reg, B = async-iterator reg (from GET_ITER_ASYNC).
+            //
+            // A resumable state machine: every inner next/throw/return result is
+            // Awaited, each yielded value is Awaited (AsyncGeneratorYield), and
+            // the consumer's throw/return completions are forwarded to the
+            // delegate's throw/return methods. Because each Await is a real
+            // suspension that re-enters this same opcode, gs.ays_step records the
+            // delegation position; gs.delegated_iter holds the inner iterator and
+            // gs.ays_received the value to forward into the next inner call.
+            GeneratorState* gs = (GeneratorState*)ds.act.async_gen_state;
+            if (gs == null) { gs = vm.heap.resume_gen; }
+            if (gs == null) { ra[0].set_undefined(); return (TVal){}; }
+            if (vm.heap.resume_gen == gs) { vm.heap.resume_gen = null; }
+
+            uint step = gs.ays_step;
+
+            // ── First entry: capture the iterator, seed the loop with NEXT ──
+            if (step == AYS_INACTIVE && gs.delegated_iter == null) {
+                TVal iter_val = *rb;
+                if (!iter_val.is_object() || iter_val.get_heapptr() == null) {
+                    if (!vm_throw_error(vm, vm.heap.type_err_proto, "yield* requires an async iterator",
+                                        ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                        return VM_ERROR~;
+                    }
+                    ds.needs_restart = true; return (TVal){};
+                }
+                gs.delegated_iter = iter_val.get_heapptr();
+                gs.ays_received.set_undefined();          // first .next(undefined)
+                gs.resume_kind = NEXT;                     // seed: call .next()
+            }
+
+            HObject* iterator = (HObject*)gs.delegated_iter;
+            if (iterator == null) { ra[0].set_undefined(); return (TVal){}; }
+
+            // ── Resumption after an Await: adopt the settled completion ──────
+            // async_gen_resume_body set gs.resume_kind = NEXT (fulfilled) or
+            // THROW (rejected) with the settled value; adopt it as `settled`.
+            // A rejected inner-result Await propagates as a throw into the outer
+            // body (spec: `? Await(...)`).
+            if (step == AYS_AWAIT_NEXT || step == AYS_AWAIT_THROW ||
+                step == AYS_AWAIT_RETURN || step == AYS_AWAIT_CLOSE ||
+                step == AYS_AWAIT_RETVAL) {
+                bool await_rejected = (gs.resume_kind == THROW);
+                TVal settled;
+                if (await_rejected) { settled = gs.throw_value; }
+                else { settled = gs.resume_value; }
+                gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+
+                if (await_rejected) {
+                    // The awaited promise rejected: throw into the outer body.
+                    // The delegation is abandoned (delegated_iter cleared) —
+                    // IteratorClose is NOT performed here (the inner call already
+                    // completed abnormally). §14.4.14: `? Await` rethrows.
+                    gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                    if (!ays_throw_into_body(ds, gs, settled)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+
+                if (step == AYS_AWAIT_RETVAL) {
+                    // step 7.c.iii.ii: missing return method — the awaited
+                    // received.value is now `settled`; return it as a return
+                    // completion (routing through any enclosing finally).
+                    gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                    ays_return_from_body(ds, gs, settled);
+                    return (TVal){};
+                }
+                if (step == AYS_AWAIT_CLOSE) {
+                    // AsyncIteratorClose's Await(innerResult) settled (missing
+                    // `throw` path). IteratorClose ignores the result's shape;
+                    // now throw the protocol-violation TypeError (§14.4.14
+                    // step 7.b.iii.6).
+                    gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                    if (!ays_throw_type(ds, gs, "The iterator does not provide a 'throw' method")) {
+                        return VM_ERROR~;
+                    }
+                    return (TVal){};
+                }
+                // AWAIT_NEXT / AWAIT_THROW / AWAIT_RETURN: `settled` is the inner
+                // IteratorResult. Handle done/value below (remember which method
+                // produced it for the done=true completion semantics).
+                if (!settled.is_object() || settled.get_heapptr() == null) {
+                    gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                    if (!ays_throw_type(ds, gs, "Iterator result is not an object")) {
+                        return VM_ERROR~;
+                    }
+                    return (TVal){};
+                }
+                HObject* res_obj = (HObject*)settled.get_heapptr();
+                // IteratorComplete (done read first — observable ordering).
+                HString* done_k = (HString*)vm.heap.strs[heap::BuiltinStr.DONE];
+                HString* value_k = (HString*)vm.heap.strs[heap::BuiltinStr.VALUE];
+                bool gerr = false;
+                TVal done_v = ays_get_prop(vm, res_obj, done_k, &gerr);
+                if (gerr) {
+                    gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                    if (!ays_throw_into_body(ds, gs, done_v)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+                bool done = builtins::builtin_to_boolean(&done_v);
+                // IteratorValue (read after done).
+                TVal val_v = ays_get_prop(vm, res_obj, value_k, &gerr);
+                if (gerr) {
+                    gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                    if (!ays_throw_into_body(ds, gs, val_v)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+
+                if (done) {
+                    if (step == AYS_AWAIT_RETURN) {
+                        // §14.4.14 step 7.c: inner return() done → the outer
+                        // generator returns `value` (route through any finally).
+                        gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                        ays_return_from_body(ds, gs, val_v);
+                        return (TVal){};
+                    }
+                    // next()/throw() done → yield*'s value is `value`; resume the
+                    // body after the opcode with it.
+                    gs.delegated_iter = null; gs.ays_step = AYS_INACTIVE;
+                    vm.heap.tval_copy_ref(&ra[0], &val_v);
+                    return (TVal){};
+                }
+                // not done → §14.4.14 async step 7.a.v: GeneratorYield of the
+                // inner value (not re-Awaited). Suspend re-entering this opcode
+                // at AYS_YIELD when the consumer resumes.
+                gs.ays_step = AYS_YIELD;
+                ays_do_yield(ds, gs, val_v);
+                return (TVal){};
+            }
+
+            // ── Resumption after a GeneratorYield (or first NEXT seed): the ──
+            // consumer resumed via .next(v)/.throw(v)/.return(v). Choose the
+            // inner method to invoke based on the resumption completion.
+            ResumeKind consumer_kind;
+            TVal fwd_val;
+            if (step == AYS_AWAIT_RESUMPTION) {
+                // §27.6.3.7 AsyncGeneratorUnwrapYieldResumption: a RETURN
+                // resumption's value was Awaited. A fulfilled await yields a
+                // RETURN completion with the awaited value; a rejected await
+                // becomes a THROW completion (spec: awaited.[[Type]] is throw).
+                if (gs.resume_kind == THROW) {
+                    consumer_kind = THROW; fwd_val = gs.throw_value;
+                } else {
+                    consumer_kind = RETURN; fwd_val = gs.resume_value;
+                }
+                gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+                gs.ays_step = AYS_INACTIVE;
+            } else {
+                consumer_kind = gs.resume_kind;
+                if (consumer_kind == THROW) { fwd_val = gs.throw_value; }
+                else if (consumer_kind == RETURN) { fwd_val = gs.return_value; }
+                else { fwd_val = gs.resume_value; }
+                gs.resume_kind = NEXT; gs.resume_value.set_undefined();
+                gs.ays_step = AYS_INACTIVE;
+                // §27.6.3.7: a RETURN resumption is unwrapped by Awaiting its
+                // value before delegation. (NEXT/THROW pass through unchanged.)
+                if (consumer_kind == RETURN) {
+                    if (!ays_await(ds, gs, fwd_val, AYS_AWAIT_RESUMPTION)) { return (TVal){}; }
+                    return (TVal){};
+                }
+            }
+
+            if (consumer_kind == NEXT) {
+                // Call iterator.next(fwd_val), Await the result.
+                HString* next_k = intern_string(vm, "next");
+                bool merr = false; bool found = false;
+                TVal nm = ays_get_method(vm, iterator, next_k, &found, &merr);
+                if (merr) {
+                    gs.delegated_iter = null;
+                    if (!ays_throw_into_body(ds, gs, nm)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+                if (!found) {
+                    // §7.4.2 IteratorNext: a non-callable `next` is a TypeError.
+                    gs.delegated_iter = null;
+                    if (!ays_throw_type(ds, gs, "iterator.next is not a function")) {
+                        return VM_ERROR~;
+                    }
+                    return (TVal){};
+                }
+                TVal itv; itv.set_object(iterator);
+                TVal[1] args; args[0] = fwd_val;
+                TVal res = vm.heap.call_fn(vm, nm, &args, 1, itv);
+                if (vm.heap.has_error) {
+                    TVal err = vm.heap.error_value; vm.has_error = false; vm.heap.has_error = false;
+                    gs.delegated_iter = null;
+                    if (!ays_throw_into_body(ds, gs, err)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+                if (!ays_await(ds, gs, res, AYS_AWAIT_NEXT)) { return (TVal){}; }
+                return (TVal){};
+            }
+
+            if (consumer_kind == THROW) {
+                // §14.4.14 step 7.b: GetMethod(iterator, "throw").
+                HString* throw_k = intern_string(vm, "throw");
+                bool merr = false; bool found = false;
+                TVal tm = ays_get_method(vm, iterator, throw_k, &found, &merr);
+                if (merr) {
+                    gs.delegated_iter = null;
+                    if (!ays_throw_into_body(ds, gs, tm)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+                if (!found) {
+                    // step 7.b.iii: missing throw → AsyncIteratorClose(iterator)
+                    // then throw TypeError. AsyncIteratorClose reads "return";
+                    // if present, calls it and Awaits the result.
+                    HString* ret_k = intern_string(vm, "return");
+                    bool cerr = false; bool cfound = false;
+                    TVal rm = ays_get_method(vm, iterator, ret_k, &cfound, &cerr);
+                    if (cerr) {
+                        gs.delegated_iter = null;
+                        if (!ays_throw_into_body(ds, gs, rm)) { return VM_ERROR~; }
+                        return (TVal){};
+                    }
+                    if (cfound) {
+                        TVal itv2; itv2.set_object(iterator);
+                        TVal cres = vm.heap.call_fn(vm, rm, null, 0, itv2);
+                        if (vm.heap.has_error) {
+                            TVal err = vm.heap.error_value; vm.has_error = false; vm.heap.has_error = false;
+                            gs.delegated_iter = null;
+                            if (!ays_throw_into_body(ds, gs, err)) { return VM_ERROR~; }
+                            return (TVal){};
+                        }
+                        // AsyncIteratorClose: Await the return() result, then
+                        // (ignoring its shape) throw the TypeError.
+                        if (!ays_await(ds, gs, cres, AYS_AWAIT_CLOSE)) { return (TVal){}; }
+                        return (TVal){};
+                    }
+                    // No return method: throw the TypeError immediately.
+                    gs.delegated_iter = null;
+                    if (!ays_throw_type(ds, gs, "The iterator does not provide a 'throw' method")) {
+                        return VM_ERROR~;
+                    }
+                    return (TVal){};
+                }
+                // Call iterator.throw(fwd_val), Await the result.
+                TVal itv; itv.set_object(iterator);
+                TVal[1] args; args[0] = fwd_val;
+                TVal res = vm.heap.call_fn(vm, tm, &args, 1, itv);
+                if (vm.heap.has_error) {
+                    TVal err = vm.heap.error_value; vm.has_error = false; vm.heap.has_error = false;
+                    gs.delegated_iter = null;
+                    if (!ays_throw_into_body(ds, gs, err)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+                if (!ays_await(ds, gs, res, AYS_AWAIT_THROW)) { return (TVal){}; }
+                return (TVal){};
+            }
+
+            // consumer_kind == RETURN — §14.4.14 step 7.c.
+            {
+                HString* ret_k = intern_string(vm, "return");
+                bool merr = false; bool found = false;
+                TVal rm = ays_get_method(vm, iterator, ret_k, &found, &merr);
+                if (merr) {
+                    gs.delegated_iter = null;
+                    if (!ays_throw_into_body(ds, gs, rm)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+                if (!found) {
+                    // step 7.c.iii: return is undefined → for async, Await
+                    // received.value, then return Completion(awaited value).
+                    if (!ays_await(ds, gs, fwd_val, AYS_AWAIT_RETVAL)) { return (TVal){}; }
+                    return (TVal){};
+                }
+                // Call iterator.return(fwd_val), Await the result.
+                TVal itv; itv.set_object(iterator);
+                TVal[1] args; args[0] = fwd_val;
+                TVal res = vm.heap.call_fn(vm, rm, &args, 1, itv);
+                if (vm.heap.has_error) {
+                    TVal err = vm.heap.error_value; vm.has_error = false; vm.heap.has_error = false;
+                    gs.delegated_iter = null;
+                    if (!ays_throw_into_body(ds, gs, err)) { return VM_ERROR~; }
+                    return (TVal){};
+                }
+                if (!ays_await(ds, gs, res, AYS_AWAIT_RETURN)) { return (TVal){}; }
+                return (TVal){};
+            }
         }
 
         case Opcode.GEN_START: {

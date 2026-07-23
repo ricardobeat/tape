@@ -526,6 +526,18 @@ enum Opcode : char {
     /// ABC format: A=result_reg, B=iterable_reg, C=0.
     YIELD_STAR,
 
+    /// `A = yield* B` inside an *async* generator (ES2018 §14.4.14 async form /
+    /// §27.6.3.8). Delegates over the async iterator protocol: every inner
+    /// next/throw/return result is Awaited, and each yielded value is Awaited
+    /// (AsyncGeneratorYield). Unlike the sync YIELD_STAR, this is a resumable
+    /// state machine — each spec Await is a real suspension that re-enters this
+    /// opcode (gs.ays_step records the delegation position). Forwards the
+    /// consumer's .throw()/.return() completions to the inner iterator's
+    /// throw/return methods with the missing-method fallbacks (AsyncIteratorClose
+    /// + TypeError for a missing throw; return Completion for a missing return).
+    /// ABC format: A=result_reg, B=iterable_reg, C=0.
+    YIELD_STAR_ASYNC,
+
     /// `return A` from a generator — marks generator as completed,
     /// wraps result in IteratorResult, and returns.
     /// Same encoding as RET (ABC format).
@@ -824,6 +836,7 @@ case PUTLEX:     return A_BC;
         case LOAD_RESUME:  return ABC;
         case YIELD:      return ABC;
         case YIELD_STAR: return ABC;
+        case YIELD_STAR_ASYNC: return ABC;
         case GETPROPC_CACHED: return ABC;
         case GEN_START:      return NONE;
 

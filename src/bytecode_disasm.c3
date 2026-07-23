@@ -230,6 +230,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.LOAD_RESUME.ordinal] = "LOAD_RESUME",
     [Opcode.YIELD.ordinal]       = "YIELD",
     [Opcode.YIELD_STAR.ordinal]  = "YIELD_STAR",
+    [Opcode.YIELD_STAR_ASYNC.ordinal] = "YIELD_STAR_ASYNC",
     [Opcode.RET_GEN.ordinal]     = "RET_GEN",
     [Opcode.RETUNDEF_GEN.ordinal] = "RETUNDEF_GEN",
     [Opcode.GEN_START.ordinal]    = "GEN_START",
