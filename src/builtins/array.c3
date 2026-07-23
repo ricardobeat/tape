@@ -1270,7 +1270,10 @@ fn void builtin_array_proto_join(BuiltinContext* ctx) {
 
     usz offset = 0;
     for (uint i = 0; i < len; i++) {
-        if (i > 0) {
+        if (i > 0 && sep.len > 0) {
+            // Guard sep.len > 0: an empty separator (e.g. join("")) makes `sep`
+            // a zero-length slice, and &sep[0] traps under bounds-checked builds
+            // even though the copy would move zero bytes.
             mem::copy(&result_buf[offset], &sep[0], (sz)(sep.len));
             offset += sep.len;
         }

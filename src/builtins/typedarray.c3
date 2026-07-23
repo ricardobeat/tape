@@ -2033,7 +2033,13 @@ fn void builtin_ta_proto_join(BuiltinContext* ctx) {
     heap.free_func(heap.heap_udata, rbuf);
     if (catch err = hs_raw) { ctx.result.set_undefined(); return; }
     HString* hs = hs_raw;
-    heap.str_table_insert(hs);
+    // Return the join result as a transient (non-interned) string. It must NOT
+    // be inserted into the string table without also taking the table's owning
+    // incref + setting is_interned; a bare insert leaves a table entry backed by
+    // no reference, so the result register's later decref frees it while it is
+    // still in the table, double-freeing at heap reset. String === compares by
+    // content (equals_hstring), so interning is not required for correctness;
+    // store_builtin_result handles the refcount-1 transient.
     ctx.result.set_string(hs);
 }
 

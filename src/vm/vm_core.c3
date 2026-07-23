@@ -63,6 +63,14 @@ fn void vm_mark_activations(void* vm_ptr, void* heap_ptr) {
     Vm* vm = (Vm*)vm_ptr;
     heap::Heap* h = (heap::Heap*)heap_ptr;
 
+    // VM-level TVal scratch that outlives any single register span and is not
+    // part of the scanned valstack: a heap value parked here (e.g. a closure
+    // returned into vm.return_val by a top-level RET, or a pending throw value)
+    // must be rooted, or a safepoint GC — which clears temproots — collects it
+    // and the next decref of the stale slot is a use-after-free.
+    h.mark_tval(&vm.return_val);
+    h.mark_tval(&vm.throw_value);
+
     // Mark live activations (inner-most vm_call_fn_impl's callback + inline callees).
     // Each frame's register span runs from its bottom to the next inner frame's
     // bottom (which contains the argument/scratch slots this frame staged for
