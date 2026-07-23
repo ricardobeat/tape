@@ -336,6 +336,14 @@ struct Heap {
     // GC re-entrancy guard
     bool                gc_running;
 
+    // Set for the duration of Heap.sweep(). While sweeping, decref must not
+    // follow a reference into another unmarked (dying) heap node: the sweep
+    // loop frees every unmarked object/bigint itself, so touching such a
+    // node's header from a sibling's hobject_free is a use-after-free / double
+    // free. When sweeping, decref skips unmarked non-string targets — their
+    // memory is reclaimed by the sweep, not by refcounting.
+    bool                sweeping;
+
     // VM callback for calling JS functions from builtins (set by vm_create)
     VmCallHandlerFn     call_handler_fn;
     VmCallFn            call_fn;
@@ -1491,6 +1499,17 @@ fn void Heap.free_string(&self, hstring::HString* s) {
  * reachable from roots).
  */
 fn void Heap.decref(&self, HeapHeader* hdr) {
+    // Sweep guard: while Heap.sweep() is freeing unmarked garbage, a dying
+    // object's hobject_free may decref a neighbour it references (getter/setter,
+    // captured_this, promise result, a bigint leaf, ...). If that neighbour is
+    // itself unmarked it is being — or has already been — freed by the same
+    // sweep; reading or re-freeing its header is a use-after-free / double free.
+    // Strings are never on the swept heap_allocated list (they are pure RC), so
+    // they are always safe to decref. Everything else that is unmarked belongs
+    // to the sweep and must not be touched here.
+    if (self.sweeping && !hdr.is_string() && !hdr.is_reachable() && !hdr.is_temproot()) {
+        return;
+    }
     if (--hdr.refcount == 0) {
         if (hdr.is_string()) {
             hstring::HString* s = (hstring::HString*)hdr;
@@ -2433,52 +2452,89 @@ $endif
  * from the list.
  */
 fn void Heap.sweep(&self) {
+    // Enter sweep mode: decref() will now skip references into unmarked
+    // (dying) heap nodes so that freeing one garbage object cannot follow a
+    // link into a sibling that this same sweep already freed (or is about to).
+    // Survivors keep their reachable bit set for the whole free pass so the
+    // "unmarked == dying" test stays reliable; a second pass below clears them.
+    self.sweeping = true;
+
+    // Phase A: unlink every dying (unmarked, non-temproot) node from the
+    // heap_allocated list and thread it onto a local "dying" list via its
+    // now-unused .next pointer. Nothing is freed yet, so every dying node's
+    // header — and its mark bit — stays readable through phases B and C.
     HeapHeader* cur = self.heap_allocated;
     HeapHeader* prev = null;
+    HeapHeader* dying = null;
     uint kept = 0;
 
     while (cur != null) {
         HeapHeader* next = cur.next;
-        if (!cur.is_reachable()) {
-            // Temproot: newly allocated, not yet anchored — keep for this cycle
-            if (cur.is_temproot()) {
-                cur.clear_reachable();
-                prev = cur;
-                kept++;
+        if (!cur.is_reachable() && !cur.is_temproot()) {
+            // Unlink from the live list.
+            if (prev != null) {
+                prev.next = next;
             } else {
-                // Unlink from list
-                if (prev != null) {
-                    prev.next = next;
-                } else {
-                    self.heap_allocated = next;
-                }
-                if (next != null) {
-                    next.prev = prev;
-                }
-                $if $feature(HEAP_VERIFY):
-                    if (self.is_in_generator_saved_regs(cur)) {
-                        io::eprintf("[HEAP_VERIFY]   SWEEP WARNING: freeing %p (htype=%d) which is in a generator's saved_regs!\n",
-                                    cur, (int)cur.get_type());
-                    }
-                $endif
-                // Free
-                if (cur.is_object()) {
-                    hobject::hobject_free((HObject*)cur, (void*)self);
-                } else if (cur.is_string()) {
-                    self.free_func(self.heap_udata, cur);
-                } else {
-                    self.free_func(self.heap_udata, cur);
-                }
+                self.heap_allocated = next;
             }
+            if (next != null) {
+                next.prev = prev;
+            }
+            $if $feature(HEAP_VERIFY):
+                if (self.is_in_generator_saved_regs(cur)) {
+                    io::eprintf("[HEAP_VERIFY]   SWEEP WARNING: freeing %p (htype=%d) which is in a generator's saved_regs!\n",
+                                cur, (int)cur.get_type());
+                }
+            $endif
+            // Thread onto the dying list (reuse .next; node is off the heap now).
+            cur.next = dying;
+            dying = cur;
         } else {
-            // Reachable — clear mark bit and temproot for next cycle
-            cur.clear_reachable();
-            cur.clear_temproot();
+            // Survivor (reachable, or an unmarked-but-kept temproot). Keep its
+            // reachable bit set until the whole free pass finishes so decref's
+            // "unmarked == dying" test stays valid for nodes freed later.
             prev = cur;
             kept++;
         }
         cur = next;
     }
+
+    // Phase B: run every dying node's teardown (hobject_free) with all dying
+    // memory still valid. hobject_free may decref neighbours it references; the
+    // decref sweep guard skips any neighbour that is itself dying (unmarked,
+    // non-temproot), so no dying header is re-freed or read after free here.
+    for (HeapHeader* d = dying; d != null; d = d.next) {
+        if (d.is_object()) {
+            hobject::hobject_free((HObject*)d, (void*)self, false);
+        }
+    }
+
+    // Phase C: release the header memory of every dying node. Done last so no
+    // teardown in phase B could have touched an already-freed neighbour.
+    HeapHeader* d = dying;
+    while (d != null) {
+        HeapHeader* dnext = d.next;
+        if (d.is_object()) {
+            hobject::hobject_free_header((HObject*)d, (void*)self);
+        } else {
+            // BigInt box (or any non-object leaf) — free directly.
+            self.free_func(self.heap_udata, d);
+        }
+        d = dnext;
+    }
+
+    // Free pass complete — no more dying nodes will be touched. Now clear the
+    // mark/temproot bits on the survivors for the next cycle. Reachable
+    // survivors clear both bits; temproot-kept nodes (unmarked but retained)
+    // keep their temproot flag so they stay protected until anchored.
+    for (HeapHeader* s = self.heap_allocated; s != null; s = s.next) {
+        if (s.is_reachable()) {
+            s.clear_reachable();
+            s.clear_temproot();
+        }
+    }
+
+    self.sweeping = false;
     self.live_obj_count = kept;
 }
 

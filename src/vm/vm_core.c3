@@ -35,6 +35,26 @@ fn void mark_activation_envs(heap::Heap* h, Activation* act) @inline {
     }
 }
 
+/// Mark every heap value held in a JS activation's [bottom, frame_end) span.
+/// The valstack range scanned by mark_roots is bounded by vm.valstack_top,
+/// which is only a high-water mark for the deepest frame and can sit below an
+/// outer frame's full register span (inline JS-to-JS calls do not raise it),
+/// or below scratch slots where a builtin has staged call arguments. A live
+/// value in such a slot (e.g. a BigInt box held across a callee) would then be
+/// invisible to the GC, collected, and later read as freed memory. Marking each
+/// live frame's own span makes register rooting independent of valstack_top.
+/// Native/builtin frames have func==null and no registers here. Callers choose
+/// frame_end to cover the frame's registers plus any staged-argument scratch.
+fn void mark_activation_regs(heap::Heap* h, Activation* act, TVal* frame_end) @inline {
+    if (act.func == null || act.bottom == null) return;
+    TVal* regs = act.bottom;
+    if (frame_end <= regs) return;
+    usz span = (usz)(frame_end - regs);
+    for (usz i = 0; i < span; i++) {
+        h.mark_tval(&regs[i]);
+    }
+}
+
 /// Mark all env bindings held by live activation records.
 /// Called from heap's mark_roots to keep per-call var_envs alive during GC.
 /// Also marks saved activations stored in vm_call_fn_impl's shadow frame list
@@ -43,17 +63,53 @@ fn void vm_mark_activations(void* vm_ptr, void* heap_ptr) {
     Vm* vm = (Vm*)vm_ptr;
     heap::Heap* h = (heap::Heap*)heap_ptr;
 
-    // Mark live activations (inner-most vm_call_fn_impl's callback + inline callees)
+    // Mark live activations (inner-most vm_call_fn_impl's callback + inline callees).
+    // Each frame's register span runs from its bottom to the next inner frame's
+    // bottom (which contains the argument/scratch slots this frame staged for
+    // that callee); the innermost frame runs to the end of the allocated
+    // valstack (see below — staged-argument scratch is not tracked precisely).
     for (uint i = 0; i < vm.activation_count; i++) {
         mark_activation_envs(h, &vm.activations[i]);
+        Activation* a = &vm.activations[i];
+        // Lower bound on this frame's span: its own declared registers plus the
+        // builtin arg/scratch margin. valstack_top can sit BELOW an outer (or
+        // even the current) frame's num_regs because inline JS-to-JS calls do
+        // not raise it, so it cannot be trusted as the frame end on its own.
+        TVal* frame_end = a.bottom;
+        if (a.func != null) {
+            CompiledFunction* acf = (CompiledFunction*)a.func;
+            frame_end = a.bottom + acf.num_regs + 4;
+        }
+        // Extend to the next inner frame's bottom (covers args this frame staged
+        // for that callee). For the innermost frame, extend to the end of the
+        // allocated valstack: builtins stage call arguments in scratch slots
+        // above num_regs whose exact extent is not tracked by valstack_top, and
+        // a live value there must not be collected. Slots past the live data are
+        // zero-initialised (undefined) — marking them is a harmless no-op — so
+        // scanning to valstack_end is safe and cannot miss a staged argument.
+        if (i + 1 < vm.activation_count) {
+            TVal* nb = vm.activations[i + 1].bottom;
+            if (nb > frame_end) { frame_end = nb; }
+        } else if (vm.valstack_end > frame_end) {
+            frame_end = vm.valstack_end;
+        }
+        mark_activation_regs(h, a, frame_end);
     }
 
     // Mark saved outer activations from all vm_call_fn_impl frames on the C stack.
     // These are stored in C-stack ShadowActFrame structs linked via vm.shadow_act_list.
+    // Their exact physical span is not tracked here, so cover num_regs plus the
+    // builtin arg/scratch margin (matches the +4 slots reserved at call sites).
     ShadowActFrame* shadow = (ShadowActFrame*)vm.shadow_act_list;
     while (shadow != null) {
         for (uint i = 0; i < shadow.count; i++) {
             mark_activation_envs(h, &shadow.acts[i]);
+            Activation* sa = &shadow.acts[i];
+            if (sa.func != null && sa.bottom != null) {
+                CompiledFunction* scf = (CompiledFunction*)sa.func;
+                TVal* send = sa.bottom + scf.num_regs + 4;
+                mark_activation_regs(h, sa, send);
+            }
         }
         shadow = (ShadowActFrame*)shadow.prev;
     }

@@ -1874,7 +1874,7 @@ fn HObject*? hobject_alloc(void* heap_ptr, ObjClass cls) {
 /// Pool-allocated objects (flags.pool_fallback == false) are returned to
 /// their FixedBlockPool for reuse.  Malloc-allocated objects are freed
 /// via the heap's allocator (mem::free fallback when heap is inactive).
-fn void hobject_free(HObject* obj, void* heap_ptr) {
+fn void hobject_free(HObject* obj, void* heap_ptr, bool free_header = true) {
     if (obj == null) { return; }
 
     if (obj.flags.obj_class == ObjClass.REGEXP && (*obj.extra_ptr()).regexp.regexp_data != null) {
@@ -1962,6 +1962,19 @@ fn void hobject_free(HObject* obj, void* heap_ptr) {
         obj.prop_alloc = null;
     }
 
+    // Release the header memory, unless the caller deferred it (sweep runs all
+    // teardowns before freeing any header so decref cannot touch freed memory).
+    if (free_header) {
+        hobject_free_header(obj, heap_ptr);
+    }
+}
+
+/// Release only the HObject header's backing memory (pool block or malloc'd),
+/// after hobject_free(obj, heap, false) has already run every sub-allocation
+/// teardown and reference decref. Used by the two-phase sweep to defer all
+/// header frees until no dying node will be read again.
+fn void hobject_free_header(HObject* obj, void* heap_ptr) {
+    if (obj == null) { return; }
     // Route the HObject header to pool or malloc depending on allocation source.
     if (obj.flags.pool_fallback) {
         if (_active_heap != null) {
