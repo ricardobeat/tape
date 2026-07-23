@@ -3184,7 +3184,8 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
     // byte offset we captured (we captured `function`), so we prepend the
     // literal "async " string to the retained source to match ES2019's source
     // text representation.
-    if (src_start != 0xFFFFFFFF && src_start < (uint)inner_ctx.lexer.source.len) {
+    if (src_start != 0xFFFFFFFF && src_start < (uint)inner_ctx.lexer.source.len
+        && inner_body_end_pos > src_start) {
         uint src_end = inner_body_end_pos;
         if (src_end > (uint)inner_ctx.lexer.source.len) src_end = (uint)inner_ctx.lexer.source.len;
         uint slen = src_end - src_start;

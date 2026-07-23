@@ -282,6 +282,15 @@ fn void? CompilerContext.statement(&self) {
             // We consume the identifier and check if the next token is ':'
             if (tt == TokenType.IDENTIFIER) {
                 // Save token_start before consuming, in case this is an async function
+                // `token_start` may be stale here (it reflects the most
+                // recently *consumed* token, but the identifier we're about to
+                // dispatch on is typically still a peeked lookahead). Refresh
+                // it so `id_tok_start` is the identifier's real source offset —
+                // required for `async function ...` declarations, whose
+                // Function.prototype.toString span starts at the `async`
+                // keyword. Without this, a stale offset can point past the
+                // function body and underflow the retained-source span.
+                self.lexer.refresh_token_start();
                 uint id_tok_start = self.lexer.token_start;
                 // Consume the identifier token to check what follows
                 Token id_tok = self.advance()!;
