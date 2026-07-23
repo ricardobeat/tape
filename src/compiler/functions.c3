@@ -141,6 +141,10 @@ fn bool check_dup_param(char[] name, char[64][] seen, ushort[] seen_lens, uint c
 fn void? CompilerContext.collect_obj_param_binds(&self,
     DestructBind[] binds, uint* count, ushort src_reg, ushort parent_idx)
 {
+    bool saved_ifp_ct_obj_para = self.in_formal_params;
+    self.in_formal_params = true;
+    defer self.in_formal_params = saved_ifp_ct_obj_para;
+
     if (self.match(TokenType.RBRACE)) return;  // empty pattern {}
 
     for (;;) {
@@ -329,6 +333,10 @@ fn void? CompilerContext.collect_obj_param_binds(&self,
 fn void? CompilerContext.collect_arr_param_binds(&self,
     DestructBind[] binds, uint* count, ushort src_reg, ushort parent_idx)
 {
+    bool saved_ifp_ct_arr_para = self.in_formal_params;
+    self.in_formal_params = true;
+    defer self.in_formal_params = saved_ifp_ct_arr_para;
+
     ushort elem_idx = 0;
 
     for (;;) {
@@ -2297,7 +2305,10 @@ fn void? CompilerContext.parse_function_body(&self, bool is_expr) {
                 // the parameter name so NamedEvaluation tags an anonymous
                 // fn/arrow/class/gen default with the param name.
                 // (ES2015 §14.1.20 SetFunctionName.)
+                bool saved_ifp = self.in_formal_params;
+                self.in_formal_params = true;
                 CompiledFunction* default_func = self.compile_default_expr(param.str_value)!;
+                self.in_formal_params = saved_ifp;
 
                 // Add to inner functions table
                 if (self.default_count < MAX_PARAMS) {
@@ -2569,8 +2580,10 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     // constructors). `yield`/`await` must still be reserved words here — which
     // is why is_generator/is_async are propagated above — but the yield/await
     // *expression* productions are unavailable, so forbid them.
-    if (self.is_generator) def_ctx.forbid_yield = true;
-    if (self.is_async)     def_ctx.forbid_await = true;
+    if (self.in_formal_params) {
+        if (self.is_generator) def_ctx.forbid_yield = true;
+        if (self.is_async)     def_ctx.forbid_await = true;
+    }
 
     // Per ES2015 §13.3.3.7 step 3 (NamedEvaluation), if the default is an
     // anonymous function/arrow/class/generator expression, the resulting
@@ -2910,7 +2923,10 @@ fn CompiledFunction*? CompilerContext.compile_inner_function(&self, char[] name,
                 inner_ctx.advance()!; // consume '='
 
                 // Pass param name for NamedEvaluation tagging.
+                bool saved_ifp_i = inner_ctx.in_formal_params;
+                inner_ctx.in_formal_params = true;
                 CompiledFunction* default_func = inner_ctx.compile_default_expr(param.str_value)!;
+                inner_ctx.in_formal_params = saved_ifp_i;
 
                 // Add to inner functions table
                 if (inner_ctx.default_count < MAX_PARAMS) {
@@ -3552,7 +3568,10 @@ fn CompiledFunction*? CompilerContext.compile_arrow_inner_reparse(&self, uint sr
                 arrow_ctx.advance()!; // consume '='
 
                 // Pass param name for NamedEvaluation tagging.
+                bool saved_ifp_a = arrow_ctx.in_formal_params;
+                arrow_ctx.in_formal_params = true;
                 CompiledFunction* default_func = arrow_ctx.compile_default_expr(param.str_value)!;
+                arrow_ctx.in_formal_params = saved_ifp_a;
 
                 // Add to inner functions table
                 if (arrow_ctx.default_count < MAX_PARAMS) {

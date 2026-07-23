@@ -415,6 +415,13 @@ struct CompilerContext {
     /// function/arrow body (fresh CompilerContext).
     bool forbid_yield;
 
+    /// True while parsing the enclosing function's FormalParameters. Parameter
+    /// defaults must reject yield/await EXPRESSIONS (FormalParameters may not
+    /// Contain them, §14.1.2/§14.7), but destructuring defaults in the BODY of
+    /// a generator/async fn legally contain them — this flag tells
+    /// compile_default_expr which position it is compiling for.
+    bool in_formal_params;
+
     // Generator tracking
     bool is_generator;          // true when compiling a generator function (function*)
                                 // OR an async function (async also runs on the
@@ -725,6 +732,10 @@ fn uint CompilerContext.add_inner_func(&self, CompiledFunction* func) {
 ///
 /// Returns `true` if a default was consumed, `false` and no-op otherwise.
 fn bool? CompilerContext.parse_destruct_param_default(&self, ushort arg_slot) {
+    bool saved_ifp = self.in_formal_params;
+    self.in_formal_params = true;
+    defer self.in_formal_params = saved_ifp;
+
     if (!self.check(TokenType.ASSIGN)) return false;
     self.advance()!; // consume '='
 
