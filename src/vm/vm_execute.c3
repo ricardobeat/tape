@@ -3178,6 +3178,41 @@ fn TVal? Vm.run(Vm* vm) {
             continue;
         }
 
+        case Opcode.IMPORT_META: {
+            // `import.meta` (ES2024 §13.3.12). GetActiveScriptOrModule returns
+            // the *defining* module of the running function — so a function that
+            // returns import.meta yields its own module's object even when called
+            // from another module. The active function's filename carries the
+            // owning module's normalized name (stamped by stamp_module_filename);
+            // fall back to heap.current_module_name for the module body itself.
+            char[] owner_name = vm.heap.current_module_name;
+            CompiledFunction* act_func = (CompiledFunction*)ds.act.func;
+            if (act_func != null) {
+                char[] fn_name = act_func.get_filename();
+                if (fn_name.len > 0) owner_name = fn_name;
+            }
+            esm::ModuleDef* mod = esm::heap_find_loaded_module(vm.heap, owner_name);
+            if (mod == null) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "import.meta is not available outside module code", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+                continue;
+            }
+            HObject*? meta_opt = esm::get_import_meta(vm.heap, mod);
+            ds.regs_base = ds.act.bottom;
+            if (catch err = meta_opt) {
+                if (!vm_throw_error(vm, vm.heap.type_err_proto, "failed to create import.meta", ds.act, &ds.curr_pc, &ds.needs_restart)) {
+                    return VM_ERROR~;
+                }
+                continue;
+            }
+            TVal meta_tv;
+            meta_tv.set_object(meta_opt);
+            TVal* meta_dst = ds.regs_base + (uint)insn.a;
+            vm.heap.tval_copy_ref(meta_dst, &meta_tv);
+            continue;
+        }
+
         // === RETURNS ===
         // RET / RETUNDEF are extremely hot in recursion; inline them here.
         // RET_GEN / RETUNDEF_GEN are generator-only and stay out-of-line.

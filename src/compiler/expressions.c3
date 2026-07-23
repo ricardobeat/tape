@@ -3536,10 +3536,48 @@ fn ushort? CompilerContext.primary_expr(&self) {
             return operand;
         }
 
-        // `import(...)` — dynamic import expression (ES2020).
+        // `import(...)` — dynamic import expression (ES2020) — or the
+        // `import.meta` meta-property (ES2024 §13.3.12).
         case TokenType.IMPORT:
         {
-            self.advance()!;  // consume 'import'
+            Token import_tok = self.advance()!;  // consume 'import'
+
+            // `import.meta` (MetaProperty). Valid ONLY in module code; in a
+            // Script, direct/indirect eval, or a Function/Generator/Async
+            // body it is an early SyntaxError (compile_eval never sets
+            // is_module). The terminal words `import` and `meta` must appear
+            // literally — a Unicode escape in either is a SyntaxError.
+            if (self.check(TokenType.DOT)) {
+                if (!self.module_goal) {
+                    return self.fail("import.meta is only valid in a module")~;
+                }
+                if (import_tok.has_escape) {
+                    return self.fail("'import' in import.meta must not contain escape sequences")~;
+                }
+                self.advance()!;  // consume '.'
+                Token meta_tok = self.advance()!;
+                char[] meta_name = meta_tok.str_value;
+                if (meta_name.len == 0) {
+                    meta_name = lexer::keyword_to_string(meta_tok.type);
+                }
+                if (!(meta_name.len == 4 && meta_name[0] == 'm' && meta_name[1] == 'e'
+                      && meta_name[2] == 't' && meta_name[3] == 'a')) {
+                    return self.fail("expected 'meta' after 'import.'")~;
+                }
+                if (meta_tok.has_escape) {
+                    return self.fail("'meta' in import.meta must not contain escape sequences")~;
+                }
+                ushort meta_reg = self.alloc_reg();
+                self.emit_abc(Opcode.IMPORT_META, (uint)meta_reg, 0, 0);
+                // import.meta is a MemberExpression but not a
+                // SimpleAssignmentTarget (AssignmentTargetType is invalid):
+                // clear the flags so `import.meta = v`, `import.meta++`, and
+                // destructuring targets are rejected like `f()`.
+                self.last_was_member = false;
+                self.last_was_getvar = false;
+                return meta_reg;
+            }
+
             if (!self.match(TokenType.LPAREN)) {
                 return self.fail("'import' as an expression must be followed by '(' (dynamic import)")~;
             }

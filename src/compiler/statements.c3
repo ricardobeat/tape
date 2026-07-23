@@ -256,13 +256,15 @@ fn void? CompilerContext.statement(&self) {
             self.class_declaration()!;
         case TokenType.IMPORT:
         {
-            // `import(...)` at statement level is a dynamic-import expression
-            // statement, not an import declaration. Consume `import` to peek
-            // at the following token, then push it back for either path.
+            // `import(...)` (dynamic import) and `import.meta` (meta-property,
+            // ES2024 §13.3.12) at statement level are ExpressionStatements, not
+            // import declarations. Consume `import` to peek at the following
+            // token, then push it back for either path.
             Token import_tok = self.advance()!;
-            bool is_dynamic = self.peek_type() == TokenType.LPAREN;
+            TokenType after_import = self.peek_type();
+            bool is_expr = after_import == TokenType.LPAREN || after_import == TokenType.DOT;
             self.lexer.pushback(import_tok);
-            if (is_dynamic) {
+            if (is_expr) {
                 self.expression_statement()!;
             } else {
                 self.import_declaration()!;

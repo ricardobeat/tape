@@ -144,6 +144,14 @@ struct ModuleDef {
     // Module namespace object (lazily created for `import *`)
     HObject*                      namespace_obj;
 
+    // import.meta object (ECMA-262 §16.2.1.10 [[ImportMeta]]). A per-module
+    // ordinary null-prototype object, lazily created on first `import.meta`
+    // access and cached so every evaluation observes the same identity
+    // (§13.3.12 Evaluation). Rooted with a ModuleDef-owned reference for the
+    // module's lifetime; marked by mark_roots since ModuleDefs live outside
+    // the GC-scanned heap.
+    HObject*                      import_meta_obj;
+
     // JSON module support (ES2025 `import x from "m" with { type: "json" }`).
     // A JSON module has no compiled body: `func` is null and its sole export is
     // `default`, bound to `json_value` (the JSON.parse of the file contents,
@@ -411,8 +419,12 @@ fn ModuleDef*? resolve_module(Heap* heap, char[] specifier, char[] base_name, bo
         return MODULE_ERROR~;
     }
     mod.func = func_opt;
-    mod.func.filename_ptr = normalized.ptr;
-    mod.func.filename_len = (uint)normalized.len;
+    // Stamp the normalized module name onto the whole compiled-function tree
+    // (body + every nested function template). `import.meta` resolves its owning
+    // module from the currently executing function's filename, so nested
+    // functions must carry it too (GetActiveScriptOrModule / §13.3.12 must
+    // observe the DEFINING module, not the one whose body happens to be running).
+    stamp_module_filename(mod.func, normalized.ptr, (uint)normalized.len);
 
     // 6. Notify host
     call_on_module_loaded(heap, mod);
@@ -1457,6 +1469,56 @@ fn void collect_star_export_items(ModuleDef* mod, NsExportItem[MAX_NS_EXPORTS]* 
         // Transitively include the target's own star re-exports.
         collect_star_export_items(target, items, count, depth + 1);
     }
+}
+
+/// Recursively set filename_ptr/filename_len on a compiled function and every
+/// nested function template it contains. Used to attribute each function to its
+/// defining module so `import.meta` (§13.3.12) resolves correctly from within
+/// nested functions.
+fn void stamp_module_filename(bytecode::CompiledFunction* func, char* name_ptr, uint name_len) {
+    if (func == null) return;
+    func.filename_ptr = name_ptr;
+    func.filename_len = name_len;
+    for (uint i = 0; i < func.inner_count; i++) {
+        stamp_module_filename(func.inner_funcs[i], name_ptr, name_len);
+    }
+}
+
+/// Return the import.meta object for `mod`, creating it on first access
+/// (ECMA-262 §13.3.12 ImportMeta Evaluation + §16.2.1.10 [[ImportMeta]]).
+///
+/// The object is an ordinary object with a null [[Prototype]] (matching the
+/// HostGetImportMetaProperties conventions the test262 corpus assumes) and a
+/// single host-provided `url` data property (writable/enumerable/configurable)
+/// holding the module's normalized name. It is cached on the ModuleDef so every
+/// evaluation of the module observes the same identity, and distinct modules
+/// get distinct objects. The cache holds a ModuleDef-owned reference (rooted by
+/// mark_roots) for the module's lifetime.
+fn HObject*? get_import_meta(Heap* heap, ModuleDef* mod) {
+    if (mod.import_meta_obj != null) return mod.import_meta_obj;
+
+    HObject*? meta_opt = heap.alloc_object(hobject::ObjClass.OBJECT);
+    if (catch err = meta_opt) return MODULE_ERROR~;
+    HObject* meta = meta_opt;
+    // §13.3.12 step 4.a: importMeta is OrdinaryObjectCreate(null).
+    meta.prototype = null;
+
+    // HostGetImportMetaProperties: the sole host property is `url`, the
+    // module's resolved name (our normalized module path).
+    HString* url_str = heap.str_intern(mod.module_name);
+    if (url_str != null) {
+        TVal url_val;
+        url_val.set_string(url_str);
+        HString* url_key = heap.str_intern("url");
+        if (url_key != null) {
+            meta.put_prop(url_key, url_val, hobject::PROP_FLAGS_WEC);
+        }
+    }
+
+    // Root for the module's lifetime and cache for identity.
+    meta.as_header().incref();
+    mod.import_meta_obj = meta;
+    return meta;
 }
 
 /// Build a Module Namespace Object for `import * as ns`.

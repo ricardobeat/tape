@@ -838,6 +838,15 @@ enum Opcode : char {
     /// through unchanged rather than throwing (ES2020 §7.1.3 ToNumeric).
     TONUMERIC,
 
+    /// `import.meta` meta-property (ES2024 §13.3.12). Loads the currently
+    /// executing module's import-meta object into A, lazily creating it (an
+    /// ordinary null-prototype object carrying a `url` data property) on first
+    /// access and caching it on the ModuleDef so every evaluation observes the
+    /// same identity. Only emitted in module code — `import.meta` in script /
+    /// eval / Function-body code is an early SyntaxError caught at compile time.
+    /// ABC format: A=result_reg, B=0, C=0.
+    IMPORT_META,
+
     /// Sentinel — not a real opcode; marks the end of the enum.
     LAST_OP,
 }
@@ -935,6 +944,7 @@ case PUTLEX:     return A_BC;
         case RETUNDEF_GEN: return NONE;
         case AWAIT:     return ABC;
         case DYN_IMPORT: return ABC;
+        case IMPORT_META: return ABC;
         case DEBUGGER:  return NONE;
         case ENDTRY:    return NONE;
         case ENDFINALLY: return NONE;

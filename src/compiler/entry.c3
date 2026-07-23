@@ -351,6 +351,7 @@ fn CompiledFunction*? compile_module(Lexer* lex, void* heap, char[] module_name,
     ctx.init(lex, heap);
     ctx.is_global = true;
     ctx.is_module = true;
+    ctx.module_goal = true;
     // A module body may contain top-level `await` (ES2022). Compiling the
     // module as async lets `await` emit AWAIT/LOAD_RESUME and suspend the
     // module activation, exactly like an async function body. Modules with no

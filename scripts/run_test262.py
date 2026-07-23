@@ -155,7 +155,7 @@ UNSUPPORTED_PATTERN = re.compile(
     # SharedArrayBuffer + Atomics are now implemented single-agent; the
     # Atomics.pause proposal remains filtered above.  Multi-worker `agent`
     # tests are skipped per-file via AGENT_HARNESS_RE below.
-    r"structured-clone|import\.meta|"
+    r"structured-clone|"
     # Async generators (`async function*`) implemented — plan 060. The
     # `async-generator` feature token no longer forces a skip.
     # Class features not yet implemented (private fields/methods/accessors/
@@ -617,6 +617,7 @@ PHASES = [
             "language/statements/while", "language/statements/do-while",
             "language/future-reserved-words", "language/arguments-object",
             "language/expressions/dynamic-import",
+            "language/expressions/import.meta",
         ],
     },
     {

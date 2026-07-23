@@ -134,6 +134,12 @@ struct Token {
     bool has_octal_escape;
     bool is_template;
     bool has_invalid_escape;
+    // True when this identifier/keyword token was written with at least one
+    // Unicode escape (`\uXXXX` / `\u{H+}`). Meta-property productions such as
+    // `import.meta` (ES2024 §13.3.12) require their terminal words to appear
+    // literally — an escaped `import` or `meta` is a SyntaxError — so the
+    // parser inspects this after re-reading the word token.
+    bool has_escape;
 }
 
 /// Create a simple token with no value payload.
@@ -1452,10 +1458,12 @@ fn Token? Lexer.scan_identifier(&self) {
     if (try kw = lookup_keyword(name, self.strict_mode)) {
         Token tok = make_token(kw, start_line, start_col);
         tok.str_value = name;
+        tok.has_escape = true;
         return tok;
     }
     Token tok = make_token(TokenType.IDENTIFIER, start_line, start_col);
     tok.str_value = name;
+    tok.has_escape = true;
     return tok;
 }
 

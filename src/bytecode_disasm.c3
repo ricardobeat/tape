@@ -254,6 +254,7 @@ const char*[Opcode.LAST_OP.ordinal + 1] OPCODE_NAMES = {
     [Opcode.GEN_START.ordinal]    = "GEN_START",
     [Opcode.AWAIT.ordinal]        = "AWAIT",
     [Opcode.DYN_IMPORT.ordinal]   = "DYN_IMPORT",
+    [Opcode.IMPORT_META.ordinal]  = "IMPORT_META",
     [Opcode.INC.ordinal]          = "INC",
     [Opcode.DEC.ordinal]          = "DEC",
     [Opcode.PUTARG.ordinal]       = "PUTARG",

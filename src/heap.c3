@@ -2278,6 +2278,12 @@ fn void Heap.mark_roots(&self) {
             if (mod == null) continue;
             if (mod.has_eval_error) { self.mark_tval(&mod.eval_error); }
             if (mod.is_json)        { self.mark_tval(&mod.json_value); }
+            // The import.meta object (§16.2.1.10 [[ImportMeta]]) is cached on
+            // the ModuleDef and holds user-visible state (added properties,
+            // changed prototype/extensibility). It must survive GC for the
+            // module's lifetime — mark it explicitly since the cache is not
+            // GC-scanned.
+            if (mod.import_meta_obj != null) { self.mark_hobject(mod.import_meta_obj); }
         }
     }
 

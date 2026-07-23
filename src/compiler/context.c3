@@ -594,6 +594,15 @@ struct CompilerContext {
     bool is_module;
     void* current_module;  // ModuleDef* (opaque to avoid import cycle)
 
+    // True when the syntactic goal symbol is Module — set on the module-body
+    // context AND propagated into every nested function/arrow/generator context
+    // it contains. Unlike `is_module` (module-body only; also gates top-level
+    // `await` reservation), this stays true inside nested functions so the
+    // `import.meta` meta-property (ES2024 §13.3.12) is accepted anywhere in
+    // module code while remaining an early SyntaxError in Script/eval/Function
+    // code. It never affects `await`/`arguments` handling.
+    bool module_goal;
+
     // Inferred function name for the next anonymous function expression parsed.
     // Set by assignment_expr when LHS is a plain identifier (e.g. `var f = function() {}`)
     // or by object literal property parsing (e.g. `o = { method() {} }`).
