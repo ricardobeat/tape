@@ -52,6 +52,20 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - **Sloppy mode** — QuickJS has it; engine is strict-only by design (also covers F1 apply/call sloppy `this`). Out of scope unless the user says otherwise.
 - **qjs CLI/std/os modules** — not JS-language parity; out of scope.
 
+## Engine design review (user-requested, run after async-gen tail lands)
+
+Full-engine pass for duplication/elegance/compactness at constant perf+correctness. Known candidates gathered this session:
+- **Param-init prologue triplicated** across parse_function_body / compile_inner_function / compile_arrow_inner_reparse (the PUTLEX r0 bug had to be fixed 3x) — extract one emitter.
+- **Generator driver family**: sync YIELD_STAR opcode vs async yield* machinery vs async_generator.c3 drain — after the current agents land, unify the delegation/completion surface; also the duplicated activation-teardown blocks in vm_generators.c3 (AWAIT reject/OOM paths repeat ~40 lines).
+- **Three super mechanisms** — plan 059's unification (GETPROTO(homeObject) everywhere) still open.
+- **Builtin error-throw boilerplate**: dozens of hand-rolled alloc ERROR + intern message + put_prop blocks; one `throw_type_error(ctx, msg)`-style helper family exists in some files (arr_throw_*, arraybuffer_throw_*) but not shared engine-wide.
+- **ArrayBuffer vs SharedArrayBuffer**: freshly-added SAB duplicates ctor/getter/slice shapes; growable-SAB vs resizable-AB grow paths.
+- **Keyed-collection internals**: coll_* helpers + group_by_* + getOrInsert paths grew adjacent copies of key canonicalization.
+- **Lexer scan buffers**: string/template/ident decode paths share arena+normalize logic candidates.
+- **Runner config duplication**: UNSUPPORTED_PATTERN vs scripts/test262_skip.cfg doc mirror drifts (bit us twice); single source of truth.
+- **Enum/metadata/dispatch triple registration** in core.c3 for every builtin (conflict magnet all session) — consider a table macro.
+Method: read-only Explore survey per subsystem → ranked plan → small fix agents with bench gates (bench-fast + golden + phase sweeps per change).
+
 ## Known bugs (pre-existing, exposed by un-skips)
 
 - [x] **GC sweep-order use-after-free** — fixed: two-phase sweep (unlink dying → run all teardowns while memory valid → free headers) + decref sweep-guard; bonus fix: vm_mark_activations now marks each activation's full register span (live values above valstack_top were collectable).
