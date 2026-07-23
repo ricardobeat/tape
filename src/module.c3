@@ -482,6 +482,12 @@ fn ResolveExportResult resolve_export(ModuleDef* mod, char[] export_name,
         ReqModuleEntry* rme = &mod.req_modules[ee.req_module_idx];
         if (rme.resolved == null) return { ResolveExportKind.NULL, null, {} };
         ModuleDef* imported = (ModuleDef*)rme.resolved;
+        // `export * as ns from` (local name "*") resolves to the imported
+        // module's NAMESPACE object itself (§16.2.1.6.3 step 6.b), not to a
+        // binding inside it.
+        if (char_slice_eq(ee.local_name, "*")) {
+            return { ResolveExportKind.RESOLVED, imported, "*" };
+        }
         // `export { x } from` re-exports the name `ee.local_name` from `imported`.
         return resolve_export(imported, ee.local_name, set, set_len);
     }
