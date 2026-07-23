@@ -50,6 +50,13 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [x] **Module duplicate-lexical-name static semantics** — landed s296: module-mode hoist_decls/hoist_global_fn_decls reject var/function and duplicate-function clashes (§16.2.1.1); dynamic import rejects with the compile SyntaxError (parked on the heap error channel) instead of a generic TypeError. Phase 0 → 0 fails.
 - [x] **`import.meta`** — landed s296: IMPORT_META opcode, module_goal compiler flag (SyntaxError in scripts/eval, escaped forms rejected via Token.has_escape), per-module lazily-cached null-prototype object with `url`, GC-marked on ModuleDef; skip token removed, all 22 tests pass.
 
+### Parity verification (2026-07-23)
+
+Full feature-probe diff vs vendored `out/qjs` (globals, ~80 builtin members, 18 syntax forms): **zero gaps remaining**. The probe found exactly one — `Atomics.pause` — landed same day (phase 22 +6). We now *exceed* qjs on `Array.fromAsync` and `Atomics.waitAsync`. qjs itself lacks legacy RegExp statics and Realm, so those are not parity items; `$262.agent`/`createRealm`/cross-realm are test-harness host features, not engine-language features. Full suite: 41,655/0/0.
+
+- [x] **`Atomics.pause`** — landed s296: no-coercion integral-Number validation matching qjs; skip token removed.
+- [>] **ASI over-acceptance** (agent running) — `class A { accessor x = 1 }` parses as two fields (one named "accessor"!) and `using x = null` parses as identifier + assignment; both must be SyntaxError (ASI requires a line terminator). Not a parity gap (we over-accept) but a spec bug that can mask typos.
+
 ### Parity exceptions (user call needed)
 
 - **Sloppy mode** — QuickJS has it; engine is strict-only by design (also covers F1 apply/call sloppy `this`). Out of scope unless the user says otherwise.
