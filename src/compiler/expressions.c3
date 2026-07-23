@@ -3640,11 +3640,19 @@ fn void? CompilerContext.validate_regexp_literal(&self, char[] raw) {
         return self.fail("regexp flags u and v are mutually exclusive")~;
     }
 
+    // The runtime NEWREGEXP compiles the INTERNED pattern, which str_intern
+    // normalizes to CESU-8 (astral chars become surrogate pairs). Validate
+    // the same bytes, or astral literals get rejected here that the runtime
+    // accepts. CESU-8 output is at most 1.5x the UTF-8 input.
     usz plen = pattern_data.len;
-    char* buf = (char*)alloc::malloc_try(mem, (sz)(plen + 1)) ?? null;
+    char* buf = (char*)alloc::malloc_try(mem, (sz)(plen * 2 + 1)) ?? null;
     if (buf == null) return;
     defer mem::free(buf);
-    mem::copy(buf, pattern_data.ptr, (sz)(plen));
+    if (hstring::has_raw_utf8_astral(pattern_data)) {
+        plen = (usz)hstring::normalize_to_cesu8(pattern_data, buf[0..plen * 2]);
+    } else {
+        mem::copy(buf, pattern_data.ptr, (sz)(plen));
+    }
     buf[plen] = 0;
     char[128] error_buf;
     void* compiled = re_bindings::re_compile(buf, plen, flags, &error_buf, 128);
