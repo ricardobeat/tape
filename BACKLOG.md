@@ -43,7 +43,7 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 - [ ] **`ArrayBuffer.prototype.transfer`** (`arraybuffer-transfer`).
 - [ ] **`Float16Array`**.
 - [x] **WeakRef / FinalizationRegistry** — API surface landed (74/76; 2 cross-realm), non-weak semantics matching WeakMap policy (cleanup never fires — spec-legal); also fixed internal collection storage leaking through getOwnPropertyNames. TRUE weakness (all four types) remains a GC-integration project, out of parity scope for now.
-- [ ] **Atomics / SharedArrayBuffer** (+ `Atomics.waitAsync`).
+- [x] **Atomics / SharedArrayBuffer** — single-agent scope (QuickJS-without-workers): full SAB (incl. growable) 103/0, Atomics ops + isLockFree + wait/notify/waitAsync (real waiter FIFO + promise resolution) 261/0; 112 multi-worker agent-harness tests skipped (no $262.agent host), CanBlock=true chosen (V8/qjs shell model). Phase 22 now includes both dirs: 3164/0.
 - [x] **Import attributes + JSON modules** (`import-attributes`) — with-clause parsing (dup/non-string SyntaxErrors), attribute-aware module dedup, JSON modules (default-only export, link-time named-import rejection); +24 tests, plus a RESOLUTION negative-phase runner fix that repaired 22 pre-existing module-negative verdicts.
 - [ ] **Dynamic `import()`** — unimplemented (`dynamic-import` in UNSUPPORTED_PATTERN); QuickJS has it; blocks 66 import-attributes tests + its own large family. Needs promise-returning module load at runtime; module machinery + JSON modules now in place.
 
