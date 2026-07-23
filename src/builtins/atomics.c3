@@ -611,6 +611,28 @@ fn void builtin_atomics_wait(BuiltinContext* ctx) {
 
 /// Atomics.notify(ta, index, count) — §25.4.14.
 /// With no other agents ever waiting, always returns 0.
+/// Atomics.pause([iterationNumber]) — ES2025 §25.4.6 (microwait). A spin-wait
+/// hint to the CPU; observably a no-op. iterationNumber, when present and not
+/// undefined, must already BE an integral Number (no coercion) — else
+/// TypeError. Negative integers are allowed. Length is 0.
+fn void builtin_atomics_pause(BuiltinContext* ctx) {
+    if (ctx.argc >= 1) {
+        TVal n = ctx.regs[ctx.base_reg];
+        if (!n.is_undefined()) {
+            bool ok = n.is_fastint();
+            if (!ok && n.get_tag() == types::TValTag.NUMBER) {
+                double d = n.get_number();
+                ok = !math::is_nan(d) && !math::is_inf(d) && math::floor(d) == d;
+            }
+            if (!ok) {
+                atomics_throw_type_error(ctx, "Atomics.pause: iterationNumber must be an integral number");
+                return;
+            }
+        }
+    }
+    ctx.result.set_undefined();
+}
+
 fn void builtin_atomics_notify(BuiltinContext* ctx) {
     TVal ta_arg;   ta_arg.set_undefined();
     TVal idx_arg;  idx_arg.set_undefined();
@@ -859,6 +881,7 @@ fn bool register_atomics_object(EnvRecord* global_env, Heap* heap) {
     if (!register_atomics_method(atomics, heap, "wait",            Builtin.ATOMICS_WAIT.ordinal, 4)) return false;
     if (!register_atomics_method(atomics, heap, "notify",          Builtin.ATOMICS_NOTIFY.ordinal, 3)) return false;
     if (!register_atomics_method(atomics, heap, "waitAsync",       Builtin.ATOMICS_WAITASYNC.ordinal, 4)) return false;
+    if (!register_atomics_method(atomics, heap, "pause",           Builtin.ATOMICS_PAUSE.ordinal, 0)) return false;
 
     // @@toStringTag
     HString* tag_key = ensure_tostringtag_symbol(heap);

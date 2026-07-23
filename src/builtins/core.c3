@@ -619,6 +619,7 @@ enum Builtin : uint {
     ASYNC_GEN_YRET_FULFILL,                // native reaction: yield-resumption return value fulfilled → resume body w/ return
     ASYNC_GEN_YRET_REJECT,                 // native reaction: yield-resumption return value rejected → resume body w/ throw
     REGEXP_PROTO_COMPILE,                  // RegExp.prototype.compile(pattern, flags) (Annex B §B.2.4.1)
+    ATOMICS_PAUSE,                         // Atomics.pause([iterationNumber]) — microwait hint (ES2025 §25.4.6)
     LAST, // sentinel — one past the highest valid builtin; not a real builtin
 }
 
@@ -3751,6 +3752,7 @@ BuiltinFunc[Builtin.LAST.ordinal] builtin_dispatch_table = {
     [Builtin.ATOMICS_WAIT.ordinal] = &builtin_atomics_wait,
     [Builtin.ATOMICS_NOTIFY.ordinal] = &builtin_atomics_notify,
     [Builtin.ATOMICS_WAITASYNC.ordinal] = &builtin_atomics_waitasync,
+    [Builtin.ATOMICS_PAUSE.ordinal] = &builtin_atomics_pause,
     // TypedArray.prototype accessors (plan 049 stage 2)
     [Builtin.TYPEDARRAY_PROTO_LENGTH_GET.ordinal] = &builtin_typedarray_proto_length_get,
     [Builtin.TYPEDARRAY_PROTO_BYTELENGTH_GET.ordinal] = &builtin_typedarray_proto_bytelength_get,

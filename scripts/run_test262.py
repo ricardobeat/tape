@@ -143,7 +143,7 @@ UNSUPPORTED_PATTERN = re.compile(
     r"Temporal|ShadowRealm|decorators|explicit-resource-management|"
     r"source-phase-imports|source-phase-imports-module-source|"
     r"import-defer|export-defer|import-text|import-bytes|"
-    r"Atomics\.pause|canonical-tz|immutable-arraybuffer|"
+    r"canonical-tz|immutable-arraybuffer|"
     r"nonextensible-applies-to-private|await-dictionary|error-stack-accessor|"
     r""
     r""
@@ -152,9 +152,9 @@ UNSUPPORTED_PATTERN = re.compile(
     # Complex features deferred.  (BigInt is implemented — plan 056 — so it is
     # no longer filtered here; BigInt64Array/BigUint64Array + DataView BigInt64
     # tests still fail until Phase 3/4 land, but they run rather than skip.)
-    # SharedArrayBuffer + Atomics are now implemented single-agent; the
-    # Atomics.pause proposal remains filtered above.  Multi-worker `agent`
-    # tests are skipped per-file via AGENT_HARNESS_RE below.
+    # SharedArrayBuffer + Atomics are now implemented single-agent, incl.
+    # Atomics.pause.  Multi-worker `agent` tests are skipped per-file via
+    # AGENT_HARNESS_RE below.
     r"structured-clone|"
     # Async generators (`async function*`) implemented — plan 060. The
     # `async-generator` feature token no longer forces a skip.
