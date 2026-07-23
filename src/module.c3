@@ -1182,6 +1182,65 @@ fn bool export_name_less(char[] a, char[] b) {
     return a.len < b.len;
 }
 
+/// One resolved exported name contributing to a namespace object's own keys.
+/// `entry` is the owning module's ExportEntry when the name comes from a direct
+/// or indirect export (used to follow `export {x} from` / `export * as ns`
+/// indirection); it is null for a name reached purely through a `export *` star
+/// re-export, in which case `local_name` names a binding directly in `owner_mod`.
+struct NsExportItem {
+    char[]     export_name;
+    ModuleDef* owner_mod;
+    char[]     local_name;
+    ExportEntry* entry;
+}
+
+const uint MAX_NS_EXPORTS = 128;
+
+/// True if `name` is already among the first `count` collected namespace items.
+fn bool ns_has_export_name(NsExportItem[MAX_NS_EXPORTS]* items, uint count, char[] name) {
+    for (uint i = 0; i < count; i++) {
+        if (char_slice_eq((*items)[i].export_name, name)) return true;
+    }
+    return false;
+}
+
+/// Append a namespace export item unless its name is already present (nearer
+/// exports shadow star-reached ones) or the table is full.
+fn void ns_add_export_item(NsExportItem[MAX_NS_EXPORTS]* items, uint* count,
+                           char[] export_name, ModuleDef* owner_mod, ExportEntry* entry) {
+    if (*count >= MAX_NS_EXPORTS) return;
+    if (ns_has_export_name(items, *count, export_name)) return;
+    (*items)[*count] = { export_name, owner_mod, entry != null ? entry.local_name : export_name, entry };
+    (*count)++;
+}
+
+/// Expand `export *` star re-exports (§16.2.3.7 GetExportedNames) into the
+/// namespace item list, transitively. For each star-target module, every one of
+/// its exported names EXCEPT `default` is added (if not already present) as a
+/// live binding into that target's own env — direct exports keep their owning
+/// ExportEntry (so indirect/namespace re-exports still resolve correctly),
+/// while names the target itself only re-exports via its own `export *` are
+/// added as plain bindings in the target. `depth` guards against import cycles.
+fn void collect_star_export_items(ModuleDef* mod, NsExportItem[MAX_NS_EXPORTS]* items,
+                                  uint* count, uint depth) {
+    if (depth > MAX_STAR_EXPORTS) return;
+    for (uint si = 0; si < mod.star_export_count; si++) {
+        StarExportEntry* se = &mod.star_exports[si];
+        if (se.req_module_idx >= mod.req_module_count) continue;
+        ReqModuleEntry* rme = &mod.req_modules[se.req_module_idx];
+        if (rme.resolved == null) continue;
+        ModuleDef* target = (ModuleDef*)rme.resolved;
+        for (uint ei = 0; ei < target.export_count; ei++) {
+            ExportEntry* ee = &target.exports[ei];
+            // `export *` never re-exports the default binding (§16.2.3.7 step 4).
+            if (char_slice_eq(ee.export_name, "default")) continue;
+            ns_add_export_item(items, count, ee.export_name, target, ee);
+        }
+        // Transitively include the target's own star re-exports.
+        collect_star_export_items(target, items, count, depth + 1);
+    }
+}
+
 /// Build a Module Namespace Object for `import * as ns`.
 /// The returned HObject has one own enumerable property per export of
 /// source_mod, installed as a LIVE accessor via install_live_binding's
@@ -1205,33 +1264,85 @@ fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
     HObject* ns = ns_opt;
     // Module Namespace Exotic Object: [[Prototype]] is always null (ECMA-262 §10.4.6).
     ns.prototype = null;
+    // Mark as a Module Namespace Exotic Object so the reflective MOP builtins
+    // present exports as DATA descriptors and propagate TDZ ReferenceErrors
+    // (see ObjFlags.exotic_module_ns).
+    ns.flags.exotic_module_ns = true;
 
-    // Sort a local index array by export_name (insertion-sort — export
-    // counts are small, MAX_EXPORTS=64) rather than mutating source_mod's
-    // own exports table.
-    uint n = source_mod.export_count;
-    uint[MAX_EXPORTS] order;
-    for (uint i = 0; i < n; i++) order[i] = i;
-    for (uint i = 1; i < n; i++) {
-        uint idx = order[i];
-        char[] key_i = source_mod.exports[idx].export_name;
+    // Cache for identity BEFORE populating exports: a self-referential
+    // `export * as ns from './self'` (or a cyclic star-as re-export) would
+    // otherwise recurse into build_namespace_object for the same module and
+    // never terminate. Caching now means the recursive call returns this
+    // in-progress (still-empty) object — matching the spec's single
+    // GetModuleNamespace object per module. Root it for the ModuleDef's lifetime.
+    ns.as_header().incref();
+    source_mod.namespace_obj = ns;
+
+    // Collect the full exported-name set (§10.4.6.9 [[OwnPropertyKeys]] iterates
+    // GetExportedNames): the module's own direct/indirect exports plus the names
+    // reached transitively through `export *` star re-exports. `default` is
+    // never re-exported by a star (§16.2.3.7). Names already contributed by a
+    // nearer export win (star names are only added if not already present).
+    NsExportItem[MAX_NS_EXPORTS] items;
+    uint item_count = 0;
+    for (uint i = 0; i < source_mod.export_count; i++) {
+        ExportEntry* ee = &source_mod.exports[i];
+        ns_add_export_item(&items, &item_count, ee.export_name, source_mod, ee);
+    }
+    collect_star_export_items(source_mod, &items, &item_count, 0);
+
+    // Sort collected items by export_name into code-unit order (§10.4.6.9).
+    for (uint i = 1; i < item_count; i++) {
+        NsExportItem tmp = items[i];
         int j = (int)i - 1;
-        while (j >= 0 && export_name_less(key_i, source_mod.exports[order[j]].export_name)) {
-            order[j + 1] = order[j];
+        while (j >= 0 && export_name_less(tmp.export_name, items[j].export_name)) {
+            items[j + 1] = items[j];
             j--;
         }
-        order[j + 1] = idx;
+        items[j + 1] = tmp;
     }
 
-    for (uint oi = 0; oi < n; oi++) {
-        ExportEntry* ee = &source_mod.exports[order[oi]];
-        HString* export_key = heap.str_intern(ee.export_name);
+    for (uint oi = 0; oi < item_count; oi++) {
+        NsExportItem* it = &items[oi];
+        HString* export_key = heap.str_intern(it.export_name);
         if (export_key == null) continue;
+
+        // Namespace re-export (`export * as ns from './other'`): the export
+        // entry's local name is "*", meaning the exported value is the TARGET
+        // module's own namespace object (built recursively), installed as a
+        // static data property {enumerable:true, configurable:false} — not a
+        // live env binding accessor. (§16.2.3.7 / GetModuleNamespace.)
+        if (it.entry != null && it.entry.is_indirect && char_slice_eq(it.entry.local_name, "*")
+            && it.entry.req_module_idx < it.owner_mod.req_module_count) {
+            ReqModuleEntry* rme = &it.owner_mod.req_modules[it.entry.req_module_idx];
+            if (rme.resolved != null) {
+                ModuleDef* target = (ModuleDef*)rme.resolved;
+                HObject*? nested_opt = build_namespace_object(heap, target);
+                if (catch nerr = nested_opt) {
+                    TVal undef; undef.set_undefined();
+                    ns.put_prop(export_key, undef, hobject::PROP_FLAGS_NEC);
+                    continue;
+                }
+                TVal nested_tv; nested_tv.set_object(nested_opt);
+                ns.put_prop(export_key, nested_tv, hobject::PROP_FLAGS_NEC);
+                continue;
+            }
+            TVal undef; undef.set_undefined();
+            ns.put_prop(export_key, undef, hobject::PROP_FLAGS_NEC);
+            continue;
+        }
 
         // Resolve to the module/local-name that actually owns the value —
         // follows one level of indirection for `export { x } from './other'`
         // so the accessor never points at a same-module self-reference.
-        ExportBindingSource src = resolve_export_binding_source(source_mod, ee);
+        ExportBindingSource src;
+        if (it.entry != null) {
+            src = resolve_export_binding_source(it.owner_mod, it.entry);
+        } else {
+            // Star-reached name with no ExportEntry: it names a binding in the
+            // star-target module directly (see collect_star_export_items).
+            src = { it.owner_mod, it.local_name };
+        }
 
         TVal accessor;
         accessor.set_undefined();
@@ -1274,11 +1385,6 @@ fn HObject*? build_namespace_object(Heap* heap, ModuleDef* source_mod) {
     // [[IsExtensible]] always returns false and [[PreventExtensions]] is a
     // no-op success. Set the flag after all own properties are installed.
     ns.flags.extensible = false;
-
-    // Cache for identity: subsequent GetModuleNamespace returns this object.
-    // Root it with a reference the ModuleDef owns for its lifetime.
-    ns.as_header().incref();
-    source_mod.namespace_obj = ns;
 
     return ns;
 }

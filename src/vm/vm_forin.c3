@@ -99,6 +99,36 @@ fn ForInState* collect_forin_keys(Vm* vm, HObject* obj) {
             depth++;
             continue;
         }
+        // Module Namespace Exotic: for-in (EnumerateObjectProperties, §14.7.5.9)
+        // obtains own keys via [[OwnPropertyKeys]] and each key's attributes via
+        // [[GetOwnProperty]], which reads the live binding and throws
+        // ReferenceError for a TDZ export (§10.4.6.5 step 4). The namespace has a
+        // null prototype, so it is always the sole object in the walk.
+        if (cur.flags.exotic_module_ns) {
+            for (uint i = 0; i < cur.prop_count; i++) {
+                void* pk = cur.prop_key_at(i);
+                if (pk == null) continue;
+                HString* ks = (HString*)pk;
+                if (ks.is_symbol()) continue;
+                if (!cur.get_prop_flags(i).enumerable) continue;
+                ProxyDesc nd;
+                if (!builtins::module_ns_own_desc(vm, h, cur, ks, &nd)) {
+                    // TDZ threw: abort enumeration; FORIN rethrows heap.has_error.
+                    h.free_func(h.heap_udata, keys);
+                    h.free_func(h.heap_udata, seen);
+                    return null;
+                }
+                if (!nd.found || !nd.enumerable) continue;
+                if (!forin_add_key(h, &keys, &count, &keys_cap, &seen, &seen_cnt, &seen_cap, ks)) {
+                    h.free_func(h.heap_udata, keys);
+                    h.free_func(h.heap_udata, seen);
+                    return null;
+                }
+            }
+            cur = null;   // null prototype — walk ends here
+            depth++;
+            continue;
+        }
         // STRING exotic: enumerate integer indices [0, clen) from the primitive value
         // before the named property list so index order matches the spec.
         if (cur.flags.exotic_stringobj && (*cur.extra_ptr()).prim.primitive_value.is_string()) {

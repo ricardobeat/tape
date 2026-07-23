@@ -165,12 +165,91 @@ fn void ordinary_own_desc(Heap* heap, HObject* obj, HString* key, ProxyDesc* out
     }
 }
 
+/// Module Namespace Exotic [[GetOwnProperty]] into a ProxyDesc (§10.4.6.5).
+/// String keys that name an export are surfaced as DATA descriptors
+/// {value: live-binding-value, writable:true, enumerable:true, configurable:false};
+/// symbol keys (including @@toStringTag) go through OrdinaryGetOwnProperty
+/// unchanged. Returns false (leaving heap.has_error set) if reading the live
+/// binding threw — e.g. the export is still in TDZ (§10.4.6.5 step 4 calls
+/// O.[[Get]], which throws ReferenceError for an uninitialized binding). Callers
+/// must propagate that via proxy_ctx_ok / their own error channel.
+fn bool module_ns_own_desc(void* vm, Heap* heap, HObject* ns, HString* key, ProxyDesc* out) {
+    *out = (ProxyDesc){};
+    // Symbol keys: OrdinaryGetOwnProperty (§10.4.6.5 step 1).
+    if (key.is_symbol()) {
+        ordinary_own_desc(heap, ns, key, out);
+        return true;
+    }
+    int idx = ns.find_prop_idx((void*)key);
+    if (idx < 0) return true;          // not an export → undefined descriptor
+    TVal value;
+    module_ns_get_binding_value(vm, heap, ns, key, &value);
+    if (heap.has_error) return false;  // TDZ ReferenceError — propagate
+    // Live export binding: {value, writable:true, enumerable:true,
+    // configurable:false} (§10.4.6.5 step 5).
+    out.found = true;
+    out.has_value = true;        out.value = value;
+    out.has_writable = true;     out.writable = true;
+    out.has_enumerable = true;   out.enumerable = true;
+    out.has_configurable = true; out.configurable = false;
+    return true;
+}
+
 /// Own-property descriptor with proxy recursion ([[GetOwnProperty]]).
 fn bool own_property_desc(void* vm, Heap* heap, HObject* obj, HString* key, ProxyDesc* out) {
     if (obj.flags.exotic_proxyobj) {
         return proxy_mop_get_own(vm, heap, obj, key, out);
     }
+    if (obj.flags.exotic_module_ns) {
+        return module_ns_own_desc(vm, heap, obj, key, out);
+    }
     ordinary_own_desc(heap, obj, key, out);
+    return true;
+}
+
+/// Assemble a ProxyDesc from a parsed descriptor (flags + values + presence
+/// bits), mirroring the inline conversion used by the TypedArray/Array
+/// defineProperty paths. Used by the Module Namespace define branch.
+fn ProxyDesc module_ns_desc_from_fields(bool is_accessor, hobject::PropFlags* flags, TVal[2]* vals, DescFields* fields) {
+    ProxyDesc pd;
+    pd.found = true;
+    if (is_accessor) {
+        pd.has_get = fields.has_get; pd.getter = (*vals)[0];
+        pd.has_set = fields.has_set; pd.setter = (*vals)[1];
+    } else {
+        pd.has_value = fields.has_value; pd.value = (*vals)[0];
+        pd.has_writable = fields.has_writable; pd.writable = flags.writable;
+    }
+    pd.has_enumerable = fields.has_enumerable; pd.enumerable = flags.enumerable;
+    pd.has_configurable = fields.has_configurable; pd.configurable = flags.configurable;
+    return pd;
+}
+
+/// Module Namespace Exotic [[DefineOwnProperty]] (§10.4.6.4). Returns true only
+/// when `desc` is a no-op redefinition of an existing own property (every
+/// present field matches the current descriptor); returns false otherwise
+/// (caller throws for Object.defineProperty / returns false for Reflect).
+/// A non-existent key returns false. Sets `*err` true (and leaves heap.has_error
+/// set) if computing the current descriptor threw (TDZ) — the caller must
+/// propagate rather than throw a TypeError.
+fn bool module_ns_define_own(void* vm, Heap* heap, HObject* ns, HString* key, ProxyDesc* desc, bool* err) {
+    *err = false;
+    // Symbol keys (e.g. @@toStringTag) use the object's ordinary own descriptor.
+    ProxyDesc current;
+    if (key.is_symbol()) {
+        ordinary_own_desc(heap, ns, key, &current);
+    } else {
+        if (!module_ns_own_desc(vm, heap, ns, key, &current)) { *err = true; return false; }
+    }
+    if (!current.found) return false;
+    // §10.4.6.4 → ValidateAndApplyPropertyDescriptor against the current desc.
+    // No field may request a change. Exports are non-configurable data props;
+    // @@toStringTag is a non-configurable, non-writable, non-enumerable data prop.
+    if (desc.has_configurable && desc.configurable != current.configurable) return false;
+    if (desc.has_enumerable && desc.enumerable != current.enumerable) return false;
+    if (desc.is_accessor_desc()) return false;   // current is a data descriptor
+    if (desc.has_writable && desc.writable != current.writable) return false;
+    if (desc.has_value && !same_value(desc.value, current.value)) return false;
     return true;
 }
 
@@ -275,6 +354,9 @@ fn bool js_get(void* vm, Heap* heap, HObject* obj, HString* key, TVal* out) {
 // ============================================================================
 
 fn bool js_set_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, TVal val, TVal receiver, bool* res) {
+    // Module Namespace Exotic [[Set]] (§10.4.6.11): always returns false, with
+    // no descriptor read (a plain `ns.x = v` never touches the binding).
+    if (obj.flags.exotic_module_ns) { *res = false; return true; }
     // Integer-Indexed exotic [[Set]] (ES2022 §10.4.5.10): canonical numeric
     // index keys bypass OrdinarySet entirely.
     if (is_typed_array_class(obj.get_class())) {
@@ -385,6 +467,17 @@ fn bool js_set_with_receiver(void* vm, Heap* heap, HObject* obj, HString* key, T
         ProxyDesc nd = {};
         nd.has_value = true; nd.value = val;
         return array_set_length_desc(vm, heap, recv_obj, &nd, res);
+    }
+    // Module Namespace Exotic receiver (super.foo = V, Receiver === ns):
+    // OrdinarySetWithOwnDescriptor step "Receiver.[[GetOwnProperty]](P)" runs
+    // the namespace's [[GetOwnProperty]], which calls [[Get]] and throws
+    // ReferenceError for a TDZ binding (§10.4.6.5 step 4). A found export is a
+    // non-writable data property from the Set perspective, so the set fails.
+    if (recv_obj.flags.exotic_module_ns) {
+        ProxyDesc existing_ns;
+        if (!module_ns_own_desc(vm, heap, recv_obj, key, &existing_ns)) return false; // TDZ throw
+        *res = false;   // export bindings are not writable via [[Set]]
+        return true;
     }
     ProxyDesc existing;
     ordinary_own_desc(heap, recv_obj, key, &existing);
@@ -1032,6 +1125,12 @@ fn bool ordinary_define_own(void* vm, Heap* heap, HObject* obj, HString* key, Pr
 fn bool object_define_own(void* vm, Heap* heap, HObject* obj, HString* key, ProxyDesc* desc, bool* res) {
     if (obj.flags.exotic_proxyobj) {
         return proxy_mop_define(vm, heap, obj, key, desc, res);
+    }
+    if (obj.flags.exotic_module_ns) {
+        bool err;
+        *res = module_ns_define_own(vm, heap, obj, key, desc, &err);
+        if (err) return false;   // TDZ ReferenceError — propagate
+        return true;
     }
     return ordinary_define_own(vm, heap, obj, key, desc, res);
 }

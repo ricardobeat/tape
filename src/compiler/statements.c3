@@ -4714,7 +4714,13 @@ fn void? CompilerContext.export_declaration(&self) {
         uint def_name_idx = self.add_string_constant("*default*");
         self.emit_a_bc(Opcode.DECLVAR, (uint)val_reg, def_name_idx);
         self.free_reg(val_reg);
-        mod_register_export(mod, "*default*", "default", false, 0);
+        // `export default <expr>` binds the synthetic `*default*` as a mutable
+        // lexical binding initialized at THIS statement's position (§16.2.3.7 /
+        // ExportDeclaration:ClassExpression is lexical). Before the statement
+        // runs it is in TDZ, so a same-module `import * as ns; ns.default`
+        // executing above must observe the sentinel and throw ReferenceError —
+        // register it lexical so link_module pre-declares the TDZ sentinel.
+        mod_register_export(mod, "*default*", "default", false, 0, true);
         self.match(TokenType.SEMICOLON);
         return;
     }
@@ -4726,11 +4732,14 @@ fn void? CompilerContext.export_declaration(&self) {
         // export * as ns from './other'
         if (self.match_as()) {
             Token ns_tok = self.expect(TokenType.IDENTIFIER)!;
+            // Intern the alias: an escaped identifier borrows transient ident_buf,
+            // which the following `from`/specifier token scans clobber.
+            char[] ns_name = self.intern_slot_name(ns_tok.str_value);
             self.expect_from()!;
             Token spec_tok = self.expect(TokenType.STRING)!;
             bool wants_json = self.parse_with_clause()!;
             uint req_idx = mod_register_req_module(mod, spec_tok.str_value, wants_json);
-            mod_register_export(mod, "*", ns_tok.str_value, true, req_idx);
+            mod_register_export(mod, "*", ns_name, true, req_idx);
             self.match(TokenType.SEMICOLON);
             return;
         }
@@ -4755,6 +4764,12 @@ fn void? CompilerContext.export_declaration(&self) {
         while (!self.check(TokenType.RBRACE) && !self.is_at_end()) {
             if (count >= 32) return COMPILE_ERROR~;
             Token name_tok = self.expect(TokenType.IDENTIFIER)!;
+            // Intern each name immediately: an escaped identifier's str_value
+            // borrows the lexer's transient ident_buf, which the very next token
+            // scan (the `as` alias, the next iteration, or RBRACE) clobbers.
+            // Interning copies into the stable heap string table so the export
+            // metadata (and any namespace object built from it) stays valid.
+            char[] local_str = self.intern_slot_name(name_tok.str_value);
             if (self.match_as()) {
                 // The exported name (after 'as') is a ModuleExportName / IdentifierName:
                 // reserved words like 'default' are valid here.
@@ -4764,11 +4779,11 @@ fn void? CompilerContext.export_declaration(&self) {
                     alias_str = lexer::keyword_to_string(alias_tok.type);
                 }
                 if (alias_str.len == 0) return COMPILE_ERROR~;
-                local_names[count] = name_tok.str_value;
-                export_names[count] = alias_str;
+                local_names[count] = local_str;
+                export_names[count] = self.intern_slot_name(alias_str);
             } else {
-                local_names[count] = name_tok.str_value;
-                export_names[count] = name_tok.str_value;
+                local_names[count] = local_str;
+                export_names[count] = local_str;
             }
             count++;
             if (!self.match(TokenType.COMMA)) break;

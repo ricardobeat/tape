@@ -3312,6 +3312,36 @@ fn TVal make_module_binding_accessor(Heap* heap, HObject* source_bindings, HStri
     return hobject::hobject_create_accessors(heap, getter_tv, undef);
 }
 
+/// Module Namespace Exotic [[Get]] for a resolved own STRING key, used by the
+/// reflective MOP builtins (getOwnPropertyDescriptor, hasOwnProperty,
+/// Object.keys, propertyIsEnumerable, for-in) to materialise the DATA-descriptor
+/// `value`. `ns` must be a Module Namespace Exotic Object. Returns:
+///   - `found=false` when `key` is not an own property (absent export).
+///   - `found=true` with `*out` = the live binding value on success.
+/// If the export binding is still in TDZ, the invoked getter throws a
+/// ReferenceError: `heap.has_error` is left set and the caller MUST propagate
+/// it (via proxy_ctx_ok / returning false) rather than treating the result as a
+/// value. Export bindings are stored as accessors — this invokes the stored
+/// getter; a non-export own data property (none exist for string keys today) is
+/// returned verbatim.
+fn bool module_ns_get_binding_value(void* vm, Heap* heap, HObject* ns, HString* key, TVal* out) {
+    out.set_undefined();
+    int idx = ns.find_prop_idx((void*)key);
+    if (idx < 0) return false;
+    if (ns.get_prop_flags((uint)idx).is_accessor) {
+        TVal slot = ns.prop_values()[idx];
+        TVal getter = hobject::hobject_access_getter(slot);
+        if (!getter.is_object()) return true;
+        TVal this_tv; this_tv.set_object(ns);
+        *out = heap.call_fn(vm, getter, null, 0, this_tv);
+        // A TDZ binding's getter threw ReferenceError: heap.has_error is now
+        // set; leave it for the caller to surface. `*out` is meaningless.
+        return true;
+    }
+    *out = ns.prop_values()[idx];
+    return true;
+}
+
 // ============================================================================
 // Dispatch table
 // ============================================================================

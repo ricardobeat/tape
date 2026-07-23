@@ -250,6 +250,15 @@ bitstruct ObjFlags : uint {
     /// chain grows one node per property: without it, every property read that
     /// probes flags is O(depth), making bulk reads O(N^2).
     bool has_nondefault_flags : 27;
+    /// Module Namespace Exotic Object (ECMA-262 §10.4.6). Exports are stored
+    /// as live-binding accessor properties, but the object's reflective MOP
+    /// surface (getOwnPropertyDescriptor, defineProperty, hasOwnProperty,
+    /// Object.keys, propertyIsEnumerable, for-in, Reflect.deleteProperty,
+    /// [[Set]], [[Delete]]) must present exports as DATA descriptors
+    /// {value, writable:true, enumerable:true, configurable:false}. The
+    /// reflective builtins interpose on this flag; plain [[Get]] flows through
+    /// the accessors unchanged (which already throw ReferenceError on TDZ).
+    bool exotic_module_ns : 28;
 }
 
 // ============================================================================

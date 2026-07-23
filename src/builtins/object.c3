@@ -480,6 +480,19 @@ fn void builtin_object_keys(BuiltinContext* ctx) {
         key_buf = (HString**)ctx.heap.alloc_func(ctx.heap.heap_udata, (usz)(max_keys * HString*::size));
         if (key_buf == null) { ctx.result.set_undefined(); return; }
         key_count = collect_own_enum_string_keys(ctx, obj, key_buf);
+        // Module Namespace Exotic: EnumerableOwnProperties (§7.3.23) calls
+        // [[GetOwnProperty]] for each string key, which reads the live binding
+        // and throws ReferenceError for a TDZ export (§10.4.6.5 step 4).
+        if (obj.flags.exotic_module_ns) {
+            for (uint ki = 0; ki < key_count; ki++) {
+                ProxyDesc nd;
+                if (!module_ns_own_desc(ctx.vm, ctx.heap, obj, key_buf[ki], &nd)) {
+                    ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
+                    proxy_ctx_ok(ctx);
+                    return;
+                }
+            }
+        }
     }
     defer ctx.heap.free_func(ctx.heap.heap_udata, key_buf);
 
@@ -1127,6 +1140,14 @@ fn void builtin_reflect_deleteProperty(BuiltinContext* ctx) {
         ctx.result.set_boolean(res);
         return;
     }
+    // Module Namespace Exotic [[Delete]] (§10.4.6.10): a symbol key that is not
+    // an own property (or an absent string key) succeeds; an existing own key
+    // (any export or Symbol.toStringTag) is non-configurable and cannot be
+    // deleted (false).
+    if (obj.flags.exotic_module_ns) {
+        ctx.result.set_boolean(obj.find_prop_idx((void*)key) < 0);
+        return;
+    }
     ctx.result.set_boolean(obj.es_delete_prop((void*)key));
 }
 
@@ -1720,6 +1741,21 @@ fn void builtin_object_getOwnPropertyDescriptor(BuiltinContext* ctx) {
         HObject* desc_out = proxy_desc_to_object(ctx.heap, &pd);
         if (desc_out == null) { ctx.result.set_undefined(); return; }
         ctx.result.set_object(desc_out);
+        return;
+    }
+
+    // Module Namespace Exotic [[GetOwnProperty]] — §10.4.6.5. Exports are
+    // presented as DATA descriptors {value, writable:true, enumerable:true,
+    // configurable:false}; symbols (Symbol.toStringTag) keep their stored flags.
+    // Reading a TDZ export throws ReferenceError (propagated via proxy_ctx_ok).
+    if (obj.flags.exotic_module_ns) {
+        ProxyDesc nd;
+        if (!module_ns_own_desc(ctx.vm, ctx.heap, obj, key_hstr, &nd)) { proxy_ctx_ok(ctx); return; }
+        if (!nd.found) { ctx.result.set_undefined(); return; }
+        nd.complete();
+        HObject* nd_out = proxy_desc_to_object(ctx.heap, &nd);
+        if (nd_out == null) { ctx.result.set_undefined(); return; }
+        ctx.result.set_object(nd_out);
         return;
     }
 
@@ -2509,6 +2545,23 @@ fn void builtin_object_defineProperty(BuiltinContext* ctx) {
     bool has_any_field = desc_fields.has_enumerable || desc_fields.has_configurable
                       || desc_fields.has_value || desc_fields.has_writable
                       || desc_fields.has_get || desc_fields.has_set;
+
+    // Module Namespace Exotic [[DefineOwnProperty]] (§10.4.6.4): only a no-op
+    // redefinition (every present field already matches the current descriptor)
+    // succeeds; any other define throws TypeError. A TDZ export read throws
+    // ReferenceError (propagated via proxy_ctx_ok).
+    if (obj.flags.exotic_module_ns) {
+        ProxyDesc md = module_ns_desc_from_fields(is_accessor, &desc_flags, &desc_vals, &desc_fields);
+        bool err;
+        bool ok = module_ns_define_own(ctx.vm, ctx.heap, obj, key_hstr, &md, &err);
+        if (err) { proxy_ctx_ok(ctx); return; }
+        if (!ok) {
+            builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot redefine property on module namespace");
+            return;
+        }
+        *ctx.result = arg0;
+        return;
+    }
 
     // Integer-Indexed exotic [[DefineOwnProperty]] (ES2022 §10.4.5.3): routes
     // through the shared ordinary_define_own, which special-cases canonical
@@ -3681,6 +3734,21 @@ fn void builtin_object_freeze(BuiltinContext* ctx) {
         builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot freeze this TypedArray");
         return;
     }
+    // Module Namespace Exotic SetIntegrityLevel(O, frozen) — §7.3.15:
+    // [[DefineOwnProperty]] with {[[Writable]]: false} on any export returns
+    // false (exports are permanently writable per §10.4.6.4), so freeze throws.
+    // An empty namespace (only Symbol.toStringTag, already non-writable) freezes.
+    if (obj.flags.exotic_module_ns) {
+        for (uint i = 0; i < obj.prop_count; i++) {
+            void* pk = obj.prop_key_at(i);
+            if (pk != null && !((HString*)pk).is_symbol()) {
+                builtin_throw(ctx, ctx.heap.type_err_proto, "Cannot freeze module namespace object");
+                return;
+            }
+        }
+        ctx.result.set_object(obj);
+        return;
+    }
     obj.freeze();
     ctx.result.set_object(obj);
 }
@@ -3760,6 +3828,22 @@ fn void builtin_object_isFrozen(BuiltinContext* ctx) {
             return;
         }
         ctx.result.set_boolean(frozen);
+        return;
+    }
+
+    // Module Namespace Exotic TestIntegrityLevel(O, frozen) — §7.3.16: each
+    // export's [[GetOwnProperty]] is a data descriptor with [[Writable]]: true,
+    // so any string export means the namespace is not frozen. An empty namespace
+    // (only the non-writable Symbol.toStringTag) is frozen.
+    if (obj.flags.exotic_module_ns) {
+        for (uint i = 0; i < obj.prop_count; i++) {
+            void* pk = obj.prop_key_at(i);
+            if (pk != null && !((HString*)pk).is_symbol()) {
+                ctx.result.set_boolean(false);
+                return;
+            }
+        }
+        ctx.result.set_boolean(true);
         return;
     }
 
@@ -4962,6 +5046,15 @@ fn void builtin_object_proto_hasOwnProperty(BuiltinContext* ctx) {
         ctx.result.set_boolean(pd.found);
         return;
     }
+    // Module Namespace Exotic: HasOwnProperty calls [[GetOwnProperty]], which
+    // materialises the export's value via [[Get]] and throws ReferenceError for
+    // a TDZ binding (§10.4.6.5 step 4).
+    if (obj.flags.exotic_module_ns) {
+        ProxyDesc nd;
+        if (!module_ns_own_desc(ctx.vm, ctx.heap, obj, key, &nd)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(nd.found);
+        return;
+    }
     // Check own property
     PropValue*? entry = obj.find_prop(key);
     if (try e = entry) {
@@ -5027,6 +5120,14 @@ fn void builtin_object_proto_propertyIsEnumerable(BuiltinContext* ctx) {
         ProxyDesc pd;
         if (!proxy_mop_get_own(ctx.vm, ctx.heap, obj, key, &pd)) { proxy_ctx_ok(ctx); return; }
         ctx.result.set_boolean(pd.found && pd.enumerable);
+        return;
+    }
+    // Module Namespace Exotic: propertyIsEnumerable calls [[GetOwnProperty]],
+    // which reads the live binding and throws ReferenceError for a TDZ export.
+    if (obj.flags.exotic_module_ns) {
+        ProxyDesc nd;
+        if (!module_ns_own_desc(ctx.vm, ctx.heap, obj, key, &nd)) { proxy_ctx_ok(ctx); return; }
+        ctx.result.set_boolean(nd.found && nd.enumerable);
         return;
     }
     // Find own property descriptor
