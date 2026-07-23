@@ -2561,6 +2561,17 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     def_ctx.forbid_await = self.forbid_await;
     def_ctx.forbid_yield = self.forbid_yield;
 
+    // A parameter default value sits in the enclosing function's
+    // FormalParameters, and it is an early Syntax Error for FormalParameters to
+    // Contain a YieldExpression (in a generator, ES2015 §14.1.2) or an
+    // AwaitExpression (in an async function, ES2017 §14.7; also
+    // CreateDynamicFunction steps for the Generator/AsyncGenerator/AsyncFunction
+    // constructors). `yield`/`await` must still be reserved words here — which
+    // is why is_generator/is_async are propagated above — but the yield/await
+    // *expression* productions are unavailable, so forbid them.
+    if (self.is_generator) def_ctx.forbid_yield = true;
+    if (self.is_async)     def_ctx.forbid_await = true;
+
     // Per ES2015 §13.3.3.7 step 3 (NamedEvaluation), if the default is an
     // anonymous function/arrow/class/generator expression, the resulting
     // function object gets the binding identifier as its name. We

@@ -3033,6 +3033,16 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.save_lhs_ident_name(id_tok.str_value);
                 return id_reg;
             }
+            // Even inside a generator, a YieldExpression is a Syntax Error in
+            // the FormalParameters (ES2015 §14.1.2 / §15.5.1: "It is a Syntax
+            // Error if FormalParameters Contains YieldExpression"). The default
+            // thunk for a generator param sets forbid_yield to mark that the
+            // enclosing YieldExpression production is not available here, even
+            // though is_generator is propagated so `yield` stays a reserved
+            // word rather than an identifier.
+            if (self.forbid_yield) {
+                return COMPILE_ERROR~;
+            }
             self.advance()!;  // consume 'yield'
             // ES2015 §14.4 YieldExpression: `yield [no LineTerminator here] *`
             // and `yield [no LineTerminator here] AssignmentExpression` — a
@@ -3161,6 +3171,16 @@ fn ushort? CompilerContext.primary_expr(&self) {
                 self.last_getvar_name_idx = name_idx;
                 self.save_lhs_ident_name(id_tok.str_value);
                 return id_reg;
+            }
+            // Even inside an async function, an AwaitExpression is a Syntax
+            // Error in the FormalParameters (ES2017 §14.7 / CreateDynamicFunction
+            // step: "If parameters Contains AwaitExpression is true, throw a
+            // SyntaxError"). The default thunk for an async param sets
+            // forbid_await to mark that the AwaitExpression production is not
+            // available here, even though is_async is propagated so `await`
+            // stays reserved rather than an identifier.
+            if (self.forbid_await) {
+                return COMPILE_ERROR~;
             }
             self.advance()!;  // consume 'await'
             ushort operand = self.unary_expr()!;
