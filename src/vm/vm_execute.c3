@@ -587,8 +587,15 @@ fn TVal vm_call_fn_impl(void* vm_ptr, TVal func, TVal* args, uint nargs, TVal th
             vm.valstack_bottom = frame;
             vm.current_func = target;
 
-            // Create arguments object if the function references 'arguments'
-            if (target.uses_arguments()) {
+            // Create arguments object if the function references 'arguments'.
+            // Skip on a generator/async resume: the call-time arguments object
+            // was built at the initial call and saved into gs.var_env (restored
+            // into act.var_env above). This re-entrant call_fn path is driven
+            // with argc=0, so rebuilding here would install an empty arguments
+            // object (length 0) that shadows the correct call-time one — the
+            // async-generator `arguments` bug (async generators resume through
+            // call_fn, unlike sync generators which resume via the CALL opcode).
+            if (target.uses_arguments() && !did_resume) {
                 HObject*? args_obj_raw = vm.heap.alloc_object(hobject::ObjClass.ARGUMENTS);
                 if (try args_obj = args_obj_raw) {
                     // Store arguments in dense array_part (avoids O(argc) string key allocs).
