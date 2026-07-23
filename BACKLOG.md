@@ -53,7 +53,8 @@ Target: feature parity with vendored QuickJS 2025-09-13 (`out/qjs`), measured by
 
 ## Known bugs (pre-existing, exposed by un-skips)
 
-- [>] **GC sweep-order use-after-free** — hobject_free during sweep decrefs TVals pointing at objects already freed by the same sweep (mutually-referencing garbage, e.g. view↔buffer); silent SIGTRAP kills the worker and poisons batch-mates' verdicts (the join-test 'flakes'). ASan repro: set/typedarray-arg-src-backed-by-resizable-buffer.js. Agent running.
+- [x] **GC sweep-order use-after-free** — fixed: two-phase sweep (unlink dying → run all teardowns while memory valid → free headers) + decref sweep-guard; bonus fix: vm_mark_activations now marks each activation's full register span (live values above valstack_top were collectable).
+- [>] **GC rooting gap: instantiate_closure HObject collected** — sole reference lives somewhere the marker doesn't scan; ASan repro set/src-typedarray-big-throws.js; silently corrupts worker heap and flakes the join pair in batch. Agent running.
 - [x] **Lexer returned token slices into dead stack frames** — escaped strings/templates decoded into 64KB stack buffers whose slices escaped via Token.str_value/raw_value; fixed with a lexer arena (pointer-held so lexer snapshot/restore keeps allocations), freed at compile end; dead str_owns_memory removed; ASan-verified across 400+ escape/template tests.
 
 - [x] **Object-literal method + default param + param-capturing closure scrambles param slots** (FIXED: PUTLEX hardcoded source register 0 in all 3 duplicated param prologues — every env-backed param received param 0's value; now uses each param's arg-index register) — `{ m(a, b, c = "") { push(() => b); return String(b); } }`: `b` reads as the CLOSURE OBJECT inside the method. Was breaking temporalHelpers.observeProperty → 6 fromAsync tests; the 7th needed a separate fromAsync length-coercion fix (ToPrimitive on object-valued length).
