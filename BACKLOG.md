@@ -127,6 +127,8 @@ Method: read-only Explore survey per subsystem → ranked plan → small fix age
 
 ## Done (compressed; details in progress.md by session)
 
+- [x] Global-var perf branch (`land-globalreg-rebased`, 26 commits) rebased onto main and merged (s296): GETGLOBAL/PUTGLOBAL slot resolution, GETGLOBAL_PRIM/PUTGLOBAL_PRIM guard-free primitive slots, INC/DEC_GLOBAL, CALL_GLOBAL + CALL_VAR fusions, MOVE_GG, accumulate move-elimination, halt/restart scoping; plus threaded-dispatch spike behind `THREADED_DISPATCH` (own targets, not default build). bench-fast: arithmetic 120→53ms, loop 49→25, calls 54→34, ic_mono 186→116, recursion 310→236. Earlier phase-5 tamper regression fixed by the branch's soundness commit (verified 0 fails).
+- [x] **Un-interned concat strings** — the ADD/ADDI "skip interning for accumulator" fast path produced HStrings that broke pointer-identity string equality (indexOf/includes/keys); live on main via move-elim aliasing, exposed by balanced_brackets.js. All three sites now always intern (s296).
 - [x] Private class members complete: fields/methods/accessors/static (plan 054 P2-P5, C7), `\u` escapes (C7a), direct-eval visibility (C7b), dup-init TypeError (C7c), proxy/eval edges (C7d), public fields (P7, s289d).
 - [x] Class-method/object-literal eval-super basics (E2) + escaped-arrow `super()` re-binding (s289-290).
 - [x] Arrow lexical this/new.target (C8), arrow reparse scopes (X2), param-default capture (X3), template-substitution brace scanning (X4), named-funcexpr envs (X5), array fast-path key truncation (X1).
