@@ -1,6 +1,6 @@
 # Progress: Duktape C3 — test262 Conformance Tracker
 
-**Last Updated:** Session 297 — **41,655 pass / 0 fail / 0 CE** (7,581 skipped). Fixed ASI over-acceptance and the for-await destructuring `yield <operand>` compiler edge. Focused parser/generator regressions and Rosetta pass.
+**Last Updated:** Session 297 — **41,655 pass / 0 fail / 0 CE** (7,581 skipped). Fixed ASI over-acceptance, for-await destructuring `yield <operand>`, and iterator target lifetime across deferred consumers. Focused regressions and Rosetta pass.
 
 **Target:** 100% test262 pass rate on the targeted subset (see plan 040).
 
@@ -16,9 +16,10 @@
 
 - ASI over-acceptance fixed in `src/compiler/class.c3` and `src/compiler/statements.c3`.
 - Async-generator identity now propagates into destructuring default-expression thunks, allowing `yield <operand>` in for-await array and object patterns.
-- Regression tests: `test/test_asi_overacceptance.js`, `test/test_for_await_yield_operand.js`.
+- Array, Map, and Set iterators own their collection targets until exhaustion or teardown, keeping deferred iteration safe across `.call().then()` chains.
+- Regression tests: `test/test_asi_overacceptance.js`, `test/test_for_await_yield_operand.js`, `test/test_iterator_target_lifetime.js`.
 - Validation: focused tests pass; Rosetta 100/100.
 
 ## Remaining Clusters
 
-Open engineering work remains tracked in `BACKLOG.md`, including GC-root hardening, the re-entrant arguments iterator path, the borrowed array-iterator lifetime issue, direct-eval scope semantics, eval/super residuals, and builtin accessor `Function.prototype.toString` formatting.
+Open engineering work remains tracked in `BACKLOG.md`, including GC-root hardening, the re-entrant arguments iterator path, direct-eval scope semantics, eval/super residuals, and builtin accessor `Function.prototype.toString` formatting.

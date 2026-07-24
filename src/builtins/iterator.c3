@@ -28,6 +28,7 @@ fn void create_array_iterator(BuiltinContext* ctx, uint kind) {
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.ARRAY_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
+    iterable.as_header().incref();
     (*iter.extra_ptr()).iter.target = iterable;
     (*iter.extra_ptr()).iter.index = 0;
     (*iter.extra_ptr()).iter.kind = kind;
@@ -49,6 +50,7 @@ fn void create_map_iterator(BuiltinContext* ctx, uint kind) {
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.MAP_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
+    map.as_header().incref();
     (*iter.extra_ptr()).iter.target = map;
     (*iter.extra_ptr()).iter.index = 0;
     (*iter.extra_ptr()).iter.kind = kind;
@@ -68,6 +70,7 @@ fn void create_set_iterator(BuiltinContext* ctx, uint kind) {
     HObject*? iter_raw = heap.alloc_object(hobject::ObjClass.SET_ITERATOR);
     if (catch err = iter_raw) { ctx.result.set_undefined(); return; }
     HObject* iter = iter_raw;
+    set.as_header().incref();
     (*iter.extra_ptr()).iter.target = set;
     (*iter.extra_ptr()).iter.index = 0;
     (*iter.extra_ptr()).iter.kind = kind;
@@ -233,7 +236,10 @@ fn void builtin_array_iterator_next(BuiltinContext* ctx) {
     }
 
     if (done) {
-        (*iter.extra_ptr()).iter.target = null;
+        if ((*iter.extra_ptr()).iter.target != null) {
+            heap.decref((types::HeapHeader*)(*iter.extra_ptr()).iter.target);
+            (*iter.extra_ptr()).iter.target = null;
+        }
     }
 
     if (!done) {

@@ -1958,6 +1958,16 @@ fn void hobject_free(HObject* obj, void* heap_ptr, bool free_header = true) {
         h.decref_tval(&(*obj.extra_ptr()).func.captured_this);
     }
 
+    // Release the owned collection target held by array/map/set iterators.
+    if ((obj.flags.obj_class == ObjClass.ARRAY_ITERATOR
+        || obj.flags.obj_class == ObjClass.MAP_ITERATOR
+        || obj.flags.obj_class == ObjClass.SET_ITERATOR)
+        && _active_heap != null && (*obj.extra_ptr()).iter.target != null) {
+        heap::Heap* h = (heap::Heap*)_active_heap;
+        h.decref((types::HeapHeader*)(*obj.extra_ptr()).iter.target);
+        (*obj.extra_ptr()).iter.target = null;
+    }
+
     // Decref string and BigInt values held in property slots and array
     // elements.  Only these RC leaves are freed here — objects still use M&S
     // and can form cycles; decref-freeing objects from within another object's
