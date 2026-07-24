@@ -2617,6 +2617,7 @@ fn CompiledFunction*? CompilerContext.compile_default_expr(&self, char[] inferre
     // The default thunk itself is NOT a generator — it's a regular function
     // whose body may contain yield that suspends the *enclosing* generator.
     def_ctx.is_generator = self.is_generator;
+    def_ctx.is_user_generator = self.is_user_generator;
 
     // Propagate MODULE context so top-level `await` is recognized as an
     // operator inside default expressions at module scope (e.g.
