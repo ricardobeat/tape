@@ -1,0 +1,110 @@
+[
+ {
+  "date": "2026-05-22",
+  "title": "told the team to rebuild how the engine keeps track of running code",
+  "summary": "The human decided to throw out the first design for tracking what a running program is doing and switch to the way an existing, proven engine does it. It set the shape of everything built afterward.",
+  "impact": "Reworked the heart of the engine and gave function calls and nested scopes a foundation that could actually be made correct."
+ },
+ {
+  "date": "2026-05-23",
+  "title": "stopped the bug hunt and ordered a clean rebuild of function calls",
+  "summary": "After a string of failed patch attempts, the human said the analysis was pointless because the underlying design was wrong, and told the agent to forget the existing code and rewrite it from the reference engine's design.",
+  "impact": "Ended the cycle of incremental fixes and replaced the function-call machinery outright."
+ },
+ {
+  "date": "2026-05-25",
+  "title": "asked for a side by side comparison of two rival engines' data layouts",
+  "summary": "The human wanted exact numbers on how much space each engine spends storing a single value, rather than opinions. It gave the project a factual baseline for later design arguments.",
+  "impact": "Showed that this engine's values take twice the space of the reference engine's, which limits both speed and how deeply programs can nest calls."
+ },
+ {
+  "date": "2026-05-28",
+  "title": "accepted the deep nesting limit as a design cost and shelved the fix",
+  "summary": "The human concluded that the gap in how deeply programs could call themselves came from a basic design choice, not a bug, and deliberately parked the rewrite as its own future project.",
+  "impact": "Kept the current round of speed work inside the existing design instead of letting it balloon into a rewrite."
+ },
+ {
+  "date": "2026-05-30",
+  "title": "asked to pull the engine's giant main loop out into its own routine",
+  "summary": "One enormous block of code ran every instruction. The human asked for it to be lifted out on its own so it could be started and re-entered from more than one place.",
+  "impact": "Made it possible to pause and resume running code, which more advanced language features need."
+ },
+ {
+  "date": "2026-05-30",
+  "title": "gave built-in functions a way to see themselves",
+  "summary": "The human asked that every built-in function be handed a reference to itself when called, so it could read and update its own attached data.",
+  "impact": "Let built-ins such as promise callbacks keep their own state instead of relying on bookkeeping stored elsewhere."
+ },
+ {
+  "date": "2026-06-09",
+  "title": "split one huge file of built-in functions into many",
+  "summary": "The human asked for the single sprawling file of standard library functions to be broken into one file per area, with the split planned to keep the pieces as independent as possible.",
+  "impact": "Let several agents work on different parts of the standard library at once and made the code easier to keep track of."
+ },
+ {
+  "date": "2026-06-09",
+  "title": "demanded a root cause for a benchmark running 70 to 80 times too slow",
+  "summary": "Two performance tests were running dozens of times slower than the reference engine. The human refused to move on to optimization until someone explained why.",
+  "impact": "Redirected the work from speeding things up to finding what had gone wrong."
+ },
+ {
+  "date": "2026-06-11",
+  "title": "spotted that one code path skipped a safety copy the other one made",
+  "summary": "The human noticed that ordinary arithmetic made a scratch copy before working on a variable, but the shorthand version such as x += 1 did not, and pointed at that as the cause of the corruption.",
+  "impact": "Pointed the fix directly at making the shorthand version copy, compute, then write back, the same as the normal path."
+ },
+ {
+  "date": "2026-06-16",
+  "title": "refused to accept a cleanup until the deleted code was proven redundant",
+  "summary": "An agent removed what it called duplicate definitions. The human pushed back and asked for proof that the same things really existed elsewhere.",
+  "impact": "Avoided quietly deleting working functionality and made verification a condition of cleanup work."
+ },
+ {
+  "date": "2026-06-20",
+  "title": "decided the engine would only support modern JavaScript, not the legacy mode",
+  "summary": "The human declared this a new project rather than a clone, and asked for a full plan to strip out every trace of JavaScript's older, looser mode.",
+  "impact": "Removed a whole category of legacy behavior and made the engine substantially simpler to reason about."
+ },
+ {
+  "date": "2026-06-30",
+  "title": "ordered a full read-through of the code looking for things to cut",
+  "summary": "The human asked for the sources to be read one by one with a written report on where the code could be simplified and shrunk, rather than waiting for problems to surface.",
+  "impact": "Kicked off a quality pass that gave the team specific targets for reducing complexity."
+ },
+ {
+  "date": "2026-07-06",
+  "title": "asked for a switch to turn off the speed optimizations during testing",
+  "summary": "The human wanted to be able to check that the language logic was right on its own, then turn the optimizations back on and check those separately, with the method written down.",
+  "impact": "Separated two kinds of bugs that had been tangled together and made the optimizer independently testable."
+ },
+ {
+  "date": "2026-07-08",
+  "title": "traced broken argument unpacking to the wrong technique being used",
+  "summary": "The human reproduced a case where unpacking arguments from a stream of values silently produced nothing, and found that this path grabbed items by position instead of asking the source for them one at a time, unlike the error-handling path that already did it right.",
+  "impact": "Identified three places using the wrong technique that needed to be brought in line with the one that worked."
+ },
+ {
+  "date": "2026-07-11",
+  "title": "replaced ad hoc testing with five specific reliability rules",
+  "summary": "The human laid out concrete requirements for the test setup, including running each test in a fresh process and adding a checker for tests that only pass because of leftovers from earlier ones.",
+  "impact": "Turned chasing intermittent failures into a systematic hunt and made results reproducible."
+ },
+ {
+  "date": "2026-07-20",
+  "title": "renamed the tools so the plain one just runs your file",
+  "summary": "The human said the naming was backwards and asked that the main command simply run a program, with the inspection tooling moved to a separate, clearly named one.",
+  "impact": "Made the everyday command obvious while keeping the debugging tools available."
+ },
+ {
+  "date": "2026-07-20",
+  "title": "asked that wrapping a built-in function be allowed",
+  "summary": "The feature for intercepting access to an object rejected the standard built-in functions as targets. The human asked for them to be accepted too.",
+  "impact": "Unblocked five conformance tests that wrap built-ins like Math.max."
+ },
+ {
+  "date": "2026-07-20",
+  "title": "asked that code run on the fly see what surrounds it",
+  "summary": "The human wanted JavaScript evaluated at runtime inside a class method to be able to reach the parent class the same way the surrounding method can, and wanted the right error reported when it cannot.",
+  "impact": "Fixed more than ten conformance failures around runtime-evaluated code."
+ }
+]

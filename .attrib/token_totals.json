@@ -1,0 +1,874 @@
+{
+ "note": "Output tokens are the cross-harness comparable: all three stores record them identically. Input is split into fresh (processed) vs cache (re-read) because Claude Code counts cache reads as input, which inflates naive input sums by ~100x. Crush records tokens per session, so multi-model sessions (46 of 1641) are prorated by assistant-message share rather than credited to one model.",
+ "totals": {
+  "tokens_out": 37236301,
+  "tokens_fresh_in": 340947259,
+  "tokens_cache_in": 14162608837,
+  "cost_usd_known": 803.53,
+  "models": 42
+ },
+ "by_model": [
+  {
+   "model": "claude-opus-4.8",
+   "tokens_out": 8189653,
+   "tokens_fresh_in": 31618023,
+   "tokens_cache_in": 4030928247,
+   "tokens_reasoning": 0,
+   "messages": 15498,
+   "cost_usd": null,
+   "harnesses": [
+    "claude-code"
+   ],
+   "accounting": [
+    "claude:per-message"
+   ],
+   "out_per_msg": 528,
+   "lines_written": 30020,
+   "lines_surviving": 19139,
+   "tokens_per_surviving_line": 427.9,
+   "tokens_per_written_line": 272.8
+  },
+  {
+   "model": "claude-fable-5",
+   "tokens_out": 7550644,
+   "tokens_fresh_in": 29101421,
+   "tokens_cache_in": 1877076685,
+   "tokens_reasoning": 0,
+   "messages": 8842,
+   "cost_usd": null,
+   "harnesses": [
+    "claude-code"
+   ],
+   "accounting": [
+    "claude:per-message"
+   ],
+   "out_per_msg": 854,
+   "lines_written": 29203,
+   "lines_surviving": 20266,
+   "tokens_per_surviving_line": 372.6,
+   "tokens_per_written_line": 258.6
+  },
+  {
+   "model": "minimax-m3",
+   "tokens_out": 4450572,
+   "tokens_fresh_in": 28833479,
+   "tokens_cache_in": 1691109309,
+   "tokens_reasoning": 0,
+   "messages": 35964,
+   "cost_usd": 568.37,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 124,
+   "lines_written": 22814,
+   "lines_surviving": 7865,
+   "tokens_per_surviving_line": 565.9,
+   "tokens_per_written_line": 195.1
+  },
+  {
+   "model": "claude-opus-5",
+   "tokens_out": 4326778,
+   "tokens_fresh_in": 26769572,
+   "tokens_cache_in": 2632946829,
+   "tokens_reasoning": 0,
+   "messages": 7947,
+   "cost_usd": null,
+   "harnesses": [
+    "claude-code"
+   ],
+   "accounting": [
+    "claude:per-message"
+   ],
+   "out_per_msg": 544,
+   "lines_written": 16346,
+   "lines_surviving": 14331,
+   "tokens_per_surviving_line": 301.9,
+   "tokens_per_written_line": 264.7
+  },
+  {
+   "model": "mimo-v2.5",
+   "tokens_out": 4150135,
+   "tokens_fresh_in": 70063728,
+   "tokens_cache_in": 1114274368,
+   "tokens_reasoning": 4354580,
+   "messages": 29358,
+   "cost_usd": 80.5,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 141,
+   "lines_written": 37889,
+   "lines_surviving": 13714,
+   "tokens_per_surviving_line": 302.6,
+   "tokens_per_written_line": 109.5
+  },
+  {
+   "model": "claude-sonnet-5",
+   "tokens_out": 2805999,
+   "tokens_fresh_in": 17733784,
+   "tokens_cache_in": 1307396372,
+   "tokens_reasoning": 0,
+   "messages": 6934,
+   "cost_usd": null,
+   "harnesses": [
+    "claude-code"
+   ],
+   "accounting": [
+    "claude:per-message"
+   ],
+   "out_per_msg": 405,
+   "lines_written": 2369,
+   "lines_surviving": 1497,
+   "tokens_per_surviving_line": 1874.4,
+   "tokens_per_written_line": 1184.5
+  },
+  {
+   "model": "mimo-v2.5-pro",
+   "tokens_out": 1376139,
+   "tokens_fresh_in": 19433398,
+   "tokens_cache_in": 205802624,
+   "tokens_reasoning": 291733,
+   "messages": 11468,
+   "cost_usd": 50.0,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 120,
+   "lines_written": 15499,
+   "lines_surviving": 6481,
+   "tokens_per_surviving_line": 212.3,
+   "tokens_per_written_line": 88.8
+  },
+  {
+   "model": "deepseek-v4-pro",
+   "tokens_out": 1032981,
+   "tokens_fresh_in": 11519449,
+   "tokens_cache_in": 370096128,
+   "tokens_reasoning": 966864,
+   "messages": 10954,
+   "cost_usd": 57.28,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 94,
+   "lines_written": 13755,
+   "lines_surviving": 5502,
+   "tokens_per_surviving_line": 187.7,
+   "tokens_per_written_line": 75.1
+  },
+  {
+   "model": "claude-opus-4.7",
+   "tokens_out": 911802,
+   "tokens_fresh_in": 4278228,
+   "tokens_cache_in": 325409798,
+   "tokens_reasoning": 0,
+   "messages": 1945,
+   "cost_usd": null,
+   "harnesses": [
+    "claude-code"
+   ],
+   "accounting": [
+    "claude:per-message"
+   ],
+   "out_per_msg": 469,
+   "lines_written": 7226,
+   "lines_surviving": 5028,
+   "tokens_per_surviving_line": 181.3,
+   "tokens_per_written_line": 126.2
+  },
+  {
+   "model": "claude-sonnet-4.6",
+   "tokens_out": 716310,
+   "tokens_fresh_in": 2338784,
+   "tokens_cache_in": 213444440,
+   "tokens_reasoning": 0,
+   "messages": 2266,
+   "cost_usd": null,
+   "harnesses": [
+    "claude-code"
+   ],
+   "accounting": [
+    "claude:per-message"
+   ],
+   "out_per_msg": 316,
+   "lines_written": 4393,
+   "lines_surviving": 947,
+   "tokens_per_surviving_line": 756.4,
+   "tokens_per_written_line": 163.1
+  },
+  {
+   "model": "deepseek-v4-flash",
+   "tokens_out": 588832,
+   "tokens_fresh_in": 14252311,
+   "tokens_cache_in": 142804480,
+   "tokens_reasoning": 419235,
+   "messages": 10352,
+   "cost_usd": 5.68,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 57,
+   "lines_written": 18960,
+   "lines_surviving": 5439,
+   "tokens_per_surviving_line": 108.3,
+   "tokens_per_written_line": 31.1
+  },
+  {
+   "model": "deepseek-v4-flash-free",
+   "tokens_out": 424475,
+   "tokens_fresh_in": 8974537,
+   "tokens_cache_in": 74673792,
+   "tokens_reasoning": 286195,
+   "messages": 6861,
+   "cost_usd": 6.08,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 62,
+   "lines_written": 6318,
+   "lines_surviving": 1459,
+   "tokens_per_surviving_line": 290.9,
+   "tokens_per_written_line": 67.2
+  },
+  {
+   "model": "mimo-v2.5-pro-ultraspeed",
+   "tokens_out": 200467,
+   "tokens_fresh_in": 6485251,
+   "tokens_cache_in": 61873408,
+   "tokens_reasoning": 637698,
+   "messages": 1915,
+   "cost_usd": 12.87,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 105,
+   "lines_written": 1342,
+   "lines_surviving": 669,
+   "tokens_per_surviving_line": 299.7,
+   "tokens_per_written_line": 149.4
+  },
+  {
+   "model": "mimo-v2-pro",
+   "tokens_out": 194117,
+   "tokens_fresh_in": 5872966,
+   "tokens_cache_in": 80541760,
+   "tokens_reasoning": 105554,
+   "messages": 929,
+   "cost_usd": null,
+   "harnesses": [
+    "opencode"
+   ],
+   "accounting": [
+    "opencode:per-message"
+   ],
+   "out_per_msg": 209,
+   "lines_written": 5902,
+   "lines_surviving": 2809,
+   "tokens_per_surviving_line": 69.1,
+   "tokens_per_written_line": 32.9
+  },
+  {
+   "model": "k3-256k",
+   "tokens_out": 101061,
+   "tokens_fresh_in": 790104,
+   "tokens_cache_in": 9499904,
+   "tokens_reasoning": 0,
+   "messages": 156,
+   "cost_usd": 0.0,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 648,
+   "lines_written": 9,
+   "lines_surviving": 8,
+   "tokens_per_surviving_line": 12632.6,
+   "tokens_per_written_line": 11229.0
+  },
+  {
+   "model": "qwen3.6-35b-a3b",
+   "tokens_out": 78066,
+   "tokens_fresh_in": 11706958,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 80495,
+   "messages": 604,
+   "cost_usd": 0.0,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 129,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "kimi-k3",
+   "tokens_out": 53776,
+   "tokens_fresh_in": 674101,
+   "tokens_cache_in": 12450560,
+   "tokens_reasoning": 9883,
+   "messages": 284,
+   "cost_usd": 13.22,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 189,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "north-mini-code-free",
+   "tokens_out": 46503,
+   "tokens_fresh_in": 48923991,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 174763,
+   "messages": 601,
+   "cost_usd": null,
+   "harnesses": [
+    "opencode"
+   ],
+   "accounting": [
+    "opencode:per-message"
+   ],
+   "out_per_msg": 77,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "mimo-v2.5-free",
+   "tokens_out": 23118,
+   "tokens_fresh_in": 349869,
+   "tokens_cache_in": 10829952,
+   "tokens_reasoning": 9293,
+   "messages": 120,
+   "cost_usd": null,
+   "harnesses": [
+    "opencode"
+   ],
+   "accounting": [
+    "opencode:per-message"
+   ],
+   "out_per_msg": 193,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "qwopus3.6-27b-v2-mtp",
+   "tokens_out": 4507,
+   "tokens_fresh_in": 313106,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 751,
+   "messages": 39,
+   "cost_usd": null,
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "accounting": [
+    "crush:session-prorated",
+    "opencode:per-message"
+   ],
+   "out_per_msg": 116,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "minimax-m2.7",
+   "tokens_out": 2462,
+   "tokens_fresh_in": 92982,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 203,
+   "cost_usd": 0.94,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 12,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "laguna-s-2.1-free",
+   "tokens_out": 1881,
+   "tokens_fresh_in": 93083,
+   "tokens_cache_in": 750240,
+   "tokens_reasoning": 0,
+   "messages": 10,
+   "cost_usd": null,
+   "harnesses": [
+    "opencode"
+   ],
+   "accounting": [
+    "opencode:per-message"
+   ],
+   "out_per_msg": 188,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "claude-haiku-4.5",
+   "tokens_out": 1875,
+   "tokens_fresh_in": 430015,
+   "tokens_cache_in": 699941,
+   "tokens_reasoning": 0,
+   "messages": 12,
+   "cost_usd": null,
+   "harnesses": [
+    "claude-code"
+   ],
+   "accounting": [
+    "claude:per-message"
+   ],
+   "out_per_msg": 156,
+   "lines_written": 1272,
+   "lines_surviving": 728,
+   "tokens_per_surviving_line": 2.6,
+   "tokens_per_written_line": 1.5
+  },
+  {
+   "model": "kimi-k3-free",
+   "tokens_out": 1067,
+   "tokens_fresh_in": 18663,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 45,
+   "cost_usd": 0.18,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 24,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "qwen3.7-max",
+   "tokens_out": 837,
+   "tokens_fresh_in": 14905,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 59,
+   "cost_usd": 0.33,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 14,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "qwen3.6-27b",
+   "tokens_out": 614,
+   "tokens_fresh_in": 48627,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 34,
+   "cost_usd": null,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 18,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "lfm2.5-8b-a1b",
+   "tokens_out": 614,
+   "tokens_fresh_in": 12650,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 1,
+   "cost_usd": null,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 614,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "kimi-k2.7-code",
+   "tokens_out": 444,
+   "tokens_fresh_in": 58564,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 780,
+   "cost_usd": 5.5,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 1,
+   "lines_written": 1749,
+   "lines_surviving": 968,
+   "tokens_per_surviving_line": 0.5,
+   "tokens_per_written_line": 0.3
+  },
+  {
+   "model": "glm-5.2",
+   "tokens_out": 232,
+   "tokens_fresh_in": 60957,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 51,
+   "cost_usd": 0.34,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 5,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "qwopus3.6-27b-v1-preview",
+   "tokens_out": 190,
+   "tokens_fresh_in": 33840,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 47,
+   "cost_usd": null,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 4,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "gemini-3.1-flash-lite-preview",
+   "tokens_out": 98,
+   "tokens_fresh_in": 31993,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 44,
+   "cost_usd": 0.32,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 2,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "gemma-4-12b-qat",
+   "tokens_out": 38,
+   "tokens_fresh_in": 8198,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 41,
+   "cost_usd": 0.02,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 1,
+   "lines_written": 58,
+   "lines_surviving": 55,
+   "tokens_per_surviving_line": 0.7,
+   "tokens_per_written_line": 0.7
+  },
+  {
+   "model": "minimax-m3-free",
+   "tokens_out": 11,
+   "tokens_fresh_in": 3635,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 5,
+   "cost_usd": 0.04,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 2,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "mimo-v2.5-pro-free",
+   "tokens_out": 2,
+   "tokens_fresh_in": 727,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 1,
+   "cost_usd": 0.01,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 2,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "mistral-medium-3-5",
+   "tokens_out": 1,
+   "tokens_fresh_in": 562,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 13,
+   "cost_usd": 0.09,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "gemini-3.5-flash",
+   "tokens_out": 0,
+   "tokens_fresh_in": 331,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 1,
+   "cost_usd": 0.0,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "minimax-m2.7-highspeed",
+   "tokens_out": 0,
+   "tokens_fresh_in": 0,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 4,
+   "cost_usd": null,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "north-mini-code-1.0",
+   "tokens_out": 0,
+   "tokens_fresh_in": 57,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 1,
+   "cost_usd": 0.0,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "qwen3.6-35b-a3b-mtp",
+   "tokens_out": 0,
+   "tokens_fresh_in": 57,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 1,
+   "cost_usd": 0.0,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "gpt-5.5-free",
+   "tokens_out": 0,
+   "tokens_fresh_in": 4353,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 32,
+   "cost_usd": 1.76,
+   "harnesses": [
+    "crush"
+   ],
+   "accounting": [
+    "crush:session-prorated"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "big-pickle",
+   "tokens_out": 0,
+   "tokens_fresh_in": 0,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 1,
+   "cost_usd": null,
+   "harnesses": [
+    "opencode"
+   ],
+   "accounting": [
+    "opencode:per-message"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  },
+  {
+   "model": "k3",
+   "tokens_out": 0,
+   "tokens_fresh_in": 0,
+   "tokens_cache_in": 0,
+   "tokens_reasoning": 0,
+   "messages": 1,
+   "cost_usd": null,
+   "harnesses": [
+    "opencode"
+   ],
+   "accounting": [
+    "opencode:per-message"
+   ],
+   "out_per_msg": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "tokens_per_surviving_line": null,
+   "tokens_per_written_line": null
+  }
+ ]
+}

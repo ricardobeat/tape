@@ -1,0 +1,86 @@
+{
+ "2026-06-21": {
+  "pct": 69.0,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "f2f023260c22faab3df75f531c85783d76918d90"
+ },
+ "2026-06-20": {
+  "pct": 61.1,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "8465e663d5c5e80d45ffd9c54e2e8af6e2e8b54b"
+ },
+ "2026-06-19": {
+  "pct": 61.9,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "b631a2a8064b9c9f8f41b7518891a3e166901227"
+ },
+ "2026-06-18": {
+  "pct": 61.9,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "594a91979d6d3b13ee5022f00e529d59fd8d13d2"
+ },
+ "2026-06-14": {
+  "pct": 59.6,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "fba13f1ff10a0eefe1d791f43841763ee0e01bbd"
+ },
+ "2026-06-13": {
+  "pct": 58.0,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "2d4dfad8b9f5cf6baa29ef571905387b326c1350"
+ },
+ "2026-06-12": {
+  "pct": 57.1,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "17fff8711862a9016b5be14a1021db100d5e1c8c"
+ },
+ "2026-06-11": {
+  "pct": 53.4,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "bc165a5108d09ea76d3f92a97556b04647814587"
+ },
+ "2026-06-09": {
+  "pct": 52.7,
+  "total": null,
+  "executable": null,
+  "pass": null,
+  "sha": "4304a5c75676a5888707329dcee45b1f4c4c848c"
+ },
+ "2026-05-27": {
+  "pct": 3.1,
+  "total": 53568,
+  "executable": null,
+  "pass": 1621,
+  "sha": "1aecaadaefb6463e97adf4cc8210a675cb52ce4f"
+ },
+ "2026-05-26": {
+  "pct": 3.0,
+  "total": 53568,
+  "executable": null,
+  "pass": 1621,
+  "sha": "9589ab731c6fc36b300c13fcca7567988b823a2f"
+ },
+ "2026-05-25": {
+  "pct": 3.1,
+  "total": 53568,
+  "executable": null,
+  "pass": 1621,
+  "sha": "cbe0dfbe18397068331b8b9c196ac2dc3f77a858"
+ }
+}

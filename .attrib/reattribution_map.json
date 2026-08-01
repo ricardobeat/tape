@@ -1,0 +1,4 @@
+{
+ "note": "Maps a HEAD commit to the original side-branch commit that authored the same change, so blame credit follows the author rather than whoever rebased/cherry-picked it. Never overrides a HEAD commit that carries its own model trailer.",
+ "links": {}
+}

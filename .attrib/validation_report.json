@@ -1,0 +1,741 @@
+{
+ "ok": false,
+ "checks": [
+  {
+   "name": "trailer_vs_evidence_agreement",
+   "passed": false,
+   "detail": {
+    "trailer_commits": 1715,
+    "with_evidence_match": 797,
+    "model_agree": 723,
+    "model_disagree": 74,
+    "model_agreement_rate": 0.9072,
+    "harness_agreement_rate": 0.9925,
+    "disagreement_examples": [
+     {
+      "sha": "6bd2ec1",
+      "subject": "Implement Phase 5d & 5e: Object and Array constructors with primitive ",
+      "trailer_model": null,
+      "evidence_models": [
+       "deepseek-v4-flash"
+      ],
+      "match_kind": "exact",
+      "gap_s": 6.0
+     },
+     {
+      "sha": "a59ef23",
+      "subject": "Implement Phase 7g: with statement (ES5 \u00a712.10)",
+      "trailer_model": null,
+      "evidence_models": [
+       "deepseek-v4-flash"
+      ],
+      "match_kind": "exact",
+      "gap_s": 0.0
+     },
+     {
+      "sha": "801f88f",
+      "subject": "Implement mark-and-sweep GC and unified property allocation",
+      "trailer_model": null,
+      "evidence_models": [
+       "deepseek-v4-flash"
+      ],
+      "match_kind": "exact",
+      "gap_s": 7.0
+     },
+     {
+      "sha": "03bff20",
+      "subject": "Fix GETPROP 4x call bug to improve property access performance by 8-29",
+      "trailer_model": null,
+      "evidence_models": [
+       "deepseek-v4-flash-free"
+      ],
+      "match_kind": "exact",
+      "gap_s": 5.0
+     },
+     {
+      "sha": "d207f30",
+      "subject": "implement logical assignment operators (&&=, ||=, ??=), simplify valst",
+      "trailer_model": "claude-sonnet-4",
+      "evidence_models": [
+       "mimo-v2.5"
+      ],
+      "match_kind": "exact",
+      "gap_s": 4.0
+     },
+     {
+      "sha": "feff1c8",
+      "subject": "implement @@toStringTag, LIGHTFUNC .call, arguments object, fix prop f",
+      "trailer_model": null,
+      "evidence_models": [
+       "mimo-v2.5-pro"
+      ],
+      "match_kind": "exact",
+      "gap_s": 4.0
+     },
+     {
+      "sha": "a88acd6",
+      "subject": "clean up progress.md: one-liner sessions, benchmark pointer, fix stale",
+      "trailer_model": null,
+      "evidence_models": [
+       "mimo-v2.5-pro"
+      ],
+      "match_kind": "exact",
+      "gap_s": 8.0
+     },
+     {
+      "sha": "81586cd",
+      "subject": "feat: add Date.prototype.toLocaleString/toLocaleDateString/toLocaleTim",
+      "trailer_model": "claude-opus-4.6",
+      "evidence_models": [
+       "mimo-v2.5"
+      ],
+      "match_kind": "exact",
+      "gap_s": 4.0
+     },
+     {
+      "sha": "55cbe6d",
+      "subject": "feat: add Promise.allSettled(iterable)",
+      "trailer_model": null,
+      "evidence_models": [
+       "deepseek-v4-flash-free"
+      ],
+      "match_kind": "exact",
+      "gap_s": 4.0
+     },
+     {
+      "sha": "1dee9c5",
+      "subject": "feat: add AggregateError + Promise.any(iterable)",
+      "trailer_model": null,
+      "evidence_models": [
+       "deepseek-v4-flash-free"
+      ],
+      "match_kind": "exact",
+      "gap_s": 4.0
+     },
+     {
+      "sha": "efc2b55",
+      "subject": "fix: set .name on function objects during CLOSURE and fix .length flag",
+      "trailer_model": null,
+      "evidence_models": [
+       "mimo-v2.5"
+      ],
+      "match_kind": "exact",
+      "gap_s": 7.0
+     },
+     {
+      "sha": "2fa64f7",
+      "subject": "fix: wire RegExp prototype chain correctly (ES5 \u00a715.10.6)",
+      "trailer_model": null,
+      "evidence_models": [
+       "mimo-v2.5"
+      ],
+      "match_kind": "exact",
+      "gap_s": 6.0
+     },
+     {
+      "sha": "6f48831",
+      "subject": "fix: use get_number_or_fastint() for Number wrapper valueOf/toPrimitiv",
+      "trailer_model": "claude-sonnet-4.6",
+      "evidence_models": [
+       "mimo-v2.5"
+      ],
+      "match_kind": "exact",
+      "gap_s": 5.0
+     },
+     {
+      "sha": "05b1e2a",
+      "subject": "feat: implement Array.from with iterable and array-like paths (ES6 \u00a722",
+      "trailer_model": null,
+      "evidence_models": [
+       "deepseek-v4-flash-free"
+      ],
+      "match_kind": "exact",
+      "gap_s": 4.0
+     },
+     {
+      "sha": "1e0001c",
+      "subject": "feat: speed optimization pass \u2014 dispatch table, needs_env skip, memset",
+      "trailer_model": "codestral-2506",
+      "evidence_models": [
+       "mimo-v2.5"
+      ],
+      "match_kind": "exact",
+      "gap_s": 6.0
+     }
+    ]
+   }
+  },
+  {
+   "name": "trailer_vs_evidence_exact_subject_only",
+   "passed": false,
+   "detail": {
+    "n": 771,
+    "agree": 703,
+    "disagree": 68,
+    "rate": 0.9118
+   }
+  },
+  {
+   "name": "manual_spotcheck_12_invocation_commits",
+   "passed": false,
+   "detail": {
+    "sampled": 12,
+    "failures": 1,
+    "samples": [
+     {
+      "sha": "49329a2",
+      "git_subject": "Remove CallableKind field from HObjectFunction; move prop_hash into PropHashInfo side struct",
+      "log_subject_matches_git": true,
+      "evidence_subject": "Remove CallableKind field from HObjectFunction; move prop_hash into PropHashInfo side stru",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "mimo-v2.5-pro",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": 1,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "30161b7",
+      "git_subject": "feat: register GeneratorFunction global and wire prototype.constructor (BACKLOG L39)",
+      "log_subject_matches_git": true,
+      "evidence_subject": "feat: register GeneratorFunction global and wire prototype.constructor (BACKLOG L39)",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "deepseek-v4-flash-free",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": 0,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "594a919",
+      "git_subject": "progress: Phase 1 +3 pass, merge ralph-loop",
+      "log_subject_matches_git": true,
+      "evidence_subject": "progress: Phase 1 +3 pass, merge ralph-loop",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "deepseek-v4-pro",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": -4,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "bdd6b25",
+      "git_subject": "Revert \"fix: trailing arg after a spread no longer collides with the spread\"",
+      "log_subject_matches_git": true,
+      "evidence_subject": "fix: trailing arg after a spread no longer collides with the spread",
+      "evidence_subject_matches_git": false,
+      "match_kind": "ratio",
+      "model": "minimax-m3",
+      "harness": "crush",
+      "gap_seconds_evidence_minus_commit": -13179,
+      "gap_sane": true,
+      "ok": false
+     },
+     {
+      "sha": "556c960",
+      "git_subject": "strict-only Phase B: drop runtime strict checks + with-statement support",
+      "log_subject_matches_git": true,
+      "evidence_subject": "strict-only Phase B: drop runtime strict checks + with-statement support",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "minimax-m3",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": 1,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "baf1d74",
+      "git_subject": "fix: property descriptor flags, error propagation, proto coercion",
+      "log_subject_matches_git": true,
+      "evidence_subject": "fix: property descriptor flags, error propagation, proto coercion",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "deepseek-v4-pro",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": -2,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "f52c702",
+      "git_subject": "backlog: close J1 \u2014 JSON.parse reviver + Date.toJSON tests already passing",
+      "log_subject_matches_git": true,
+      "evidence_subject": "backlog: close J1 \u2014 JSON.parse reviver + Date.toJSON tests already passing",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "minimax-m3",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": 0,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "0d73557",
+      "git_subject": "docs: update progress.md for session 189",
+      "log_subject_matches_git": true,
+      "evidence_subject": "docs: update progress.md for session 189",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "mimo-v2-pro",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": 0,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "54279c6",
+      "git_subject": "fix: reset throw_pending and bail out after builtin_to_integer_vm",
+      "log_subject_matches_git": true,
+      "evidence_subject": "fix: reset throw_pending and bail out after builtin_to_integer_vm",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "claude-sonnet-5",
+      "harness": "claude-code",
+      "gap_seconds_evidence_minus_commit": 0,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "f39bb70",
+      "git_subject": "Fix Object.isFrozen/isSealed for Proxy: use proxy TestIntegrityLevel",
+      "log_subject_matches_git": true,
+      "evidence_subject": "Fix Object.isFrozen/isSealed for Proxy: use proxy TestIntegrityLevel",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "mimo-v2.5-pro",
+      "harness": "opencode",
+      "gap_seconds_evidence_minus_commit": -1,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "0cd721f",
+      "git_subject": "fix: typeof X.y compiler bug \u2014 peek ahead for member operators before emitting TYPEOFIDENT",
+      "log_subject_matches_git": true,
+      "evidence_subject": "fix: typeof X.y compiler bug \u2014 peek ahead for member operators before emitting TYPEOFIDENT",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "deepseek-v4-flash-free",
+      "harness": "crush",
+      "gap_seconds_evidence_minus_commit": -5,
+      "gap_sane": true,
+      "ok": true
+     },
+     {
+      "sha": "4d879c9",
+      "git_subject": "docs: re-baseline test262 numbers after full suite run (session 265)",
+      "log_subject_matches_git": true,
+      "evidence_subject": "docs: re-baseline test262 numbers after full suite run (session 265)",
+      "evidence_subject_matches_git": true,
+      "match_kind": "exact",
+      "model": "claude-sonnet-5",
+      "harness": "claude-code",
+      "gap_seconds_evidence_minus_commit": 1,
+      "gap_sane": true,
+      "ok": true
+     }
+    ]
+   }
+  },
+  {
+   "name": "no_evidence_ts_after_commit_gt_1h",
+   "passed": true,
+   "detail": {
+    "violations": 0,
+    "by_method": {},
+    "worst": [],
+    "note": "span/nearest_span use span START ts, so a start after the commit is a real ordering violation"
+   }
+  },
+  {
+   "name": "model_existence_window",
+   "passed": false,
+   "detail": {
+    "anachronisms": [
+     {
+      "model": "claude-fable-5",
+      "issue": "commit predates model first-seen in evidence",
+      "first_commit": "2026-06-09T22:55:22+00:00",
+      "evidence_first_seen": "2026-07-05T00:40:57.662000+00:00",
+      "days_before": 25.07,
+      "commits": 450
+     },
+     {
+      "model": "claude-haiku-4.5",
+      "issue": "commit predates model first-seen in evidence",
+      "first_commit": "2026-05-29T21:15:00+00:00",
+      "evidence_first_seen": "2026-07-05T22:17:01.742000+00:00",
+      "days_before": 37.04,
+      "commits": 13
+     },
+     {
+      "model": "claude-opus-4.6",
+      "issue": "model never appears in any evidence file",
+      "first_commit": "2026-05-30T00:48:19+00:00",
+      "commits": 10
+     },
+     {
+      "model": "claude-opus-4.8",
+      "issue": "commit predates model first-seen in evidence",
+      "first_commit": "2026-06-21T22:14:57+00:00",
+      "evidence_first_seen": "2026-06-30T09:21:00.582000+00:00",
+      "days_before": 8.46,
+      "commits": 505
+     },
+     {
+      "model": "claude-sonnet-4",
+      "issue": "model never appears in any evidence file",
+      "first_commit": "2026-05-29T00:07:46+00:00",
+      "commits": 4
+     },
+     {
+      "model": "claude-sonnet-4.6",
+      "issue": "commit predates model first-seen in evidence",
+      "first_commit": "2026-06-03T02:50:00+00:00",
+      "evidence_first_seen": "2026-07-08T22:50:16.532000+00:00",
+      "days_before": 35.83,
+      "commits": 55
+     },
+     {
+      "model": "codestral-2506",
+      "issue": "model never appears in any evidence file",
+      "first_commit": "2026-06-04T22:11:16+00:00",
+      "commits": 1
+     },
+     {
+      "model": "mimo-v2.5-pro-free",
+      "issue": "model never appears in any evidence file",
+      "first_commit": "2026-06-21T14:44:14+00:00",
+      "commits": 1
+     },
+     {
+      "model": "minimax-m3-free",
+      "issue": "model never appears in any evidence file",
+      "first_commit": "2026-06-21T14:57:48+00:00",
+      "commits": 1
+     },
+     {
+      "model": "new-skill",
+      "issue": "model never appears in any evidence file",
+      "first_commit": "2026-07-06T13:48:57+00:00",
+      "commits": 2
+     }
+    ],
+    "commits_after_model_last_seen": [
+     {
+      "model": "kimi-k2.7-code",
+      "last_commit": "2026-07-16T19:34:45+00:00",
+      "evidence_last_seen": "2026-07-16T18:19:11+00:00",
+      "days_after": 0.05,
+      "commits": 35
+     }
+    ]
+   }
+  },
+  {
+   "name": "harness_has_session_on_commit_date",
+   "passed": false,
+   "detail": {
+    "violations": 79,
+    "by_harness": {
+     "claude-code": 79
+    },
+    "by_method": {
+     "trailer": 79
+    },
+    "examples": [
+     {
+      "sha": "e7eaa30",
+      "date": "2026-05-29T23:15:00+02:00",
+      "harness": "claude-code",
+      "model": "claude-haiku-4.5",
+      "method": "trailer"
+     },
+     {
+      "sha": "6db13e5",
+      "date": "2026-05-29T23:31:57+02:00",
+      "harness": "claude-code",
+      "model": "claude-haiku-4.5",
+      "method": "trailer"
+     },
+     {
+      "sha": "d3ab0b0",
+      "date": "2026-05-29T23:39:15+02:00",
+      "harness": "claude-code",
+      "model": "claude-haiku-4.5",
+      "method": "trailer"
+     },
+     {
+      "sha": "4a52f21",
+      "date": "2026-06-08T18:22:40+02:00",
+      "harness": "claude-code",
+      "model": "claude-sonnet-4.6",
+      "method": "trailer"
+     },
+     {
+      "sha": "1cead1b",
+      "date": "2026-06-08T18:54:44+02:00",
+      "harness": "claude-code",
+      "model": "claude-sonnet-4.6",
+      "method": "trailer"
+     },
+     {
+      "sha": "aab9826",
+      "date": "2026-06-08T19:11:50+02:00",
+      "harness": "claude-code",
+      "model": "claude-sonnet-4.6",
+      "method": "trailer"
+     },
+     {
+      "sha": "af39bd0",
+      "date": "2026-06-09T08:43:08+02:00",
+      "harness": "claude-code",
+      "model": "claude-haiku-4.5",
+      "method": "trailer"
+     },
+     {
+      "sha": "9f7b707",
+      "date": "2026-06-09T08:47:20+02:00",
+      "harness": "claude-code",
+      "model": "claude-haiku-4.5",
+      "method": "trailer"
+     },
+     {
+      "sha": "f955b2c",
+      "date": "2026-06-10T00:55:22+02:00",
+      "harness": "claude-code",
+      "model": "claude-fable-5",
+      "method": "trailer"
+     },
+     {
+      "sha": "991fcac",
+      "date": "2026-06-10T00:55:32+02:00",
+      "harness": "claude-code",
+      "model": "claude-fable-5",
+      "method": "trailer"
+     },
+     {
+      "sha": "8e49889",
+      "date": "2026-06-10T01:05:24+02:00",
+      "harness": "claude-code",
+      "model": "claude-fable-5",
+      "method": "trailer"
+     },
+     {
+      "sha": "e9dc266",
+      "date": "2026-06-10T01:05:24+02:00",
+      "harness": "claude-code",
+      "model": "claude-fable-5",
+      "method": "trailer"
+     },
+     {
+      "sha": "916cb2d",
+      "date": "2026-06-10T01:05:35+02:00",
+      "harness": "claude-code",
+      "model": "claude-fable-5",
+      "method": "trailer"
+     },
+     {
+      "sha": "d4286c3",
+      "date": "2026-06-10T01:05:35+02:00",
+      "harness": "claude-code",
+      "model": "claude-fable-5",
+      "method": "trailer"
+     },
+     {
+      "sha": "27dc25e",
+      "date": "2026-06-10T01:08:38+02:00",
+      "harness": "claude-code",
+      "model": "claude-fable-5",
+      "method": "trailer"
+     }
+    ],
+    "harness_active_ranges": {
+     "crush": {
+      "first": "2026-05-22T22:55:09+00:00",
+      "last": "2026-07-30T15:35:06+00:00",
+      "active_days": 57
+     },
+     "opencode": {
+      "first": "2026-06-09T20:20:32.275000+00:00",
+      "last": "2026-07-30T15:41:30.545000+00:00",
+      "active_days": 34
+     },
+     "claude-code": {
+      "first": "2026-06-30T09:21:00.582000+00:00",
+      "last": "2026-07-31T15:43:35.493000+00:00",
+      "active_days": 31
+     }
+    }
+   }
+  },
+  {
+   "name": "monthly_distribution",
+   "passed": false,
+   "detail": {
+    "commits_per_month": {
+     "2026-05": 159,
+     "2026-06": 548,
+     "2026-07": 1676
+    },
+    "harness_per_month": {
+     "2026-05": {
+      "crush": 156,
+      "claude-code": 3
+     },
+     "2026-06": {
+      "crush": 289,
+      "opencode": 183,
+      "claude-code": 76
+     },
+     "2026-07": {
+      "claude-code": 1350,
+      "crush": 172,
+      "opencode": 152,
+      "UNRESOLVED": 2
+     }
+    },
+    "method_per_month": {
+     "2026-05": {
+      "trailer": 113,
+      "nearest_span": 23,
+      "span": 13,
+      "invocation": 10
+     },
+     "2026-06": {
+      "trailer": 317,
+      "invocation": 163,
+      "span": 51,
+      "nearest_span": 17
+     },
+     "2026-07": {
+      "trailer": 1285,
+      "span": 249,
+      "invocation": 139,
+      "unresolved": 2,
+      "nearest_span": 1
+     }
+    },
+    "model_per_month": {
+     "2026-05": {
+      "deepseek-v4-flash": 53,
+      "mimo-v2.5-pro": 26,
+      "deepseek-v4-pro": 22,
+      "deepseek-v4-flash-free": 20,
+      "mimo-v2.5": 16,
+      "UNRESOLVED": 9,
+      "gemini-3.5-flash": 6,
+      "claude-haiku-4.5": 3,
+      "qwen3.6-35b-a3b": 1,
+      "claude-sonnet-4": 1,
+      "qwen3.6-27b": 1,
+      "claude-opus-4.6": 1
+     },
+     "2026-06": {
+      "deepseek-v4-pro": 105,
+      "minimax-m3": 88,
+      "mimo-v2.5": 78,
+      "mimo-v2.5-pro": 76,
+      "claude-sonnet-4.6": 39,
+      "mimo-v2-pro": 35,
+      "claude-fable-5": 23,
+      "deepseek-v4-flash-free": 22,
+      "UNRESOLVED": 22,
+      "mimo-v2.5-pro-ultraspeed": 18,
+      "deepseek-v4-flash": 11,
+      "claude-opus-4.6": 9,
+      "kimi-k2.7-code": 6,
+      "claude-opus-4.8": 6,
+      "claude-sonnet-4": 3,
+      "claude-haiku-4.5": 3,
+      "codestral-2506": 1,
+      "north-mini-code-free": 1,
+      "mimo-v2.5-pro-free": 1,
+      "minimax-m3-free": 1
+     },
+     "2026-07": {
+      "claude-opus-4.8": 499,
+      "claude-fable-5": 427,
+      "claude-opus-5": 270,
+      "minimax-m3": 111,
+      "mimo-v2.5-pro": 92,
+      "claude-opus-4.7": 73,
+      "claude-sonnet-5": 58,
+      "kimi-k2.7-code": 29,
+      "k3-256k": 26,
+      "deepseek-v4-pro": 25,
+      "mimo-v2.5": 21,
+      "claude-sonnet-4.6": 16,
+      "deepseek-v4-flash-free": 14,
+      "claude-haiku-4.5": 7,
+      "UNRESOLVED": 5,
+      "new-skill": 2,
+      "mimo-v2.5-pro-ultraspeed": 1
+     }
+    },
+    "smells": [
+     "3 claude-code commits in 2026-05 but claude-code store has no session in that month",
+     "1 claude-sonnet-4 commits in 2026-05 but model has no evidence session in that month",
+     "3 claude-haiku-4.5 commits in 2026-05 but model has no evidence session in that month",
+     "1 claude-opus-4.6 commits in 2026-05 but model has no evidence session in that month",
+     "39 claude-sonnet-4.6 commits in 2026-06 but model has no evidence session in that month",
+     "1 codestral-2506 commits in 2026-06 but model has no evidence session in that month",
+     "9 claude-opus-4.6 commits in 2026-06 but model has no evidence session in that month",
+     "3 claude-sonnet-4 commits in 2026-06 but model has no evidence session in that month",
+     "3 claude-haiku-4.5 commits in 2026-06 but model has no evidence session in that month",
+     "23 claude-fable-5 commits in 2026-06 but model has no evidence session in that month",
+     "1 mimo-v2.5-pro-free commits in 2026-06 but model has no evidence session in that month",
+     "1 minimax-m3-free commits in 2026-06 but model has no evidence session in that month",
+     "2 new-skill commits in 2026-07 but model has no evidence session in that month"
+    ]
+   }
+  },
+  {
+   "name": "method_mix",
+   "passed": true,
+   "detail": {
+    "methods": {
+     "nearest_span": 41,
+     "span": 313,
+     "trailer": 1715,
+     "invocation": 312,
+     "unresolved": 2
+    },
+    "confidence_hist": {
+     "0.0": 2,
+     "0.3": 41,
+     "0.4": 178,
+     "0.6": 135,
+     "0.95": 312,
+     "1.0": 1715
+    },
+    "share_confidence_le_0.6": 0.1494,
+    "note": "span/nearest_span/unresolved are heuristic, not evidence-backed"
+   }
+  }
+ ],
+ "problems": [
+  "trailer-vs-evidence model agreement only 90.7% over 797 commits",
+  "1/12 spot-checked invocation commits failed verification",
+  "10 models attributed to commits outside their evidence existence window",
+  "79 commits attributed to a harness with no session within +-1 day",
+  "3 claude-code commits in 2026-05 but claude-code store has no session in that month",
+  "1 claude-sonnet-4 commits in 2026-05 but model has no evidence session in that month",
+  "3 claude-haiku-4.5 commits in 2026-05 but model has no evidence session in that month",
+  "1 claude-opus-4.6 commits in 2026-05 but model has no evidence session in that month",
+  "39 claude-sonnet-4.6 commits in 2026-06 but model has no evidence session in that month",
+  "1 codestral-2506 commits in 2026-06 but model has no evidence session in that month",
+  "9 claude-opus-4.6 commits in 2026-06 but model has no evidence session in that month",
+  "3 claude-sonnet-4 commits in 2026-06 but model has no evidence session in that month",
+  "3 claude-haiku-4.5 commits in 2026-06 but model has no evidence session in that month",
+  "23 claude-fable-5 commits in 2026-06 but model has no evidence session in that month",
+  "1 mimo-v2.5-pro-free commits in 2026-06 but model has no evidence session in that month",
+  "1 minimax-m3-free commits in 2026-06 but model has no evidence session in that month",
+  "2 new-skill commits in 2026-07 but model has no evidence session in that month"
+ ],
+ "verdict": "PARTIALLY VALID"
+}

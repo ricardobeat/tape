@@ -1,0 +1,936 @@
+{
+ "note": "Effort per model measured from harness session stores, independent of commits. Includes models that ran but never landed a commit. active_hours sums per-session (last-first) assistant timestamps and is a floor, not billed time. cost_usd is the harness's own accounting; null where the store does not record cost (Claude Code).",
+ "totals": {
+  "models": 42,
+  "models_with_commits": 18,
+  "models_without_commits": 24,
+  "assistant_messages": 153522,
+  "sessions": 2402,
+  "tokens_in": 10388414620,
+  "tokens_out": 36660196,
+  "cost_usd_known": 803.5
+ },
+ "by_model": [
+  {
+   "model": "minimax-m3",
+   "raw_names": [
+    "MiniMax-M3",
+    "minimax-m3"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 287,
+   "assistant_messages": 35964,
+   "tokens_in": 28532540,
+   "tokens_out": 4449275,
+   "cost_usd": 460.75,
+   "active_hours": 347.15,
+   "first_seen": "2026-06-03T09:59:58+00:00",
+   "last_seen": "2026-07-30T15:41:30.545000+00:00",
+   "commits": 139,
+   "lines_written": 20749,
+   "lines_surviving": 6610,
+   "committed": true
+  },
+  {
+   "model": "mimo-v2.5",
+   "raw_names": [
+    "mimo-v2.5",
+    "xiaomi-mimo-v2.5"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 974,
+   "assistant_messages": 29358,
+   "tokens_in": 69818839,
+   "tokens_out": 4150015,
+   "cost_usd": 78.8,
+   "active_hours": 116.44,
+   "first_seen": "2026-05-22T22:56:27+00:00",
+   "last_seen": "2026-07-29T21:49:25+00:00",
+   "commits": 98,
+   "lines_written": 37926,
+   "lines_surviving": 13711,
+   "committed": true
+  },
+  {
+   "model": "claude-opus-4.8",
+   "raw_names": [
+    "claude-opus-4-8"
+   ],
+   "harnesses": [
+    "claude-code"
+   ],
+   "sessions": 19,
+   "assistant_messages": 15498,
+   "tokens_in": 4062546270,
+   "tokens_out": 8189653,
+   "cost_usd": null,
+   "active_hours": 223.1,
+   "first_seen": "2026-07-08T11:57:48.367000+00:00",
+   "last_seen": "2026-07-24T04:49:41.422000+00:00",
+   "commits": 245,
+   "lines_written": 32855,
+   "lines_surviving": 20383,
+   "committed": true
+  },
+  {
+   "model": "mimo-v2.5-pro",
+   "raw_names": [
+    "mimo-v2.5-pro"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 357,
+   "assistant_messages": 11468,
+   "tokens_in": 19365598,
+   "tokens_out": 1382796,
+   "cost_usd": 34.92,
+   "active_hours": 415.89,
+   "first_seen": "2026-05-23T00:57:03+00:00",
+   "last_seen": "2026-07-30T15:35:06+00:00",
+   "commits": 87,
+   "lines_written": 13641,
+   "lines_surviving": 5935,
+   "committed": true
+  },
+  {
+   "model": "deepseek-v4-pro",
+   "raw_names": [
+    "deepseek-v4-pro",
+    "deepseek/deepseek-v4-pro"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 167,
+   "assistant_messages": 10954,
+   "tokens_in": 11660512,
+   "tokens_out": 1029525,
+   "cost_usd": 43.87,
+   "active_hours": 150.52,
+   "first_seen": "2026-05-24T16:36:21+00:00",
+   "last_seen": "2026-07-22T22:36:50+00:00",
+   "commits": 86,
+   "lines_written": 14199,
+   "lines_surviving": 5731,
+   "committed": true
+  },
+  {
+   "model": "deepseek-v4-flash",
+   "raw_names": [
+    "deepseek-v4-flash"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 198,
+   "assistant_messages": 10352,
+   "tokens_in": 14548102,
+   "tokens_out": 588905,
+   "cost_usd": 9.88,
+   "active_hours": 53.05,
+   "first_seen": "2026-05-23T02:14:30+00:00",
+   "last_seen": "2026-06-21T19:03:03+00:00",
+   "commits": 56,
+   "lines_written": 19802,
+   "lines_surviving": 5785,
+   "committed": true
+  },
+  {
+   "model": "claude-fable-5",
+   "raw_names": [
+    "claude-fable-5"
+   ],
+   "harnesses": [
+    "claude-code"
+   ],
+   "sessions": 18,
+   "assistant_messages": 8842,
+   "tokens_in": 1906178106,
+   "tokens_out": 7550644,
+   "cost_usd": null,
+   "active_hours": 127.66,
+   "first_seen": "2026-07-05T00:40:57.662000+00:00",
+   "last_seen": "2026-07-25T00:39:23.556000+00:00",
+   "commits": 252,
+   "lines_written": 30159,
+   "lines_surviving": 21025,
+   "committed": true
+  },
+  {
+   "model": "claude-opus-5",
+   "raw_names": [
+    "claude-opus-5"
+   ],
+   "harnesses": [
+    "claude-code"
+   ],
+   "sessions": 13,
+   "assistant_messages": 7045,
+   "tokens_in": 2319281407,
+   "tokens_out": 3750616,
+   "cost_usd": null,
+   "active_hours": 189.09,
+   "first_seen": "2026-07-25T00:34:19.959000+00:00",
+   "last_seen": "2026-07-31T17:14:20.363000+00:00",
+   "commits": 142,
+   "lines_written": 14421,
+   "lines_surviving": 13077,
+   "committed": true
+  },
+  {
+   "model": "claude-sonnet-5",
+   "raw_names": [
+    "claude-sonnet-5"
+   ],
+   "harnesses": [
+    "claude-code"
+   ],
+   "sessions": 18,
+   "assistant_messages": 6934,
+   "tokens_in": 1325130156,
+   "tokens_out": 2805999,
+   "cost_usd": null,
+   "active_hours": 93.93,
+   "first_seen": "2026-06-30T22:09:26.642000+00:00",
+   "last_seen": "2026-07-21T00:01:01.141000+00:00",
+   "commits": 33,
+   "lines_written": 2205,
+   "lines_surviving": 1374,
+   "committed": true
+  },
+  {
+   "model": "deepseek-v4-flash-free",
+   "raw_names": [
+    "deepseek-v4-flash-free"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 156,
+   "assistant_messages": 6861,
+   "tokens_in": 9159456,
+   "tokens_out": 425114,
+   "cost_usd": 61.76,
+   "active_hours": 138.0,
+   "first_seen": "2026-05-24T17:31:27+00:00",
+   "last_seen": "2026-07-25T01:38:35.765000+00:00",
+   "commits": 42,
+   "lines_written": 7854,
+   "lines_surviving": 1929,
+   "committed": true
+  },
+  {
+   "model": "claude-sonnet-4.6",
+   "raw_names": [
+    "claude-sonnet-4-6"
+   ],
+   "harnesses": [
+    "claude-code"
+   ],
+   "sessions": 2,
+   "assistant_messages": 2266,
+   "tokens_in": 215783224,
+   "tokens_out": 716310,
+   "cost_usd": null,
+   "active_hours": 5.66,
+   "first_seen": "2026-07-08T22:50:16.532000+00:00",
+   "last_seen": "2026-07-09T23:17:33.114000+00:00",
+   "commits": 30,
+   "lines_written": 4393,
+   "lines_surviving": 956,
+   "committed": true
+  },
+  {
+   "model": "claude-opus-4.7",
+   "raw_names": [
+    "claude-opus-4-7"
+   ],
+   "harnesses": [
+    "claude-code"
+   ],
+   "sessions": 6,
+   "assistant_messages": 1945,
+   "tokens_in": 329688026,
+   "tokens_out": 911802,
+   "cost_usd": null,
+   "active_hours": 69.94,
+   "first_seen": "2026-07-08T22:09:32.983000+00:00",
+   "last_seen": "2026-07-16T23:50:34.514000+00:00",
+   "commits": 44,
+   "lines_written": 8630,
+   "lines_surviving": 5949,
+   "committed": true
+  },
+  {
+   "model": "mimo-v2.5-pro-ultraspeed",
+   "raw_names": [
+    "mimo-v2.5-pro-ultraspeed"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 80,
+   "assistant_messages": 1915,
+   "tokens_in": 6470898,
+   "tokens_out": 198938,
+   "cost_usd": 12.91,
+   "active_hours": 14.62,
+   "first_seen": "2026-06-11T12:56:00.935000+00:00",
+   "last_seen": "2026-07-06T10:21:46+00:00",
+   "commits": 11,
+   "lines_written": 1342,
+   "lines_surviving": 671,
+   "committed": true
+  },
+  {
+   "model": "mimo-v2-pro",
+   "raw_names": [
+    "mimo-v2-pro"
+   ],
+   "harnesses": [
+    "opencode"
+   ],
+   "sessions": 1,
+   "assistant_messages": 929,
+   "tokens_in": 5872966,
+   "tokens_out": 194117,
+   "cost_usd": null,
+   "active_hours": 26.52,
+   "first_seen": "2026-06-14T22:32:26.367000+00:00",
+   "last_seen": "2026-06-16T01:03:36.025000+00:00",
+   "commits": 24,
+   "lines_written": 5902,
+   "lines_surviving": 2813,
+   "committed": true
+  },
+  {
+   "model": "kimi-k2.7-code",
+   "raw_names": [
+    "kimi-k2.7-code",
+    "moonshotai/kimi-k2.7-code"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 6,
+   "assistant_messages": 780,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 5.73,
+   "first_seen": "2026-06-13T13:55:58+00:00",
+   "last_seen": "2026-07-16T18:19:11+00:00",
+   "commits": 17,
+   "lines_written": 1649,
+   "lines_surviving": 900,
+   "committed": true
+  },
+  {
+   "model": "qwen3.6-35b-a3b",
+   "raw_names": [
+    "qwen3.6-35b-a3b"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 19,
+   "assistant_messages": 604,
+   "tokens_in": 11680262,
+   "tokens_out": 77888,
+   "cost_usd": null,
+   "active_hours": 2.21,
+   "first_seen": "2026-05-28T10:20:56+00:00",
+   "last_seen": "2026-06-20T09:49:38.951000+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "north-mini-code-free",
+   "raw_names": [
+    "north-mini-code-free"
+   ],
+   "harnesses": [
+    "opencode"
+   ],
+   "sessions": 6,
+   "assistant_messages": 601,
+   "tokens_in": 48923991,
+   "tokens_out": 46503,
+   "cost_usd": null,
+   "active_hours": 0.68,
+   "first_seen": "2026-06-11T19:44:44.724000+00:00",
+   "last_seen": "2026-06-16T02:16:39.841000+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "kimi-k3",
+   "raw_names": [
+    "coding-kimi-k3",
+    "kimi-k3",
+    "moonshotai/kimi-k3"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 10,
+   "assistant_messages": 284,
+   "tokens_in": 652432,
+   "tokens_out": 52331,
+   "cost_usd": 8.82,
+   "active_hours": 2.55,
+   "first_seen": "2026-07-16T23:48:33+00:00",
+   "last_seen": "2026-07-23T15:30:33.691000+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "minimax-m2.7",
+   "raw_names": [
+    "MiniMax-M2.7"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 5,
+   "assistant_messages": 203,
+   "tokens_in": 29074,
+   "tokens_out": 2452,
+   "cost_usd": 0.02,
+   "active_hours": 1.38,
+   "first_seen": "2026-05-23T00:46:58+00:00",
+   "last_seen": "2026-05-29T19:14:40+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "k3-256k",
+   "raw_names": [
+    "k3-256k"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 3,
+   "assistant_messages": 156,
+   "tokens_in": 790104,
+   "tokens_out": 101061,
+   "cost_usd": 0.0,
+   "active_hours": 16.71,
+   "first_seen": "2026-07-29T21:51:36.154000+00:00",
+   "last_seen": "2026-07-30T15:12:36.063000+00:00",
+   "commits": 6,
+   "lines_written": 402,
+   "lines_surviving": 281,
+   "committed": true
+  },
+  {
+   "model": "mimo-v2.5-free",
+   "raw_names": [
+    "mimo-v2.5-free"
+   ],
+   "harnesses": [
+    "opencode"
+   ],
+   "sessions": 3,
+   "assistant_messages": 120,
+   "tokens_in": 349869,
+   "tokens_out": 23118,
+   "cost_usd": null,
+   "active_hours": 1.38,
+   "first_seen": "2026-06-10T07:23:40.606000+00:00",
+   "last_seen": "2026-06-11T19:41:05.001000+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "qwen3.7-max",
+   "raw_names": [
+    "qwen3.7-max"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 2,
+   "assistant_messages": 59,
+   "tokens_in": 1045,
+   "tokens_out": 833,
+   "cost_usd": 0.02,
+   "active_hours": 1.05,
+   "first_seen": "2026-06-14T14:36:07+00:00",
+   "last_seen": "2026-06-14T15:38:10+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "glm-5.2",
+   "raw_names": [
+    "glm-5.2"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 51,
+   "tokens_in": 60957,
+   "tokens_out": 232,
+   "cost_usd": 0.34,
+   "active_hours": 0.15,
+   "first_seen": "2026-07-08T12:01:21+00:00",
+   "last_seen": "2026-07-08T12:10:23+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "qwopus3.6-27b-v1-preview",
+   "raw_names": [
+    "qwopus3.6-27b-v1-preview"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 2,
+   "assistant_messages": 47,
+   "tokens_in": 33840,
+   "tokens_out": 190,
+   "cost_usd": null,
+   "active_hours": 0.27,
+   "first_seen": "2026-05-28T08:03:37+00:00",
+   "last_seen": "2026-05-28T08:20:24+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "kimi-k3-free",
+   "raw_names": [
+    "coding-kimi-k3-free"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 6,
+   "assistant_messages": 45,
+   "tokens_in": 24248,
+   "tokens_out": 2463,
+   "cost_usd": 0.12,
+   "active_hours": 0.12,
+   "first_seen": "2026-07-16T23:52:10+00:00",
+   "last_seen": "2026-07-22T22:26:37+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "gemini-3.1-flash-lite-preview",
+   "raw_names": [
+    "gemini-3.1-flash-lite-preview"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 44,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.18,
+   "first_seen": "2026-06-21T15:03:05+00:00",
+   "last_seen": "2026-06-21T15:13:53+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "gemma-4-12b-qat",
+   "raw_names": [
+    "google/gemma-4-12b-qat"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 41,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.56,
+   "first_seen": "2026-07-05T13:47:34+00:00",
+   "last_seen": "2026-07-05T14:21:15+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "qwopus3.6-27b-v2-mtp",
+   "raw_names": [
+    "qwopus3.6-27b-v2-mtp"
+   ],
+   "harnesses": [
+    "crush",
+    "opencode"
+   ],
+   "sessions": 18,
+   "assistant_messages": 39,
+   "tokens_in": 312042,
+   "tokens_out": 4507,
+   "cost_usd": null,
+   "active_hours": 0.33,
+   "first_seen": "2026-05-28T08:25:21+00:00",
+   "last_seen": "2026-06-19T23:47:14+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "qwen3.6-27b",
+   "raw_names": [
+    "qwen3.6-27b"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 6,
+   "assistant_messages": 34,
+   "tokens_in": 23169,
+   "tokens_out": 404,
+   "cost_usd": null,
+   "active_hours": 1.17,
+   "first_seen": "2026-05-28T08:43:02+00:00",
+   "last_seen": "2026-05-30T10:54:28+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "gpt-5.5-free",
+   "raw_names": [
+    "gpt-5.5-free"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 32,
+   "tokens_in": 225270,
+   "tokens_out": 21,
+   "cost_usd": 90.93,
+   "active_hours": 0.2,
+   "first_seen": "2026-07-21T17:16:50+00:00",
+   "last_seen": "2026-07-21T17:28:48+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "mistral-medium-3-5",
+   "raw_names": [
+    "mistralai/mistral-medium-3-5"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 13,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.02,
+   "first_seen": "2026-06-30T22:56:32+00:00",
+   "last_seen": "2026-06-30T22:57:40+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "claude-haiku-4.5",
+   "raw_names": [
+    "claude-haiku-4-5-20251001"
+   ],
+   "harnesses": [
+    "claude-code"
+   ],
+   "sessions": 2,
+   "assistant_messages": 12,
+   "tokens_in": 1129956,
+   "tokens_out": 1875,
+   "cost_usd": null,
+   "active_hours": 0.01,
+   "first_seen": "2026-07-05T22:16:47.859000+00:00",
+   "last_seen": "2026-07-20T15:47:08.630000+00:00",
+   "commits": 10,
+   "lines_written": 1272,
+   "lines_surviving": 728,
+   "committed": true
+  },
+  {
+   "model": "laguna-s-2.1-free",
+   "raw_names": [
+    "laguna-s-2.1-free"
+   ],
+   "harnesses": [
+    "opencode"
+   ],
+   "sessions": 1,
+   "assistant_messages": 10,
+   "tokens_in": 93083,
+   "tokens_out": 1881,
+   "cost_usd": null,
+   "active_hours": 0.02,
+   "first_seen": "2026-07-30T15:17:15.583000+00:00",
+   "last_seen": "2026-07-30T15:18:22.436000+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "minimax-m3-free",
+   "raw_names": [
+    "coding-minimax-m3-free"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 5,
+   "tokens_in": 36356,
+   "tokens_out": 112,
+   "cost_usd": 0.36,
+   "active_hours": 0.33,
+   "first_seen": "2026-06-21T14:56:17+00:00",
+   "last_seen": "2026-06-21T15:16:04+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "minimax-m2.7-highspeed",
+   "raw_names": [
+    "MiniMax-M2.7-highspeed"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 4,
+   "assistant_messages": 4,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.0,
+   "first_seen": "2026-05-29T19:12:23+00:00",
+   "last_seen": "2026-05-29T19:13:08+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "gemini-3.5-flash",
+   "raw_names": [
+    "gemini-3.5-flash"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 1,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.0,
+   "first_seen": "2026-05-22T22:55:09+00:00",
+   "last_seen": "2026-05-22T22:55:09+00:00",
+   "commits": 4,
+   "lines_written": 5396,
+   "lines_surviving": 3081,
+   "committed": true
+  },
+  {
+   "model": "lfm2.5-8b-a1b",
+   "raw_names": [
+    "lfm2.5-8b-a1b"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 1,
+   "tokens_in": 12650,
+   "tokens_out": 614,
+   "cost_usd": null,
+   "active_hours": 0.0,
+   "first_seen": "2026-06-16T23:26:06+00:00",
+   "last_seen": "2026-06-16T23:26:06+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "north-mini-code-1.0",
+   "raw_names": [
+    "north-mini-code-1.0"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 1,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.0,
+   "first_seen": "2026-06-21T10:50:09+00:00",
+   "last_seen": "2026-06-21T10:50:09+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "qwen3.6-35b-a3b-mtp",
+   "raw_names": [
+    "qwen3.6-35b-a3b-mtp"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 1,
+   "tokens_in": 172,
+   "tokens_out": 2,
+   "cost_usd": 0.0,
+   "active_hours": 0.0,
+   "first_seen": "2026-06-21T10:50:30+00:00",
+   "last_seen": "2026-06-21T10:50:30+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "mimo-v2.5-pro-free",
+   "raw_names": [
+    "xiaomi-mimo-v2.5-pro-free"
+   ],
+   "harnesses": [
+    "crush"
+   ],
+   "sessions": 1,
+   "assistant_messages": 1,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.0,
+   "first_seen": "2026-06-21T15:00:42+00:00",
+   "last_seen": "2026-06-21T15:00:42+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "big-pickle",
+   "raw_names": [
+    "big-pickle"
+   ],
+   "harnesses": [
+    "opencode"
+   ],
+   "sessions": 1,
+   "assistant_messages": 1,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.0,
+   "first_seen": "2026-06-21T10:49:27.223000+00:00",
+   "last_seen": "2026-06-21T10:49:27.223000+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  },
+  {
+   "model": "k3",
+   "raw_names": [
+    "k3"
+   ],
+   "harnesses": [
+    "opencode"
+   ],
+   "sessions": 1,
+   "assistant_messages": 1,
+   "tokens_in": 0,
+   "tokens_out": 0,
+   "cost_usd": null,
+   "active_hours": 0.0,
+   "first_seen": "2026-07-19T03:04:47.323000+00:00",
+   "last_seen": "2026-07-19T03:04:47.323000+00:00",
+   "commits": 0,
+   "lines_written": 0,
+   "lines_surviving": 0,
+   "committed": false
+  }
+ ],
+ "coverage": {
+  "crush": {
+   "store": "2026-05-22..2026-07-30",
+   "complete": true,
+   "note": "covers the full period it was used"
+  },
+  "opencode": {
+   "store": "2026-05-22..2026-07-30",
+   "complete": true,
+   "note": "covers the full period it was used"
+  },
+  "claude-code": {
+   "store": "2026-06-30..2026-07-31",
+   "complete": false,
+   "note": "GAP: trailered claude-code commits begin 2026-05-29, but transcripts only start 2026-06-30. ~63 claude-code commits (May 29-Jun 29) have no session record; their attribution rests on commit trailers alone. Effort metrics (messages/tokens/hours) for Claude models are therefore UNDERCOUNTED for May-June."
+  },
+  "pi": {
+   "store": null,
+   "complete": false,
+   "note": "No Pi session store found on this machine. Pi commits, if any, carry no trailer and no transcript, so they fall into the span/unattributed buckets."
+  }
+ }
+}

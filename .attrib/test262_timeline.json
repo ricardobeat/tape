@@ -1,0 +1,164 @@
+{
+ "2026-06-21": {
+  "pct_run": 69.0,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "f2f0232",
+  "src": "progress.md"
+ },
+ "2026-06-20": {
+  "pct_run": 61.1,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "8465e66",
+  "src": "progress.md"
+ },
+ "2026-06-19": {
+  "pct_run": 61.9,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "b631a2a",
+  "src": "progress.md"
+ },
+ "2026-06-18": {
+  "pct_run": 61.9,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "594a919",
+  "src": "progress.md"
+ },
+ "2026-06-14": {
+  "pct_run": 59.6,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "fba13f1",
+  "src": "progress.md"
+ },
+ "2026-06-13": {
+  "pct_run": 58.0,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "2d4dfad",
+  "src": "progress.md"
+ },
+ "2026-06-12": {
+  "pct_run": 57.1,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "17fff87",
+  "src": "progress.md"
+ },
+ "2026-06-11": {
+  "pct_run": 53.4,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "bc165a5",
+  "src": "progress.md"
+ },
+ "2026-06-09": {
+  "pct_run": 52.7,
+  "pass": null,
+  "executable": null,
+  "corpus": null,
+  "sha": "4304a5c",
+  "src": "progress.md"
+ },
+ "2026-05-27": {
+  "pct_run": 3.1,
+  "pass": 1621,
+  "executable": null,
+  "corpus": 53568,
+  "sha": "1aecaad",
+  "src": "progress.md",
+  "pct_all": 3.0,
+  "skipped": null
+ },
+ "2026-05-26": {
+  "pct_run": 3.0,
+  "pass": 1621,
+  "executable": null,
+  "corpus": 53568,
+  "sha": "9589ab7",
+  "src": "progress.md",
+  "pct_all": 3.0,
+  "skipped": null
+ },
+ "2026-05-25": {
+  "pct_run": 3.1,
+  "pass": 1621,
+  "executable": null,
+  "corpus": 53568,
+  "sha": "cbe0dfb",
+  "src": "progress.md",
+  "pct_all": 3.0,
+  "skipped": null
+ },
+ "2026-07-31": {
+  "pct_run": 100.0,
+  "pass": 49814,
+  "executable": 49814,
+  "corpus": 52824,
+  "sha": "54a2eac",
+  "src": "commit",
+  "pct_all": 94.3,
+  "skipped": 3010
+ },
+ "2026-07-30": {
+  "pct_run": 100.0,
+  "pass": 45617,
+  "executable": 45617,
+  "corpus": null,
+  "sha": "8180772",
+  "src": "commit"
+ },
+ "2026-07-29": {
+  "pct_run": 100.0,
+  "pass": 44734,
+  "executable": 44734,
+  "corpus": null,
+  "sha": "a60d228",
+  "src": "commit"
+ },
+ "2026-07-21": {
+  "pct_run": 100.0,
+  "pass": 35174,
+  "executable": 35182,
+  "corpus": null,
+  "sha": "f78a1dc",
+  "src": "commit"
+ },
+ "2026-07-20": {
+  "pct_run": 99.9,
+  "pass": 34517,
+  "executable": 34559,
+  "corpus": 46587,
+  "sha": "ae61627",
+  "src": "commit",
+  "pct_all": 74.1,
+  "skipped": 12028
+ },
+ "2026-07-16": {
+  "pct_run": 97.0,
+  "pass": 30223,
+  "executable": 31170,
+  "corpus": null,
+  "sha": "6b2f23b",
+  "src": "commit"
+ },
+ "2026-07-09": {
+  "pct_run": 83.8,
+  "pass": 25656,
+  "executable": 30613,
+  "corpus": null,
+  "sha": "49629ff",
+  "src": "commit"
+ }
+}

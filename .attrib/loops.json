@@ -1,0 +1,120 @@
+{
+ "note": "Ralph-style loop prompts: a self-directing instruction re-sent verbatim so the agent keeps selecting its own next task. Detected as prompts repeated at least three times that tell the agent to find the next/highest-priority task.",
+ "total_turns": 4466,
+ "tick_count": 399,
+ "tick_share": 0.0893,
+ "variant_count": 31,
+ "by_harness": {
+  "crush": 338,
+  "claude-code": 44,
+  "opencode": 17
+ },
+ "by_month": {
+  "2026-05": 168,
+  "2026-06": 176,
+  "2026-07": 55
+ },
+ "by_week": {
+  "2026-05-18": 72,
+  "2026-05-25": 96,
+  "2026-06-01": 71,
+  "2026-06-08": 62,
+  "2026-06-15": 43,
+  "2026-07-06": 28,
+  "2026-07-13": 13,
+  "2026-07-20": 14
+ },
+ "cadence_minutes": {
+  "n": 340,
+  "p25": 9,
+  "median": 19,
+  "p75": 30,
+  "under_2min": 42,
+  "under_2min_share": 0.124
+ },
+ "markers": {
+  "<promise>": 431,
+  "ONLY WORK ON A SINGLE TASK": 407,
+  "parallel agents": 232
+ },
+ "by_model": [
+  {
+   "model": "claude",
+   "loop_commits": 81,
+   "commits": 757,
+   "loop_share": 0.107
+  },
+  {
+   "model": "mimo",
+   "loop_commits": 77,
+   "commits": 224,
+   "loop_share": 0.344
+  },
+  {
+   "model": "deepseek",
+   "loop_commits": 79,
+   "commits": 170,
+   "loop_share": 0.465
+  },
+  {
+   "model": "minimax",
+   "loop_commits": 7,
+   "commits": 156,
+   "loop_share": 0.045
+  },
+  {
+   "model": "unattributed",
+   "loop_commits": 12,
+   "commits": 29,
+   "loop_share": 0.414
+  },
+  {
+   "model": "kimi",
+   "loop_commits": 0,
+   "commits": 19,
+   "loop_share": 0.0
+  },
+  {
+   "model": "pi",
+   "loop_commits": 0,
+   "commits": 12,
+   "loop_share": 0.0
+  }
+ ],
+ "loop_commit_total": 256,
+ "commit_total": 1374,
+ "variants": [
+  {
+   "uses": 32,
+   "text": "@PRD.md @progress.md\n1. Find the highest-priority task and implement it.\n2. Run your tests and type checks.\n3. Update the PRD with what was done.\n4. Append your progress to progress.md.\n5. Commit your changes.\nONLY WORK ON A SINGLE TASK.\nIf the PRD is complete, output <promise>COMPLETE</promise>."
+  },
+  {
+   "uses": 31,
+   "text": "# Autonomous loop tick (dynamic pacing)\nRun the autonomous check using the loop instructions established earlier in this conversation. If you cannot find them, treat this as a no-op tick.\nYou scheduled this tick via the ScheduleWakeup tool (not a recurring cron). To keep the loop alive, call ScheduleWakeup again at the end of this turn with `prompt` set to the literal sentinel `<<autonomous-loop-d"
+  },
+  {
+   "uses": 29,
+   "text": "@PRD.md @progress.md 1. Find the highest-priority task and implement it.\n2. Run your tests and type checks.\n3. Update the PRD with what was done.\n4. Append your progress to progress.md.\n5. Commit your changes.\nONLY WORK ON A SINGLE TASK. Use subagents to explore and implement.\nIf the PRD is complete, output <promise>COMPLETE</promise>."
+  },
+  {
+   "uses": 29,
+   "text": "@PRD.md 1. Find the next high-priority task based on existing assessments. Check git diffs for unfinished work.\nLoad the C3 lang skill. Take advantage of C3 language features and built-ins. Make it fast, no speed or memory regressions.\n2. Run your tests and type checks. ALWAYS set a timeout for test and benchmark scripts.\n3. Small steps.\n4. Update progress.md. Make sure you there are no leftover t"
+  },
+  {
+   "uses": 21,
+   "text": "@PRD.md @progress.md 1. We need to improve performance to beat the original Duktape. Find the next high-priority task and implement it. Use QuickJS as reference, but be creative. Take advantage of C3 language features and built-ins..\n2. Run your tests and type checks. Small steps, always validated.\n3. Use parallel agents to make small edits when possible.\n4. Update progress.md. Suggest the NEXT TA"
+  },
+  {
+   "uses": 20,
+   "text": "@PRD.md @progress.md 1. Find the next high-priority task and implement it.\nUse QuickJS as reference, but be creative. Take advantage of C3 language features and built-ins. Make it fast.\nIf you find critical issues, fix them or add them as suggested next task..\n2. Run your tests and type checks. Small steps, always validated.\n3. Use parallel agents to make small edits when possible.\n4. Update progr"
+  },
+  {
+   "uses": 19,
+   "text": "@PRD.md 1. Find the next high-priority task based on existing assessments. Check git diffs for unfinished work.\nLoad the C3 lang skill. Take advantage of C3 language features and built-ins. Make it fast.\n2. Run your tests and type checks. ALWAYS set a timeout for test and benchmark scripts.\n3. Small steps. Use parallel agents for small parallel tasks.\n4. Update progress.md. Make sure you there are"
+  },
+  {
+   "uses": 19,
+   "text": "@PRD.md 1. Find the next high-priority task based on existing assessments. Check git diffs for unfinished work.\nLoad the C3 lang skill. Take advantage of C3 language features and built-ins. Make it fast.\n2. Run your tests and type checks. ALWAYS set a timeout for test and benchmark scripts.\n3. Small steps and validation. Use parallel agents for small parallel tasks.\n4. Update progress.md. Make sur"
+  }
+ ]
+}

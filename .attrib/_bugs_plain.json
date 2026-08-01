@@ -1,0 +1,142 @@
+[
+ {
+  "sha": "7863ed4",
+  "title": "the engine crashed when a function outlived the block it was defined in",
+  "summary": "Functions created inside a certain kind of block kept pointing at scratch space the engine had already thrown away. Calling one of those functions later crashed the program, and nothing hinted at the real cause.",
+  "why": "It was a memory safety fault that only showed up long after the damage was done, so it was very hard to trace.",
+  "credit": "found and fixed by deepseek-v4-flash in Crush"
+ },
+ {
+  "sha": "2d505a0",
+  "title": "the test runner ballooned past 90GB of memory and died",
+  "summary": "Shutting down never actually released the text and compiled code a test had created, so every test added to a pile that was never cleared. Memory grew without limit until the machine ran out.",
+  "why": "Nothing ever raised an error, so it was only noticed once the test suite hit the ceiling.",
+  "credit": "found and fixed by mimo-v2.5 in Crush"
+ },
+ {
+  "sha": "647d51e",
+  "title": "every comparison could silently return the wrong answer",
+  "summary": "When a comparison stored its answer in the same slot it was about to read from, it destroyed the number first and then compared against garbage, always answering false. That broke every for-loop in the language.",
+  "why": "No error appeared, just wrong results, so basic control flow was quietly broken.",
+  "credit": "found and fixed by pi (unidentified) in pi"
+ },
+ {
+  "sha": "7ed6968",
+  "title": "returning from a function corrupted memory and crashed at random",
+  "summary": "The path that returned from a function left the engine's bookkeeping in a bad state, so the memory cleaner threw away things that were still in use. The same program would crash unpredictably from one run to the next.",
+  "why": "Random crashes on identical input are among the hardest failures to chase down.",
+  "credit": "found and fixed by mimo-v2.5-pro in Crush"
+ },
+ {
+  "sha": "22bf7f7",
+  "title": "the memory cleaner read half-built function calls and corrupted the heap",
+  "summary": "A function call was announced as live before its details had been filled in, so if cleanup ran at that instant it followed leftover junk from an older call. That quietly damaged memory while new objects were being created.",
+  "why": "Corrupting the heap during allocation can break anything, anywhere, later on.",
+  "credit": "found and fixed by deepseek-v4-pro in Crush"
+ },
+ {
+  "sha": "399ee70",
+  "title": "assigning to an object property quietly overwrote nearby variables",
+  "summary": "Whenever a property assignment invoked user code, it scribbled over up to four of the calling function's own local variables. Any program using property accessors got silently wrong values.",
+  "why": "It corrupted variables engine wide with no error, so it sat as a time bomb until accessors were used.",
+  "credit": "found and fixed by claude-fable-5 in Claude Code"
+ },
+ {
+  "sha": "6c023b1",
+  "title": "automatic memory cleanup crashed while objects were still being built",
+  "summary": "Cleanup could kick in in the middle of allocating something, freeing an object that had been created but not yet handed to anyone. The result was unpredictable crashes from freeing the same memory twice.",
+  "why": "It broke a core assumption that cleanup never runs partway through building an object.",
+  "credit": "found and fixed by mimo-v2.5-pro in Crush"
+ },
+ {
+  "sha": "d7d15b7",
+  "title": "resetting the engine left it pointing at memory it had just released",
+  "summary": "A handful of cached values survived a reset even though the memory behind them was gone. Anything that touched them afterwards worked on freed memory.",
+  "why": "It left a hidden landmine that would corrupt later operations without warning.",
+  "credit": "found and fixed by deepseek-v4-pro in Crush"
+ },
+ {
+  "sha": "fdfbf8ed653a074500eb4296d9103a908df6802e",
+  "title": "every uncaught error printed a crash dump instead of the real message",
+  "summary": "When an error had nowhere to go, the engine threw away the message and died with an internal crash dump. A simple typo that should have said \"x is not defined\" looked like the engine itself had broken.",
+  "why": "Error reporting was useless across the whole engine, and the same path was unsafe with memory too.",
+  "credit": "found and fixed by minimax-m3 in opencode"
+ },
+ {
+  "sha": "2979dd2",
+  "title": "pre-filled function arguments were thrown away while still in use",
+  "summary": "Functions with arguments locked in ahead of time released those values too early. The freed space got handed to the next such function, which then wrote over the original object.",
+  "why": "It silently corrupted data for any code using that common pattern with object arguments.",
+  "credit": "found and fixed by claude-opus-4.8 in Claude Code"
+ },
+ {
+  "sha": "5ceacd8",
+  "title": "two identical strings could compare as different",
+  "summary": "A shortcut in string joining produced text the engine did not register in its shared table, and the engine compares text by identity rather than contents. Searching for a string you had just built returned \"not found\" even though a direct equality check said it was there.",
+  "why": "It produced wrong answers in ordinary code with no error at all, and only appeared after a speed optimization was switched on.",
+  "credit": "found and fixed by claude-fable-5 in Claude Code"
+ },
+ {
+  "sha": "d0e254e",
+  "title": "two broken cases in building an array from async data had been passing by accident",
+  "summary": "An unrelated defect was swallowing the failures, so these tests looked green. Once it was fixed, symbols went down the wrong path and certain errors returned nothing instead of a rejected result.",
+  "why": "One bug was hiding another, so the test suite gave false confidence.",
+  "credit": "found and fixed by claude-fable-5 in Claude Code"
+ },
+ {
+  "sha": "bb6c01e",
+  "title": "long strings piled up in memory and were sometimes freed too early",
+  "summary": "Large pieces of text had no safety net, so several common operations either lost track of them forever or released them while still in use. A single measured workload left roughly 2000 stray objects behind.",
+  "why": "Several separate leaks sat in the busiest code paths and grew without any limit.",
+  "credit": "found and fixed by claude-fable-5 in Claude Code"
+ },
+ {
+  "sha": "ff90372",
+  "title": "classes with more than 64 private fields aliased or crashed",
+  "summary": "Parts of the compiler kept their own stale copies of a shared list of private field names. As soon as that list grew past its initial size of 64, the leftovers pointed at released memory and names collided or the compiler crashed.",
+  "why": "It only bit at the 65th private name, so it hid easily while quietly reading freed memory.",
+  "credit": "found and fixed by claude-fable-5 in Claude Code"
+ },
+ {
+  "sha": "241c1f0",
+  "title": "every paused async function leaked, and cleanup crashed the engine",
+  "summary": "The state kept for a suspended async function was never released, so all of them leaked, and a full cleanup pass segfaulted outright. It had been there all along without any test noticing.",
+  "why": "It combined permanent leaks with an outright crash during memory cleanup.",
+  "credit": "found and fixed by claude-opus-5 in Claude Code"
+ },
+ {
+  "sha": "5c1a420",
+  "title": "listing the keys of a proxy object could segfault",
+  "summary": "The list of keys was freed partway through being read, because nothing told the memory cleaner it was still in use. A proxy with 50 or more keys crashed the process under memory pressure.",
+  "why": "It read freed memory during a common loop and killed the process outright.",
+  "credit": "found and fixed by claude-opus-5 in Claude Code"
+ },
+ {
+  "sha": "fc872a8",
+  "title": "repeated pattern matching hung forever instead of finishing",
+  "summary": "Searching text for all matches always restarted from the beginning, so loops that walked through every match never ran out of work. The program just hung, with no error.",
+  "why": "A very common way of scanning text never terminated.",
+  "credit": "found and fixed by deepseek-v4-flash in Crush"
+ },
+ {
+  "sha": "32dcc72",
+  "title": "zero and the empty string counted as true, so loops never ended",
+  "summary": "The check for whether a value counts as true only recognised a few cases, so the number zero and an empty piece of text both looked true. Loops written to stop on those conditions ran forever.",
+  "why": "It broke one of the most basic rules of the language with no clue as to why.",
+  "credit": "found and fixed by mimo-v2.5 in Crush"
+ },
+ {
+  "sha": "d04dd9a",
+  "title": "assigning to an object using square brackets did nothing",
+  "summary": "The compiler turned a write into a read, so setting a value by computed key was silently discarded. No error, the value simply never changed.",
+  "why": "A fundamental part of the language quietly did not work.",
+  "credit": "found and fixed by mimo-v2.5-pro in Crush"
+ },
+ {
+  "sha": "1f2bd85",
+  "title": "skipping an iteration in a for-of loop hung the program",
+  "summary": "Asking a for-of loop to jump to the next item sent it back to the start of the same item instead, so it never moved on. The program hung with no error.",
+  "why": "A common combination of two ordinary language features silently froze, and the tests never covered it.",
+  "credit": "found and fixed by deepseek-v4-pro in Crush"
+ }
+]

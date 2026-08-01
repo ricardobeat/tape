@@ -1,0 +1,576 @@
+{
+ "note": "Estimated from published $/M rates: fresh_in*in + cache_in*in*0.10 + out*out. Cache reads bill at ~10% of input. cost_best prefers the harness-recorded figure where one exists and falls back to the estimate. Local models and free tiers are 0 by definition; several paid models ran under subscription plans, so estimates are an upper bound on list-price usage, not a bill.",
+ "cache_factor": 0.1,
+ "totals": {
+  "recorded": 803.53,
+  "estimated": 7467.5,
+  "best": 8072.76,
+  "actual": 196,
+  "inference_value": 8072.76,
+  "multiple": 41.2
+ },
+ "unpriced_models": [
+  "north-mini-code-free",
+  "laguna-s-2.1-free",
+  "lfm2.5-8b-a1b",
+  "minimax-m2.7-highspeed",
+  "north-mini-code-1.0",
+  "qwen3.6-35b-a3b-mtp",
+  "big-pickle",
+  "k3"
+ ],
+ "by_model": [
+  {
+   "model": "claude-fable-5",
+   "cost_recorded": null,
+   "cost_estimated": 2545.62,
+   "cost_basis": "list price",
+   "rate_in": 10.0,
+   "rate_out": 50.0,
+   "tokens_out": 7550644,
+   "tokens_fresh_in": 29101421,
+   "tokens_cache_in": 1877076685,
+   "cost_best": 2545.62
+  },
+  {
+   "model": "claude-opus-4.8",
+   "cost_recorded": null,
+   "cost_estimated": 2378.3,
+   "cost_basis": "list price",
+   "rate_in": 5.0,
+   "rate_out": 25.0,
+   "tokens_out": 8189653,
+   "tokens_fresh_in": 31618023,
+   "tokens_cache_in": 4030928247,
+   "cost_best": 2378.3
+  },
+  {
+   "model": "claude-opus-5",
+   "cost_recorded": null,
+   "cost_estimated": 1558.49,
+   "cost_basis": "list price",
+   "rate_in": 5.0,
+   "rate_out": 25.0,
+   "tokens_out": 4326778,
+   "tokens_fresh_in": 26769572,
+   "tokens_cache_in": 2632946829,
+   "cost_best": 1558.49
+  },
+  {
+   "model": "minimax-m3",
+   "cost_recorded": 568.37,
+   "cost_estimated": 64.72,
+   "cost_basis": "list price",
+   "rate_in": 0.3,
+   "rate_out": 1.2,
+   "tokens_out": 4450572,
+   "tokens_fresh_in": 28833479,
+   "tokens_cache_in": 1691109309,
+   "cost_best": 568.37
+  },
+  {
+   "model": "claude-sonnet-5",
+   "cost_recorded": null,
+   "cost_estimated": 487.51,
+   "cost_basis": "list price",
+   "rate_in": 3.0,
+   "rate_out": 15.0,
+   "tokens_out": 2805999,
+   "tokens_fresh_in": 17733784,
+   "tokens_cache_in": 1307396372,
+   "cost_best": 487.51
+  },
+  {
+   "model": "claude-opus-4.7",
+   "cost_recorded": null,
+   "cost_estimated": 206.89,
+   "cost_basis": "list price",
+   "rate_in": 5.0,
+   "rate_out": 25.0,
+   "tokens_out": 911802,
+   "tokens_fresh_in": 4278228,
+   "tokens_cache_in": 325409798,
+   "cost_best": 206.89
+  },
+  {
+   "model": "claude-sonnet-4.6",
+   "cost_recorded": null,
+   "cost_estimated": 81.79,
+   "cost_basis": "list price",
+   "rate_in": 3.0,
+   "rate_out": 15.0,
+   "tokens_out": 716310,
+   "tokens_fresh_in": 2338784,
+   "tokens_cache_in": 213444440,
+   "cost_best": 81.79
+  },
+  {
+   "model": "mimo-v2.5",
+   "cost_recorded": 80.5,
+   "cost_estimated": 59.43,
+   "cost_basis": "list price",
+   "rate_in": 0.3,
+   "rate_out": 1.2,
+   "tokens_out": 4150135,
+   "tokens_fresh_in": 70063728,
+   "tokens_cache_in": 1114274368,
+   "cost_best": 80.5
+  },
+  {
+   "model": "deepseek-v4-pro",
+   "cost_recorded": 57.28,
+   "cost_estimated": 28.95,
+   "cost_basis": "list price",
+   "rate_in": 0.55,
+   "rate_out": 2.19,
+   "tokens_out": 1032981,
+   "tokens_fresh_in": 11519449,
+   "tokens_cache_in": 370096128,
+   "cost_best": 57.28
+  },
+  {
+   "model": "mimo-v2.5-pro",
+   "cost_recorded": 50.0,
+   "cost_estimated": 27.31,
+   "cost_basis": "list price",
+   "rate_in": 0.6,
+   "rate_out": 2.4,
+   "tokens_out": 1376139,
+   "tokens_fresh_in": 19433398,
+   "tokens_cache_in": 205802624,
+   "cost_best": 50.0
+  },
+  {
+   "model": "kimi-k3",
+   "cost_recorded": 13.22,
+   "cost_estimated": 1.29,
+   "cost_basis": "list price",
+   "rate_in": 0.6,
+   "rate_out": 2.5,
+   "tokens_out": 53776,
+   "tokens_fresh_in": 674101,
+   "tokens_cache_in": 12450560,
+   "cost_best": 13.22
+  },
+  {
+   "model": "mimo-v2.5-pro-ultraspeed",
+   "cost_recorded": 12.87,
+   "cost_estimated": 8.08,
+   "cost_basis": "list price",
+   "rate_in": 0.6,
+   "rate_out": 2.4,
+   "tokens_out": 200467,
+   "tokens_fresh_in": 6485251,
+   "tokens_cache_in": 61873408,
+   "cost_best": 12.87
+  },
+  {
+   "model": "mimo-v2-pro",
+   "cost_recorded": null,
+   "cost_estimated": 8.82,
+   "cost_basis": "list price",
+   "rate_in": 0.6,
+   "rate_out": 2.4,
+   "tokens_out": 194117,
+   "tokens_fresh_in": 5872966,
+   "tokens_cache_in": 80541760,
+   "cost_best": 8.82
+  },
+  {
+   "model": "deepseek-v4-flash-free",
+   "cost_recorded": 6.08,
+   "cost_estimated": 0.0,
+   "cost_basis": "free tier",
+   "rate_in": 0.27,
+   "rate_out": 1.1,
+   "tokens_out": 424475,
+   "tokens_fresh_in": 8974537,
+   "tokens_cache_in": 74673792,
+   "cost_best": 6.08
+  },
+  {
+   "model": "deepseek-v4-flash",
+   "cost_recorded": 5.68,
+   "cost_estimated": 8.35,
+   "cost_basis": "list price",
+   "rate_in": 0.27,
+   "rate_out": 1.1,
+   "tokens_out": 588832,
+   "tokens_fresh_in": 14252311,
+   "tokens_cache_in": 142804480,
+   "cost_best": 5.68
+  },
+  {
+   "model": "kimi-k2.7-code",
+   "cost_recorded": 5.5,
+   "cost_estimated": 0.04,
+   "cost_basis": "list price",
+   "rate_in": 0.6,
+   "rate_out": 2.5,
+   "tokens_out": 444,
+   "tokens_fresh_in": 58564,
+   "tokens_cache_in": 0,
+   "cost_best": 5.5
+  },
+  {
+   "model": "gpt-5.5-free",
+   "cost_recorded": 1.76,
+   "cost_estimated": 0.0,
+   "cost_basis": "free tier",
+   "rate_in": 0.0,
+   "rate_out": 0.0,
+   "tokens_out": 0,
+   "tokens_fresh_in": 4353,
+   "tokens_cache_in": 0,
+   "cost_best": 1.76
+  },
+  {
+   "model": "k3-256k",
+   "cost_recorded": 0.0,
+   "cost_estimated": 1.3,
+   "cost_basis": "list price",
+   "rate_in": 0.6,
+   "rate_out": 2.5,
+   "tokens_out": 101061,
+   "tokens_fresh_in": 790104,
+   "tokens_cache_in": 9499904,
+   "cost_best": 1.3
+  },
+  {
+   "model": "minimax-m2.7",
+   "cost_recorded": 0.94,
+   "cost_estimated": 0.03,
+   "cost_basis": "list price",
+   "rate_in": 0.3,
+   "rate_out": 1.2,
+   "tokens_out": 2462,
+   "tokens_fresh_in": 92982,
+   "tokens_cache_in": 0,
+   "cost_best": 0.94
+  },
+  {
+   "model": "claude-haiku-4.5",
+   "cost_recorded": null,
+   "cost_estimated": 0.51,
+   "cost_basis": "list price",
+   "rate_in": 1.0,
+   "rate_out": 5.0,
+   "tokens_out": 1875,
+   "tokens_fresh_in": 430015,
+   "tokens_cache_in": 699941,
+   "cost_best": 0.51
+  },
+  {
+   "model": "glm-5.2",
+   "cost_recorded": 0.34,
+   "cost_estimated": 0.04,
+   "cost_basis": "list price",
+   "rate_in": 0.6,
+   "rate_out": 2.2,
+   "tokens_out": 232,
+   "tokens_fresh_in": 60957,
+   "tokens_cache_in": 0,
+   "cost_best": 0.34
+  },
+  {
+   "model": "qwen3.7-max",
+   "cost_recorded": 0.33,
+   "cost_estimated": 0.03,
+   "cost_basis": "list price",
+   "rate_in": 1.6,
+   "rate_out": 6.4,
+   "tokens_out": 837,
+   "tokens_fresh_in": 14905,
+   "tokens_cache_in": 0,
+   "cost_best": 0.33
+  },
+  {
+   "model": "gemini-3.1-flash-lite-preview",
+   "cost_recorded": 0.32,
+   "cost_estimated": 0.0,
+   "cost_basis": "list price",
+   "rate_in": 0.1,
+   "rate_out": 0.4,
+   "tokens_out": 98,
+   "tokens_fresh_in": 31993,
+   "tokens_cache_in": 0,
+   "cost_best": 0.32
+  },
+  {
+   "model": "kimi-k3-free",
+   "cost_recorded": 0.18,
+   "cost_estimated": 0.0,
+   "cost_basis": "free tier",
+   "rate_in": 0.6,
+   "rate_out": 2.5,
+   "tokens_out": 1067,
+   "tokens_fresh_in": 18663,
+   "tokens_cache_in": 0,
+   "cost_best": 0.18
+  },
+  {
+   "model": "mistral-medium-3-5",
+   "cost_recorded": 0.09,
+   "cost_estimated": 0.0,
+   "cost_basis": "list price",
+   "rate_in": 0.4,
+   "rate_out": 2.0,
+   "tokens_out": 1,
+   "tokens_fresh_in": 562,
+   "tokens_cache_in": 0,
+   "cost_best": 0.09
+  },
+  {
+   "model": "minimax-m3-free",
+   "cost_recorded": 0.04,
+   "cost_estimated": 0.0,
+   "cost_basis": "free tier",
+   "rate_in": 0.3,
+   "rate_out": 1.2,
+   "tokens_out": 11,
+   "tokens_fresh_in": 3635,
+   "tokens_cache_in": 0,
+   "cost_best": 0.04
+  },
+  {
+   "model": "gemma-4-12b-qat",
+   "cost_recorded": 0.02,
+   "cost_estimated": 0.0,
+   "cost_basis": "local model",
+   "rate_in": 0.0,
+   "rate_out": 0.0,
+   "tokens_out": 38,
+   "tokens_fresh_in": 8198,
+   "tokens_cache_in": 0,
+   "cost_best": 0.02
+  },
+  {
+   "model": "mimo-v2.5-pro-free",
+   "cost_recorded": 0.01,
+   "cost_estimated": 0.0,
+   "cost_basis": "free tier",
+   "rate_in": 0.6,
+   "rate_out": 2.4,
+   "tokens_out": 2,
+   "tokens_fresh_in": 727,
+   "tokens_cache_in": 0,
+   "cost_best": 0.01
+  },
+  {
+   "model": "qwen3.6-35b-a3b",
+   "cost_recorded": 0.0,
+   "cost_estimated": 0.0,
+   "cost_basis": "local model",
+   "rate_in": 0.0,
+   "rate_out": 0.0,
+   "tokens_out": 78066,
+   "tokens_fresh_in": 11706958,
+   "tokens_cache_in": 0,
+   "cost_best": 0.0
+  },
+  {
+   "model": "north-mini-code-free",
+   "cost_recorded": null,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 46503,
+   "tokens_fresh_in": 48923991,
+   "tokens_cache_in": 0,
+   "cost_best": null
+  },
+  {
+   "model": "mimo-v2.5-free",
+   "cost_recorded": null,
+   "cost_estimated": 0.0,
+   "cost_basis": "free tier",
+   "rate_in": 0.3,
+   "rate_out": 1.2,
+   "tokens_out": 23118,
+   "tokens_fresh_in": 349869,
+   "tokens_cache_in": 10829952,
+   "cost_best": 0.0
+  },
+  {
+   "model": "qwopus3.6-27b-v2-mtp",
+   "cost_recorded": null,
+   "cost_estimated": 0.0,
+   "cost_basis": "local model",
+   "rate_in": 0.0,
+   "rate_out": 0.0,
+   "tokens_out": 4507,
+   "tokens_fresh_in": 313106,
+   "tokens_cache_in": 0,
+   "cost_best": 0.0
+  },
+  {
+   "model": "laguna-s-2.1-free",
+   "cost_recorded": null,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 1881,
+   "tokens_fresh_in": 93083,
+   "tokens_cache_in": 750240,
+   "cost_best": null
+  },
+  {
+   "model": "qwen3.6-27b",
+   "cost_recorded": null,
+   "cost_estimated": 0.0,
+   "cost_basis": "local model",
+   "rate_in": 0.0,
+   "rate_out": 0.0,
+   "tokens_out": 614,
+   "tokens_fresh_in": 48627,
+   "tokens_cache_in": 0,
+   "cost_best": 0.0
+  },
+  {
+   "model": "lfm2.5-8b-a1b",
+   "cost_recorded": null,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 614,
+   "tokens_fresh_in": 12650,
+   "tokens_cache_in": 0,
+   "cost_best": null
+  },
+  {
+   "model": "qwopus3.6-27b-v1-preview",
+   "cost_recorded": null,
+   "cost_estimated": 0.0,
+   "cost_basis": "local model",
+   "rate_in": 0.0,
+   "rate_out": 0.0,
+   "tokens_out": 190,
+   "tokens_fresh_in": 33840,
+   "tokens_cache_in": 0,
+   "cost_best": 0.0
+  },
+  {
+   "model": "gemini-3.5-flash",
+   "cost_recorded": 0.0,
+   "cost_estimated": 0.0,
+   "cost_basis": "list price",
+   "rate_in": 0.3,
+   "rate_out": 2.5,
+   "tokens_out": 0,
+   "tokens_fresh_in": 331,
+   "tokens_cache_in": 0,
+   "cost_best": 0.0
+  },
+  {
+   "model": "minimax-m2.7-highspeed",
+   "cost_recorded": null,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 0,
+   "tokens_fresh_in": 0,
+   "tokens_cache_in": 0,
+   "cost_best": null
+  },
+  {
+   "model": "north-mini-code-1.0",
+   "cost_recorded": 0.0,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 0,
+   "tokens_fresh_in": 57,
+   "tokens_cache_in": 0,
+   "cost_best": null
+  },
+  {
+   "model": "qwen3.6-35b-a3b-mtp",
+   "cost_recorded": 0.0,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 0,
+   "tokens_fresh_in": 57,
+   "tokens_cache_in": 0,
+   "cost_best": null
+  },
+  {
+   "model": "big-pickle",
+   "cost_recorded": null,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 0,
+   "tokens_fresh_in": 0,
+   "tokens_cache_in": 0,
+   "cost_best": null
+  },
+  {
+   "model": "k3",
+   "cost_recorded": null,
+   "cost_estimated": null,
+   "cost_basis": "no published rate",
+   "rate_in": null,
+   "rate_out": null,
+   "tokens_out": 0,
+   "tokens_fresh_in": 0,
+   "tokens_cache_in": 0,
+   "cost_best": null
+  }
+ ],
+ "actual_spend": {
+  "note": "What the project actually cost. Credits are one-off top-ups. The Claude plan was $20/month Pro for the first two months and $90 Max in July, when the bulk of the Claude work happened. Figures supplied by the project owner.",
+  "credits": [
+   {
+    "provider": "opencode-go",
+    "usd": 5
+   },
+   {
+    "provider": "xiaomi (mimo)",
+    "usd": 16
+   },
+   {
+    "provider": "minimax",
+    "usd": 20
+   },
+   {
+    "provider": "openrouter",
+    "usd": 10
+   },
+   {
+    "provider": "opencode-zen",
+    "usd": 10
+   },
+   {
+    "provider": "aihubmix",
+    "usd": 5
+   }
+  ],
+  "credits_total_usd": 66,
+  "subscriptions": [
+   {
+    "plan": "Claude Pro",
+    "usd_per_month": 20,
+    "months": 2,
+    "covers": "May, Jun",
+    "usd": 40
+   },
+   {
+    "plan": "Claude Max",
+    "usd_per_month": 90,
+    "months": 1,
+    "covers": "Jul",
+    "usd": 90
+   }
+  ],
+  "subscriptions_total_usd": 130,
+  "total_usd": 196
+ }
+}

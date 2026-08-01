@@ -1,0 +1,1235 @@
+[
+ {
+  "date": "2026-05-22",
+  "harness": "crush",
+  "title": "Use C3 stdlib features for efficiency",
+  "quote": "make sure you take advantage of C3 stdlib features when possible. we want this engine to be efficient, fast and small",
+  "summary": "Directed implementation to prioritize C3 standard library calls (mem::new, io::printf, defer for cleanup) over direct libc usage, setting efficiency and code quality as architectural constraints.",
+  "impact": "All subsequent module implementations (vm.c3, env.c3, builtins.c3) required to use C3 native features, shaping data structure allocation and error handling patterns.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-05-22",
+  "harness": "crush",
+  "title": "Rewrite VM architecture to use value stack + activation records",
+  "quote": "The VM struct is defined in vm.c3 and we can't import it circularly. Instead, use an opaque pointer pattern: Built-in functions receive `void* vm_opaque` (which is really a VM*)",
+  "summary": "Pivoted from flat register file model to Duktape's value stack + activation record architecture, defining Activation struct and shared valstack model for all frames.",
+  "impact": "Core VM restructuring affecting how register allocation, function calls, and scope chains work; established the foundation for correct calling conventions and closure support.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-05-23",
+  "harness": "crush",
+  "title": "Scrap current calling convention analysis, reimplement from Duktape design",
+  "quote": "the disassembly doesnt matter if youre looking at a wrong implementation1!! just reimplement with the right architecture, forget the current code",
+  "summary": "Rejected analysis-driven bug fixes and demanded greenfield reimplementation of CALL/RET opcodes and register allocation based on real Duktape source, not current broken code.",
+  "impact": "Stopped iterative bug-fix attempts (Approaches A/B/C) and ordered wholesale redesign of calling convention to match Duktape, ensuring correctness over patch fixes.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-05-23",
+  "harness": "crush",
+  "title": "Use agents for small targeted explorations",
+  "quote": "remember to use subagents for everything. make sure they are small tasks, like writing a few functions, reproducing some minimal test case, investigating C3 features and the original Duktape codebase architecture, etc.",
+  "summary": "Established agent workflow: small tasks (bytecode analysis, single function implementation, C3 API exploration) assigned to subagents rather than single large implementations.",
+  "impact": "Set process discipline for parallel work: agents can run in isolated worktrees exploring specific hypotheses (register allocation, calling conventions, builtins) without blocking main development.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-23",
+  "harness": "crush",
+  "title": "Fast iteration with short timeouts",
+  "quote": "this should be really fast. I dont think the process is exiting as expected. make sure to always use a short timeout",
+  "summary": "Enforced strict timeout discipline (seconds, not minutes) to detect hangs early and maintain rapid iteration cycles.",
+  "impact": "All test runs require explicit short timeouts; long hangs must be caught and investigated immediately rather than allowed to block feedback loops.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-23",
+  "harness": "crush",
+  "title": "Pursue the right solution over expedient fixes",
+  "quote": "always go for the *right* solution, not the easiest. our goal is a faithful and reliable and performant port of Duktape",
+  "summary": "Rejected pragmatic shortcuts and interim workarounds in favor of architecturally sound solutions that match Duktape's design principles.",
+  "impact": "All implementations must follow Duktape patterns (value stack model, scope chain, bytecode semantics) even when custom approaches might be locally simpler.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-05-23",
+  "harness": "crush",
+  "title": "Consolidate planning: PRD + progress tracking",
+  "quote": "merge tasks.md, test262_plan.md, and tasks.md into a PRD.md (product requirements, an ECMA-262 compliant port of the Duktape engine using modern C3) + progress.md to track progress. It must be fully planned all the way to passing the full test suite.",
+  "summary": "Unified project documentation into PRD (ECMA-262 compliance via Duktape port using C3) and progress tracking, establishing test262 suite as the measurable completion criteria.",
+  "impact": "Project scope locked to full ECMA-262 support validated by test262; all features must be built toward that target, not ad-hoc task list.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-05-25",
+  "harness": "crush",
+  "title": "Analyze QuickJS/Duktape value representation gaps",
+  "quote": "I need to understand the QuickJS dispatch approach and how Duktape 2.7.0 handles values. Report exact sizes in bytes for each struct and identify the key architectural differences",
+  "summary": "Request to analyze TVal struct representation vs Duktape's NaN-boxed 8-byte values and compare struct layouts. Establishes baseline understanding of core architectural differences.",
+  "impact": "Identified that 16-byte TVal vs 8-byte NaN-boxing is a fundamental architectural constraint affecting dispatch performance and recursion depth handling.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-05-25",
+  "harness": "crush",
+  "title": "Introduce parallel subagent workflow for structural fixes",
+  "quote": "lets fix all the structural issues. use subagents in parallel to do small tasks.",
+  "summary": "Directive to use parallel subagents for fixing structural issues instead of sequential fixes. First clear indication of parallel workflow preference.",
+  "impact": "Establishes process: dispatch multiple small agents in parallel rather than sequential fixes, enabling faster iteration and isolated changes.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-27",
+  "harness": "crush",
+  "title": "Verify test262 pass rate and update progress tracking",
+  "quote": "can you verify how many of the test262 are actually passing, and update progress.md",
+  "summary": "Request to verify actual test262 pass rate and report in progress.md. Signals need for accurate baseline measurement before optimization.",
+  "impact": "Enforces test262 validation discipline; requires accurate pass rate measurement before optimization efforts can be meaningfully tracked.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-05-28",
+  "harness": "crush",
+  "title": "Acknowledge recursion gap as architectural constraint; defer TVal redesign",
+  "quote": "The recursion gap is architectural (16-byte TVal vs 8-byte NaN-boxing, no register-binding fast path). Fixing those would require fundamental changes to the value representation and compiler/VM contract \u2014 a separate effort.",
+  "summary": "Recognizes 16-byte TVal and lack of register-binding optimization are architectural constraints. Decides to make plan for fundamental redesign as separate workstream.",
+  "impact": "Defers architectural overhaul as separate initiative; constrains current optimization efforts to changes within existing TVal system.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-05-28",
+  "harness": "crush",
+  "title": "Small-task discipline for subagent work; no end-to-end evaluations",
+  "quote": "implement plans/may-28-architecture-improvements.md. use subagents for small, precise tasks. don't ask a subagent for an entire evaluation or end-to-end change. keep it to small steps.",
+  "summary": "Enforces constraint on subagent scope: work must be decomposed into small, precise, single-file changes. No large evaluations or end-to-end refactors per agent.",
+  "impact": "Defines process discipline: agents work on isolated changes enabling parallel work with clear boundaries and easy verification.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-28",
+  "harness": "crush",
+  "title": "Replace scripted replacements with parallel agent edits",
+  "quote": "instead of using replace scripts, dispatch parallel agents to do simple changes/replacement one file at a time.",
+  "summary": "Course correction: instead of Python/bash scripts for bulk replacements, use parallel agents for file-by-file changes. Improves audit trail and failure isolation.",
+  "impact": "Changes implementation: automated scripts \u2192 parallel agents. Improves traceability via per-agent commits and fault isolation (failed file doesn't block others).",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-29",
+  "harness": "crush",
+  "title": "Understand Date implementation patterns",
+  "quote": "I need to understand the Date implementation to add missing getter/setter methods. Search for all Date-related functions in src/builtins.c3 - find the builtin_date function and all builtin_date_proto_* functions.",
+  "summary": "Analyze Date builtin implementation including proto methods, registration pattern, and getter/setter implementation to establish pattern for systematic expansion.",
+  "impact": "Establishes methodology for adding missing Date methods by understanding existing patterns.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-30",
+  "harness": "crush",
+  "title": "Extract dispatch loop into reusable function",
+  "quote": "Extract the dispatch loop: The Vm.execute function (starting at line 1085) has a large dispatch loop (lines 1119-4459). Extract lines 1119-4459 into a new function vm_run_dispatch(Vm* vm, uint stop_count).",
+  "summary": "Extract main VM dispatch loop (lines 1119-4459) from Vm.execute into new vm_run_dispatch function to enable reuse and independent invocation.",
+  "impact": "Enables modular dispatch architecture; allows restart logic and continuation-based control flow.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-05-30",
+  "harness": "crush",
+  "title": "Add callee_obj to BuiltinContext",
+  "quote": "Add `callee_obj` field to BuiltinContext (after `throw_value` field on line 334): callee_obj HObject*; /// The function object being called (for builtins that need to access their own properties).",
+  "summary": "Add callee_obj HObject* field to BuiltinContext to give builtins access to their own function object for dynamic property manipulation.",
+  "impact": "Allows Promise callbacks and other builtins to access/update own properties without external state management.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-05-30",
+  "harness": "crush",
+  "title": "Debug Promise microtask queue implementation",
+  "quote": "I need to understand why the Promise tests aren't passing after implementing a microtask queue. Run a specific simple synchronous Promise test (not async) to see if the microtask queue is working.",
+  "summary": "Investigate Promise test failures after microtask queue implementation; isolate by testing non-async tests first to debug synchronous behavior.",
+  "impact": "Directs debugging toward synchronous Promise semantics and microtask queue correctness.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-05-30",
+  "harness": "crush",
+  "title": "Add Promise.allSettled to builtins",
+  "quote": "Add a new BUILTIN_PROMISE_ALLSETTLED constant. The current BUILTIN_PROMISE_RACE = 152 and BUILTIN_PROMISE_RESOLVE_CALLBACK = 264, BUILTIN_PROMISE_REJECT_CALLBACK = 265, BUILTIN_COUNT = 266.",
+  "summary": "Add BUILTIN_PROMISE_ALLSETTLED constant (266), dispatch case, and implementation to complete Promise combinator API.",
+  "impact": "Expands Promise API coverage; needed for Promise spec compliance and test262 test suite.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-05-30",
+  "harness": "crush",
+  "title": "Research Promise implementation patterns",
+  "quote": "How `Promise.race` and `Promise.all` are implemented in src/builtins.c3 \u2014 specifically the function signatures, how they handle the iterable argument, how they create the result promise.",
+  "summary": "Analyze Promise.race and Promise.all implementations to understand iterable handling, result promise creation, and state management patterns.",
+  "impact": "Establishes reference patterns for Promise.any implementation strategy.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-30",
+  "harness": "crush",
+  "title": "Add AggregateError to heap and builtins",
+  "quote": "In the Heap struct (around line 161, near `HObject* uri_err_proto;`), add: HObject* aggregate_err_proto;",
+  "summary": "Add aggregate_err_proto field to Heap struct, implement GC marking, and add AggregateError constructor to builtins for Promise.any support.",
+  "impact": "Implements missing AggregateError type required by Promise.any API.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-05-31",
+  "harness": "crush",
+  "title": "Research C3 dispatch and control flow capabilities",
+  "quote": "I need to know ALL control flow statements available: does C3 have `goto`? Does it have labels? Does it have any form of computed jump, computed goto, or labels-as-values?",
+  "summary": "Investigate C3 language: goto, labels, computed jumps, @jump attribute, inline assembly to identify VM dispatch optimization techniques.",
+  "impact": "Scopes exploration of dispatch optimization techniques available in C3 language.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-31",
+  "harness": "crush",
+  "title": "Performance focus: beat original Duktape",
+  "quote": "We need to improve performance to beat the original Duktape. Find the next high-priority task and implement it. Use QuickJS as reference, but be creative. Take advantage of C3 language features and built-ins.",
+  "summary": "Primary directive set: optimize performance vs original Duktape using QuickJS as reference model; leverage C3 features.",
+  "impact": "Constrains all work to performance-critical path; sets QuickJS as architectural reference model for comparisons.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-05-31",
+  "harness": "crush",
+  "title": "Parallel agents with small, validated edits",
+  "quote": "Use parallel agents to make small edits when possible. Run your tests and type checks. Small steps, always validated.",
+  "summary": "Process directive: use concurrent agents for small, isolated changes; enforce continuous testing and validation.",
+  "impact": "Establishes parallel workflow discipline and incremental validation gates for each change.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-31",
+  "harness": "crush",
+  "title": "Fix critical issues; add remainder to backlog",
+  "quote": "If you find critical issues, fix them or add them as suggested next task.",
+  "summary": "Directive to fix blocker bugs immediately; non-critical issues queue to backlog with visible tracking.",
+  "impact": "Prioritizes fixing showstopper bugs over feature work; ensures backlog visibility of outstanding issues.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-05-31",
+  "harness": "crush",
+  "title": "Function call overhead as perf bottleneck",
+  "quote": "I need to understand the function call overhead in the Duktape C3 VM. The fibonacci recursion benchmarks are 1.4-1.8x slower than original Duktape.",
+  "summary": "Identified recursive function calls as performance regression vs baseline; targeting 1.4-1.8x slowdown.",
+  "impact": "Scopes optimization effort to function call path; establishes specific performance target.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-05-31",
+  "harness": "crush",
+  "title": "GETVAR optimization via inline cache",
+  "quote": "Find the GETVAR opcode handler... How the inline cache (IC) system works for GETPROP... How environments (lex_env, var_env) are structured and walked.",
+  "summary": "Investigation of variable resolution caching; studying inline cache patterns in GETPROP for potential GETVAR speedup.",
+  "impact": "Signals investigation into IC-based global variable caching as potential optimization avenue.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-05-31",
+  "harness": "crush",
+  "title": "Symbol constructor bug identified",
+  "quote": "In /Users/rtomasi/cousas/duktape-c3, the Symbol constructor seems broken: typeof Symbol() not returning symbol type",
+  "summary": "Discovered broken Symbol constructor behavior; typeof Symbol not returning correct type.",
+  "impact": "Blocks for-of iteration support; must be fixed before iterator protocol work can proceed.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Agent precision on exploration tasks",
+  "quote": "youre gonna have to be a LOT more specific with explore agents that they should not try to debug issues, and only return exactly the information you asked for.",
+  "summary": "Agents given exploration tasks must return ONLY requested information, not debug or infer beyond scope",
+  "impact": "Future exploration agents constrained to precise outputs; reduces wasted effort on over-scoped investigation",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Commit test files before debugging",
+  "quote": "are you stupid. the rosetta files dont exist when you stash them, they havent been committed yet. commit the rosetta test files first, then continue debugging. commit each fix after validation",
+  "summary": "Rosetta test files must be committed to git before stashing or debugging to preserve them",
+  "impact": "Establishes baseline: test files are committed first, fixes committed after validation. Prevents losing test data",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Register lifetime in local var compound ops",
+  "quote": "binary_expr copies left to a temp if its a local variable (to avoid clobbering), but the compound assignment path does NOT",
+  "summary": "Compound assignment in local variables requires temp register + write-back, not in-place modification",
+  "impact": "Guides fix for compound assignment corruption: mirror binary_expr pattern with LDREG temp, operate, LDREG result back",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Dispatch quicksort.js heap corruption fix",
+  "quote": "Work in this worktree: `/Users/rtomasi/cousas/duktape-c3/.worktrees/fix-quicksort`",
+  "summary": "Assign quicksort.js crash (heap corruption in recursive closures) to independent agent in worktree",
+  "impact": "Activates parallel worktree-based agent workflow; test has memory corruption/SIGSEGV",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Dispatch map_function.js infinite loop fix",
+  "quote": "Work in this worktree: `/Users/rtomasi/cousas/duktape-c3/.worktrees/fix-map_function`",
+  "summary": "Assign map_function.js hang (nested closures + higher-order functions) to independent agent",
+  "impact": "Activates parallel agent; test hangs on nested myMap calls",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Dispatch collatz.js arithmetic performance fix",
+  "quote": "This should complete in milliseconds (simple arithmetic loop up to 100). It takes over 60 seconds.",
+  "summary": "Assign collatz.js timeout (slow integer arithmetic) to independent agent",
+  "impact": "Targets arithmetic VM hotpath perf; test times out due to slow MOD/DIV/MUL/ADD",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Dispatch reduce_sum.js property assignment fix",
+  "quote": "acc[pair[0]] = pair[1]",
+  "summary": "Assign reduce_sum.js crash (object property creation from nested reduce) to independent agent",
+  "impact": "Targets object property creation on fresh objects; PUTPROP crash in reduce callback",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Map function loop register corruption clarified",
+  "quote": "the third field is an immediate arg count, not a register. This could mean: The register r2 (result array) is being used as the arg count register",
+  "summary": "Nested myMap hangs due to register aliasing: CALL opcode r2 (array) mistakenly used as arg_count",
+  "impact": "Identifies call arg_count field is immediate not register; guides fix toward register allocation in CALL emission",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-06-11",
+  "harness": "opencode",
+  "title": "Arithmetic fastint path critical",
+  "quote": "Every iteration of collatzLength does: n % 2 === 0 \u2192 MOD, SEQ with 0; n / 2 or 3 * n + 1",
+  "summary": "Every arithmetic operation must use fastint fast path; full type dispatch is too slow",
+  "impact": "Performance baseline: fastint ops must be optimized; no full dispatch on every arithmetic",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-12",
+  "harness": "crush",
+  "title": "Accessor property handling verification",
+  "quote": "How it handles accessor properties (getter/setter) \u2014 does it call the getter or return the getter TVal?",
+  "summary": "Must verify whether get_prop invokes getters or returns getter TVal",
+  "impact": "Clarifies property descriptor semantics: impacts defineProperty/seal/freeze correctness",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-09",
+  "harness": "crush",
+  "title": "Ruthless debugging over quick fixes",
+  "quote": "STOP LOOKING FOR THE SIMPLEST FIX. RUTHLESSLY DEBUG THE FUCKING CODE UNTIL YOU FIND THE ISSUE. STEP BY STEP. USE DEBUGGING TOOLS.",
+  "summary": "Prioritize comprehensive root-cause debugging over quick fixes when investigating issues.",
+  "impact": "Establishes process discipline: debugging must be methodical and thorough, not expedient.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-09",
+  "harness": "crush",
+  "title": "Quality over speed; deploy parallel agents",
+  "quote": "it doesnt matter if it takes too long. do it right. we are here to fix this engine at any cost. use subagents in parallel",
+  "summary": "Prioritize correctness absolutely; use parallel subagents to manage scope and accelerate work.",
+  "impact": "Quality bar: absolute priority to correctness; parallel workers authorized for complex tasks.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-09",
+  "harness": "crush",
+  "title": "Merge ref-counting-v2 branch first",
+  "quote": "I have an idea. lets merge the ef-counting-v2 branch in here first, then proceed.",
+  "summary": "Integrate the ref-counting optimization branch into main before continuing other work.",
+  "impact": "Scope decision: ref-counting foundation now part of main; subsequent tasks build on this.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-09",
+  "harness": "crush",
+  "title": "Set executable as default build",
+  "quote": "update the project.json so that c3c build builds the executable by default, not the lib",
+  "summary": "Configure build system so 'c3c build' produces the executable, not library.",
+  "impact": "Process change: streamlines developer workflow and build defaults.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-09",
+  "harness": "opencode",
+  "title": "Modularize builtins into separate files",
+  "quote": "We need to split the builtins file into modules I want src/builtins/[name].c3 files. Plan the move carefully to minimize cross dependencies.",
+  "summary": "Restructure monolithic builtins.c3 into separate module files under src/builtins/.",
+  "impact": "Major architectural refactoring: enables parallel module development, improves maintainability.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-06-09",
+  "harness": "crush",
+  "title": "Focus optimization on valstack and IC",
+  "quote": "lets go for that. improve valstack_copy, then try to find simple optimizations to bench_ic_monomorphic",
+  "summary": "Target valstack_copy and inline cache monomorphic path as next performance focus.",
+  "impact": "Scope: directs optimization roadmap to specific identified bottlenecks.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-09",
+  "harness": "crush",
+  "title": "Investigate 70-80x shape benchmark gap",
+  "quote": "In /Users/rtomasi/cousas/duktape-c3, I need to understand why bench_shape_no_call and bench_shape_stress are 70-80x slower than original Duktape",
+  "summary": "Debug critical perf regression in shape benchmarks (70-80x slower than Duktape).",
+  "impact": "Course correction: identifies regression requiring root-cause investigation before optimization.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-06-03",
+  "harness": "crush",
+  "title": "Pivot to speed optimization",
+  "quote": "make the engine FAST. optimize and rewrite ruthlessly.",
+  "summary": "Directed shift from incremental bug fixes to comprehensive performance optimization with ruthless rewriting.",
+  "impact": "Established performance-first strategy; foundation for parallel agent coordination and multi-phase optimization.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-03",
+  "harness": "crush",
+  "title": "Session restart protocol",
+  "quote": "The previous session was interrupted because it got too long",
+  "summary": "Established pattern for managing long sessions: checkpoint via context preservation and PRD reissue at restart.",
+  "impact": "Enabled sustainable long-running workflows; constrained per-session scope without losing direction.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-06",
+  "harness": "crush",
+  "title": "Enforce timeout discipline",
+  "quote": "make sure you always use timeouts, and kill stray processes when running the tests or benchmarks",
+  "summary": "Mandated timeouts on all test/benchmark execution and cleanup of stray processes.",
+  "impact": "Prevented hangs from masking regressions; tightened test infrastructure reliability.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-06",
+  "harness": "crush",
+  "title": "Skip test-skipped tests; fix baseline errors",
+  "quote": "skip all with tests, we want to ignore them. then fix the other preexisting errors",
+  "summary": "Directed skipping of pre-marked skip tests; prioritize fixing preexisting errors before new work.",
+  "impact": "Defined test suite hygiene standard: establish clean baseline, ignore skip markers for focus.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-14",
+  "harness": "crush",
+  "kind": "process",
+  "title": "Enforce test timeout and parallel agents in workflow",
+  "quote": "ALWAYS set a timeout for test and benchmark scripts. Small steps. Use parallel agents for small parallel tasks.",
+  "summary": "Established mandatory process discipline: enforce tight timeouts on all test/bench scripts to catch hangs early; restrict agents to small parallel tasks; work in small incremental steps.",
+  "impact": "Constrains all agent work going forward; prevents time-wasting hangs and slow tests; enables structured batch processing of backlog."
+ },
+ {
+  "date": "2026-06-14",
+  "harness": "crush",
+  "kind": "scope",
+  "title": "Pivot to plans directory as source of truth",
+  "quote": "I need to find the most impactful next task. List the plans directory... Report what plans exist and what the highest-priority next task appears to be based on the plans and remaining failures.",
+  "summary": "Shifted task selection from ad-hoc agent exploration to systematic backlog-driven approach; plans/ directory becomes source of truth for priorities.",
+  "impact": "Work becomes traceable to documented backlog items; task selection no longer depends on agent discovery; priorities are explicit and persistent."
+ },
+ {
+  "date": "2026-06-14",
+  "harness": "opencode",
+  "kind": "process",
+  "title": "Execute 4-agent parallel batch for Phase 5 investigation",
+  "quote": "Spawn FOUR agents, one for each issue. Provide agent with detailed fix instructions. EACH AGENT WORKS ON A SINGLE TASK. Agents write the code and do minimal validation; forbid them from running the full test suite. You validate the full changeset after all agents are done.",
+  "summary": "Initiated parallel batch execution model: dispatch 4 agents simultaneously on 4 independent issues, each with detailed fix specs; agents only code and light-test; human validates complete changeset.",
+  "impact": "Establishes primary delivery pattern (4-agent isolation); prevents redundant validation work; scales backlog processing by 4x."
+ },
+ {
+  "date": "2026-06-14",
+  "harness": "opencode",
+  "kind": "quality-bar",
+  "title": "Forbid full test262 runs in agent workflow",
+  "quote": "Avoid running the full test262 suite unless *really* necesssary. ONLY WORK ON A SINGLE TASK.",
+  "summary": "Strict quality gate: agents must not run full test262 during work; only light validation on the specific feature; full suite validation deferred to human review.",
+  "impact": "Prevents time-wasting full suite runs; focuses agent validation on the specific task; keeps batch execution time under control."
+ },
+ {
+  "date": "2026-06-14",
+  "harness": "opencode",
+  "kind": "scope",
+  "title": "Four-part Phase 5 investigation plan issued",
+  "quote": "Thoroughness: very thorough... ~1060 failures in Array iteration. ~506 failures in defineProperty. ~439 failures in String methods. ~199 failures in Array mutation + ~228 Function.prototype",
+  "summary": "Four major failure categories identified in Phase 5 requiring investigation: (1) Array iteration methods, (2) Object.defineProperty, (3) String methods, (4) Array mutation + Function.prototype. Each becomes an agent task.",
+  "impact": "Scopes next 4 agent efforts; breaks Phase 5 into actionable chunks; provides detailed pattern analysis to guide each fix."
+ },
+ {
+  "date": "2026-07-10",
+  "harness": "opencode",
+  "title": "Spawn 5 parallel agents for isolated fix tasks",
+  "quote": "find the next 5 tasks to work on. isolated ones that dont require deep infrastructure work. understand each one, then spawn 5 parallel agents to work. validate their work, and commit.",
+  "summary": "Directive to scale engineering via parallel agents on independent test262 fixes. Each agent owns one isolated task; emphasis on validation + commit discipline.",
+  "impact": "Constrained work to isolated task scope per agent; requires per-worktree validation before merge; blocks cross-task dependencies.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-10",
+  "harness": "claude-code",
+  "title": "Sequential workflow: validate, merge branches, then parallel work",
+  "quote": "wait for agents to finish. validate and merge their work. merge the 11-jul branch, validate those fixes. investigate the lightfunc issue. plan the init vs assign fix. start work on those two, using parallel agents as you see fit.",
+  "summary": "Established gate-based workflow: wait for parallel work \u2192 validate \u2192 merge \u2192 assess new blockers \u2192 plan next phase \u2192 parallelize remaining work.",
+  "impact": "Enforced sequential validation before merge to catch regressions; identified lightfunc\u2192HObject as a blocking architectural issue requiring separate planning.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-10",
+  "harness": "claude-code",
+  "title": "Validate diffs before merging parallel work; read changes in full",
+  "quote": "validate their worktree changes (build, run their target tests + regression check vs baseline, READ their diffs before merging per the parallel-agent-workflow memory)",
+  "summary": "Explicit directive to read agent diffs in full before merging, not just approve on test results. Ties to parallel-agent-workflow memory note.",
+  "impact": "Raised code-review bar; prevented blind merge of changes; applied throughout all subsequent agent merges.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-11",
+  "harness": "claude-code",
+  "title": "Target 100% pass rate; blocklist tractable vs deep issues",
+  "quote": "Check the two agents...Then continue picking tractable clusters toward 100% (avoid: eval/arguments strict SyntaxError...super/this-uninitialized ordering...) Good remaining: Object.defineProperties...Symbol-keyed accessor/method .name.",
+  "summary": "Defined success metric (100% pass rate) and prioritization: pursue isolated clusters (class methods, Object.keys order, String coercion); defer blocked areas (strict-context tracking, lightfunc-proto issues).",
+  "impact": "Clarified scope boundary: 100% pass rate target with tactical avoid list to prevent deep yak-shaving; shaped agent prioritization for 14+ subsequent fixes.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-11",
+  "harness": "claude-code",
+  "title": "Focus on batch-runner flakyness; root cause is VM/heap reset state",
+  "quote": "focus on the batch runner flakyness - review it top to bottom, how it resets the vm/environment, the test harnesses and all. we need to fix this.",
+  "summary": "Shifted focus from test262 feature gaps to infrastructure reliability. Identified batch-runner non-determinism as a root cause blocking confidence in results.",
+  "impact": "Reprioritized to fix contamination/state-isolation bugs before pursuing marginal test262 gains; later led to Heap.reset() guard and contamination-detector tooling.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-07-11",
+  "harness": "opencode",
+  "title": "Overhaul test harness discipline: 5 concrete improvements",
+  "quote": "Make fresh-worker batch the canonical verifier...A contamination detector: run each phase with --workers 1 in a fixed order vs. shuffled order...Guard Heap.reset() against drift",
+  "summary": "Specified 5 concrete harness improvements: (1) batch_test_vm --worker as canonical; (2) contamination-detector script; (3) Heap.reset() struct-diff checker; (4) shrink harness divergence; (5) fresh-process-per-test for final gate.",
+  "impact": "Replaced ad-hoc testing with reproducible infrastructure; turned flakiness hunting into systematic state-contamination detection; set stage for zero-fail confidence.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-11",
+  "harness": "crush",
+  "title": "Eliminate all failing tests; no shortcuts, keep code elegant",
+  "quote": "lets goo. keep going until we have 0 failures left. dont take shortcuts. we want elegant and correct code",
+  "summary": "Reaffirmed zero-failure target; rejected quick hacks in favor of correct, maintainable solutions. Single-sentence intensity directive.",
+  "impact": "Set quality floor for all remaining 70+ agent tasks; prevented pragmatic cutoffs; shaped rejection criteria for messy fixes.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-12",
+  "harness": "crush",
+  "title": "Investigate 'new new RegExp' parse error root cause",
+  "quote": "I need to understand why `new new RegExp` fails to compile...when parsing `new new RegExp)`, the innermost `new_expr` calls `member_expr()` to get `RegExp`, then checks for `(`...Does this loop check for `TokenType.LPAREN`?",
+  "summary": "Detailed investigation request for a specific parsing bug: new_expr trailing loop consuming close-paren prematurely. Specified investigation path through lexer state and arrow-scan recovery.",
+  "impact": "Focused debug effort on a particular code path (new_expr LPAREN case); identified speculative arrow scan as potential culprit; led to specific parser fix.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-07-15",
+  "harness": "opencode",
+  "title": "Fix async generator alloc failure UAF in callbacks",
+  "quote": "Clear both callbacks' async_state so the GC won't dereference the freed GeneratorState via var_env.",
+  "summary": "When rxn_raw alloc fails, clear is_async_state and var_env on both resume_fn/reject_fn before freeing GeneratorState to prevent UAF. Specific cleanup order: clear flags, decref regs, free memory.",
+  "impact": "Prevents use-after-free crash when async generator creation fails mid-execution; bug was silent until GC triggered.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-07-16",
+  "harness": "claude-code",
+  "title": "Rebuild Array.prototype backlog from fresh test262 data",
+  "quote": "I mean empty the file. lets rebuild it based on fresh data. Focus on array.prototype conformance and the remaining steps to 100% pass",
+  "summary": "Clear existing BACKLOG entries and regenerate from actual test262 failures for Array.prototype, prioritizing path to 100% pass rate.",
+  "impact": "Shifts focus to evidence-based backlog; eliminates stale/completed items; prioritizes high-impact conformance work.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-16",
+  "harness": "claude-code",
+  "title": "Split coding skills: dedicated vs. fast variant",
+  "quote": "I want this one to be 'c3-coder', and the 'c3-module-coder' that uses haiku should be the 'fast' variant with more editing focus",
+  "summary": "Create two distinct C3 coding agents: c3-coder (primary, careful) and c3-module-coder (haiku-based, fast with focus on editing). Different models for different task scales.",
+  "impact": "Optimizes agent dispatch: larger changes use careful approach; smaller edits use fast turnaround. Balances quality/speed.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-16",
+  "harness": "opencode",
+  "title": "Launch parallel agents (4x) on BACKLOG items in worktrees",
+  "quote": "lets start working on the new BACKLOG.md items, four at a time using the agent worktrees",
+  "summary": "Scale to 4 parallel agents, each in a worktree, working independent BACKLOG items simultaneously.",
+  "impact": "Multiplies throughput 4x; enforces isolation via worktree per agent; unblocks batched test262 fixes.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-16",
+  "harness": "opencode",
+  "title": "Array iterator must re-read length on each next() call",
+  "quote": "Per ES6 \u00a722.1.5.2.1, the iterator's `next()` must call `LengthOfArrayLike(target)` each time, which reads the `.length` property (going through the property path, not the cached slot).",
+  "summary": "Fix A5: Replace direct array_len_ptr() read with property-path read (array_to_length equivalent) so iterator sees dynamic length changes. 3 test262 tests depend on this.",
+  "impact": "Fixes 3 test262 failures (entries/keys/values iteration-mutable); iterator now conforms to ES6 semantics.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-16",
+  "harness": "claude-code",
+  "title": "Code review protocol: medium effort with precision gate",
+  "quote": "You are reviewing for **precision** at medium effort: every finding you surface should be one a maintainer would act on.",
+  "summary": "Set review effort to medium; enforce quality gate: only surface findings a maintainer would act on (high signal, low noise).",
+  "impact": "Filters out speculation; focuses on actionable defects; trades coverage for maintainability.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-16",
+  "harness": "claude-code",
+  "title": "Fix all structural findings immediately, no deferral",
+  "quote": "tell the agents to report back on any structural findings that need to be corrected, investigate and work on them - no leaving things for next round, we want fixes now",
+  "summary": "Agents must find, report, and fix structural bugs in real time; no deferral to later rounds or other agents.",
+  "impact": "Enforces urgency on architectural issues; prevents accumulation of debt; agents responsible for end-to-end fix.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-16",
+  "harness": "claude-code",
+  "title": "Implement full Reflect API (13 methods) to unblock Proxy tests",
+  "quote": "Implement the full ES6  Reflect  object (13 methods).  Reflect.ownKeys  already exists; the other 12 are thin wrappers around existing  proxy_mop_*  / property internals",
+  "summary": "Implement all 13 Reflect methods (get, set, has, deleteProperty, apply, construct, getOwnPropertyDescriptor, defineProperty, getPrototypeOf, setPrototypeOf, isExtensible, preventExtensions, ownKeys).",
+  "impact": "Unblocks ~5+ test262 failures dependent on Reflect; enables Proxy-heavy test clusters; thin wrapper around existing internals.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-18",
+  "harness": "claude-code",
+  "title": "Activate stop hook: fix all architectural/correctness issues, stay elegant, 100% pass",
+  "quote": "A session-scoped Stop hook is now active with condition: \"fix all architecture and correctness issues, keep code elegant, avoid duplication, achieve 100% pass rate\"",
+  "summary": "Set agent stop condition: all architectural bugs fixed, no code duplication, elegant design maintained, 100% test262 pass rate achieved. This becomes the north star.",
+  "impact": "Unifies all agents on single goal; prevents scope creep; defines success metrics explicitly.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-18",
+  "harness": "claude-code",
+  "title": "Investigate and eliminate batch test flakiness entirely",
+  "quote": "is it worth dispatching an agent to investigate batch flakes? I want to completely eliminate them - it points to flaws in either the engine or the test harnesses.",
+  "summary": "Treat batch flakiness as indicator of real engine or harness bugs; dispatch investigation agent to eliminate root causes completely.",
+  "impact": "Shifts flakiness from noise tolerance to serious bug indicator; improves test signal/noise ratio.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-19",
+  "harness": "claude-code",
+  "title": "BACKLOG discipline: task list only, minimal detail, TODO/IN PROGRESS/DONE status",
+  "quote": "clean up BACKLOG.md aggressively. it should only contain a list of tasks, with a TODO / IN PROGRESS / DONE status, and the minimum detail necessary for starting it. no results, no test summaries. like a todo textual database",
+  "summary": "BACKLOG.md must be a lightweight task database: task name, status, minimal context. No results, summaries, or duplication. Single source of truth for work.",
+  "impact": "Reduces planning overhead; prevents stale information accumulation; keeps human in sync with actual work state.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-19",
+  "harness": "claude-code",
+  "title": "Use C3 builtins over libc for memory management",
+  "quote": "tell the bigint agent to prefer using C3 builtins and stdlib methods to manage memory instead of libc",
+  "summary": "BigInt agent should use C3 stdlib (mem::, allocation APIs) instead of libc for memory operations.",
+  "impact": "Reduces direct libc coupling; leverages C3-native abstractions; improves consistency.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "claude-code",
+  "title": "CLI binaries: duktape_c3 is primary, debug variant for bytecode inspection",
+  "quote": "I think the naming is wrong. I want duktape_c3 to be the normal way to run a file. duktape_c3_debug or something like that to hav the bytecode compiling/inspect",
+  "summary": "Rename/restructure CLI: duktape_c3 as main binary; duktape_c3_debug for disasm/inspect mode.",
+  "impact": "User-facing naming reflects primary workflow; keeps debugging tools available but separate.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "claude-code",
+  "title": "Performance investigation: beat QuickJS on recursion and regexp",
+  "quote": "see out/results_bench.txt for latest benchmark results. lets explore optimization ideas (in worktrees) to beat/match quickjs performance. our libregexp perf is especially bad considering we use QuickJS's own regexp library.",
+  "summary": "Launch performance optimization investigations in worktrees; target: match/beat QuickJS; focus areas: recursion and regexp. libregexp is anomalously slow despite using QJS engine.",
+  "impact": "Opens performance track; identifies specific slow paths; drives optimization hypothesis testing.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "claude-code",
+  "title": "Dispatch parallel agents on tiny fixes with hard 5-min time limit",
+  "quote": "get started on phase 0. use parallel agents if possible with small scope and hard limits on effort (<5min)....",
+  "summary": "Launch phase 0: multiple parallel agents, each fixing ONE tiny issue, hard stop at 5 minutes per agent.",
+  "impact": "Validates rapid-turnaround agent model; forces scope discipline; quick wins build momentum.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Minimize test cases, use debugging tools",
+  "quote": "minimize your test cases, test and validate each step. use the available debugging tools.",
+  "summary": "Instructs to keep test case reproduction minimal and leverage existing debugging tools rather than ad-hoc approaches.",
+  "impact": "Constrains investigative work to focused, efficient patterns; prioritizes existing tool use over manual debugging.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Address underlying design; no shortcuts allowed",
+  "quote": "please address any underlying design or architecture issues. we do not want shortcuts or the 'simplest' solution here.",
+  "summary": "Rejects expedient fixes in favor of proper architectural solutions; establishes quality bar against quick-patch mentality.",
+  "impact": "Enforces architectural rigor in all fixes; prevents technical debt accumulation; fixes must address root causes not symptoms.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Fix basic behaviors first; unlock more tests",
+  "quote": "check BACKLOG.md for tasks that make sense to address - we need to fix the basic behaviours of the engine first to unlock more tests",
+  "summary": "Prioritizes foundational engine correctness (Object methods, Array methods) before advanced ES6 features (destructuring, generators).",
+  "impact": "Backlog ordering: basic builtins are prerequisites for advanced features; fixes here unlock test262 phase progression.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Engine is strict-only; remove all sloppy paths",
+  "quote": "this is not duktape, its a new project. I want to support strict only and remove all non-strict features. Write a comprehensive plan for this.",
+  "summary": "Declares the engine will support ES5/ES6 strict mode only; requires comprehensive audit and removal of all sloppy-mode code paths.",
+  "impact": "Fundamental architecture constraint; eliminates arguments.caller, implicit globals, sloppy eval; greatly simplifies engine model.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Give agents smaller, scoped investigation tasks",
+  "quote": "that was a very long explore task, please give smaller tasks to agents in the future. it ended up doing a ton of debugging instead of focusing on exploring the code.",
+  "summary": "Corrects over-scoped task assignment; agent was debugging when it should have been analyzing; requests tighter scope boundaries.",
+  "impact": "Process rule: agent tasks must be narrowly scoped and time-bounded; exploration + debugging in same task causes scope creep.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Agent task scope must be reduced and focused",
+  "quote": "you can use agents to do basic analysis, just make sure they have a reduced scope",
+  "summary": "Confirms agents can assist with analysis but scope must remain narrow; prevents task expansion beyond stated boundaries.",
+  "impact": "Process rule: agent tasks bound to single root cause, single file, or single feature; no cross-cutting architectural work.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Rosetta suite requires full pass with zero flakiness",
+  "quote": "now start work on the follow-ups. dispatch agents to work on small tasks. and I want full pass on the rosetta tests, there is no room for flakyness as the engine should be fully determinitisc",
+  "summary": "Establishes rosetta as quality gate with zero tolerance for nondeterminism; all tests must pass consistently, no flaky workarounds.",
+  "impact": "Quality bar: rosetta is regression baseline; engine must be fully deterministic; no workarounds for intermittent failures.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-16",
+  "harness": "opencode",
+  "title": "Verify no duplicate definitions removed",
+  "quote": "did you remove the duplicated definitions? are they defined somewhere else? double check",
+  "summary": "Questioned whether duplicate definitions were safely removed; required verification they exist elsewhere.",
+  "impact": "Prevented silent loss of functionality; enforced verification before cleanup commits.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-06-16",
+  "harness": "opencode",
+  "title": "Declare full ES6+ syntax support required",
+  "quote": "I also want full support for destructuring, default params, object spread, async await. these were never meant to be unsupported. make sure this is specified somewhere",
+  "summary": "Declared that destructuring, default parameters, spread, and async/await are non-optional features; required scope documentation.",
+  "impact": "Broadened scope to cover modern ES6+ syntax; established as requirements for the engine, not optional extras.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Prioritize basic engine behaviors over test count",
+  "quote": "check BACKLOG.md for tasks that make sense to address - we need to fix the basic behaviours of the engine first to unlock more tests",
+  "summary": "Redirected focus from raw test count to foundational behavior fixes; prioritized unblocking over volume.",
+  "impact": "Shifted strategy from breadth-first to depth-first; required architectural fixes before expanding test coverage.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-06-20",
+  "harness": "opencode",
+  "title": "Full pass on rosetta suite, no flakiness",
+  "quote": "and I want full pass on the rosetta tests, there is no room for flakyness as the engine should be fully determinitisc",
+  "summary": "Established zero-tolerance for test flakiness; declared rosetta suite as a hard gate requiring 100% deterministic pass rate.",
+  "impact": "Set quality bar at 100% determinism; flaky tests became release blockers, not regressions to track.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-06-21",
+  "harness": "opencode",
+  "title": "Keep backlog synchronized with recent work",
+  "quote": "check BACKLOG.md against the last 4-6 commits. does anything need to be marked done?",
+  "summary": "Required backlog to stay current with recent commits; established backlog audit as a regular process.",
+  "impact": "Enforced documentation discipline; made backlog a source of truth for project state.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-06-22",
+  "harness": "crush",
+  "title": "Use C3 stdlib collections instead of manual libc",
+  "quote": "could we use something from std::collections instead?",
+  "summary": "Questioned libc usage; proposed C3 stdlib collections as replacement to align with language idioms.",
+  "impact": "Shifted from C-style memory management to type-safe C3 collections; reduced direct libc dependencies.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-06-30",
+  "harness": "claude-code",
+  "title": "Conduct code simplification review",
+  "quote": "now lets look at the code. check the advanced c3 skill. read the sources one by one, and find opportunities to simplify and reduce code size. provide a full report.",
+  "summary": "Directed systematic code review for simplification opportunities; required comprehensive report on reduction possibilities.",
+  "impact": "Triggered code quality pass; enabled targeted refactoring to reduce complexity and size.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-06-30",
+  "harness": "claude-code",
+  "title": "Serial single-agent fix workflow with tracking",
+  "quote": "now lets start. use ONE single haiku agent per fix. one thing at a time. lets track in todos. report and commit each fix as it's completed.",
+  "summary": "Changed from parallel agents to serial single-agent workflow; required fix tracking and individual commits.",
+  "impact": "Improved visibility and commit history; enabled rapid iteration with clear demarcation between fixes.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-05",
+  "harness": "claude-code",
+  "title": "Discriminate determinism from regressions",
+  "quote": "The root cause is heap pollution in the batch worker process \u2014 the __resetGlobals() / hp.reset() / vm_reset() cycle doesn't fully restore all mutable heap state between tests, causing non-deterministic ordering-dependent failures.",
+  "summary": "Identified that apparent regressions (232 tests PASS\u2192FAIL) were actually non-determinism: 256 tests also changed FAIL\u2192PASS in same period. Net loss only 11 tests, not 211. Root cause: batch test runner heap pollution from prototype mutations.",
+  "impact": "Clarified that test262 failures are ordering-dependent pollutants, not logic errors in array.c3 fixes. Requires worktrace-level reset strategy, not code fixes.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-07-05",
+  "harness": "crush",
+  "title": "Historical test262 tracking via git mining",
+  "quote": "I want to extract the daily pass rate (in absolute numbers) for the test262 test suite, since this project started. Use agents to extract info for each day, without actually running the suite - the info will be found in progress and .md file updates, commit messages, etc.",
+  "summary": "Directed extraction of test262 pass counts from project git history (commit messages, progress.md snapshots, plan files) for all dates since project start, using agents to work in parallel worktrees by date range.",
+  "impact": "Established metrics pipeline to track test262 pass rate trajectory and validate performance claims without re-running full suite. Constraint: use historical records only, no new test execution.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-05",
+  "harness": "claude-code",
+  "title": "Priority feature identification discipline",
+  "quote": "identify the next 5 most valuable features to implement. use haiku agents for small tasks",
+  "summary": "Requested structured ranking of next high-value features and delegation of feature identification work to haiku agents for efficiency.",
+  "impact": "Shifted feature pipeline planning to agents. Establishes pattern: haiku agents for feature assessment, prioritization, and small edits.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-06",
+  "harness": "crush",
+  "title": "Systematic B37/B39 structural repair",
+  "quote": "lets work on B37/B39. address structural issues systematically. use minimal test cases to guide the work. validate and commit",
+  "summary": "Directed focus on bugs B37 and B39 using structural (not quick-fix) methodology: minimal test cases as guide, validation, and atomic commits per fix.",
+  "impact": "Set quality bar: no tactical patches; structural root-cause fixes driven by minimal test cases. Each fix committed independently. Constraint on methodology.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-06",
+  "harness": "crush",
+  "title": "Optimizer bypass validation strategy",
+  "quote": "can we add a flag to disable the optimizer? then use that to validate the logic without optimizations, re-enable to adjust the optimizer pass for the new features. add notes on this to the docs",
+  "summary": "Requested feature: disable-optimizer flag to separate logic validation from optimization correctness. Then re-enable to tune optimizer for new features, documenting the approach.",
+  "impact": "Introduced validation workflow: test logic correctness without optimization, then validate optimizer pass independently. Architecture decision to make optimizer orthogonal to core logic.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-06",
+  "harness": "crush",
+  "title": "Suspend live analysis, use branch knowledge",
+  "quote": "no, just based on what you already know and the work done in the branch. do not run any commands",
+  "summary": "Course correction: do not run analysis commands; rely on existing branch context and prior knowledge instead.",
+  "impact": "Constraint: avoid command-line inspection; use static analysis and existing notes. Implies confidence in branch state already captured.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-07-06",
+  "harness": "crush",
+  "title": "Reframe CE (Compiler Error) category semantics",
+  "quote": "So we are not treating the 620 other CEs as \"pass\"? Are they unexpected compiler errors? I'm asking these because we were allowing tests for unsupported features to run, and generate compiler errors instead of being skipped",
+  "summary": "Questioned test result categorization: CE (Compiler Error) tests for unsupported features should be skipped, not run and fail. Identified gap where unsupported feature tests are allowed to compile and error instead.",
+  "impact": "Quality bar: unsupported feature tests must be pre-skipped, not run and counted as CE. Affects test262 baseline interpretation and pass-rate accounting.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-06",
+  "harness": "crush",
+  "title": "Task dependency injection: build as dep",
+  "quote": "just tasks can have dependencies, can you add the build as a dep instead of calling c3c build",
+  "summary": "Architecture decision: build should be a task dependency, not an inline c3c build command call. Use the task system's dependency mechanism.",
+  "impact": "Harness efficiency: avoids redundant builds by leveraging task DAG tracking. Builds only when sources change.",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-06",
+  "harness": "crush",
+  "title": "Deep code review on destructuring",
+  "quote": "In the file /Users/rtomasi/cousas/duktape-c3/src/compiler/statements.c3, I need to understand: 1. The ArrayBind and ObjBind struct definitions...5. The compile_catch_object_pattern() function around line 4133-4171",
+  "summary": "Requested detailed code review targeting destructuring semantics: ArrayBind/ObjBind structs, for_statement destructuring path, iterator-loop emit, and catch-pattern compilation.",
+  "impact": "Focused investigation into destructuring codegen to identify how catch-clause path differs from function-param path (which has bugs). Root-cause analysis before fix.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-08",
+  "harness": "claude-code",
+  "title": "Iterator protocol for function-param destructuring",
+  "quote": "Reproduced the bug: function f([a,b]){} called with a generator produces undefined undefined instead of 1 2. Root-caused: the function-param destructuring in functions.c3 uses LDINT index + GETPROP src, index (direct indexed property access) instead of the iterator protocol",
+  "summary": "Root-cause analysis for B37: function-param destructuring uses direct property access (LDINT+GETPROP) instead of iterator protocol. Catch-clause already uses correct protocol. Three emission sites affected.",
+  "impact": "Architecture gap identified: function-param destructuring and catch-clause destructuring diverged. Requires unifying on iterator protocol across all three emission sites (regular, inner, arrow functions).",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-08",
+  "harness": "crush",
+  "title": "No quick-fix culture: structural fixes only",
+  "quote": "fix all underlying issues you find. we dont care for 'quick fixes'. do it right and be methodical.",
+  "summary": "Reinforced quality bar: all fixes must be structural and methodical, not tactical. Address root causes, not symptoms.",
+  "impact": "Constraint on work discipline: no time-pressure shortcuts; all changes must reflect underlying correctness.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-08",
+  "harness": "claude-code",
+  "title": "100% test262 pass rate goal (with perf constraints)",
+  "quote": "A session-scoped Stop hook is now active with condition: \"pass 100% of our test262 subset, no performance regressions\". Briefly acknowledge the goal, then immediately start (or continue) working toward it",
+  "summary": "Goal set: achieve 100% pass rate on test262 targeted subset without performance regressions. Stop hook enforces goal until met.",
+  "impact": "Hard constraint on sessions: must reach 100% test262 pass rate. Perf constraint prevents optimizations that trade correctness for speed. Goal drives all work.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-08",
+  "harness": "claude-code",
+  "title": "Async function compilation flag loss",
+  "quote": "The bug is in the compiler, not the runtime. Async functions are being compiled with flags.is_async = false despite being declared with async: ...flags.is_async=false while flags.is_generator=true is exactly the shape of a function* (generator without async), not async function",
+  "summary": "Root-cause of async/await failures: compiler losing is_async flag during function compilation. Flag restoration/save ordering bug in compile_inner_function likely culprit.",
+  "impact": "Identified compiler bug, not runtime. Async functions treated as generators (allocate GENERATOR HObject instead of Promise). Requires flag-tracking fix in statements.c3 or functions.c3.",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-07-08",
+  "harness": "claude-code",
+  "title": "ArrayBuffer/TypedArray/DataView implementation",
+  "quote": "lets implement plans/049-arraybuffer-typedarray-dataview.md . Use agents heavily - sonnet when needed, haiku preferrably for small steps. Forbid the agents from spawning subagents.",
+  "summary": "Directed major feature: implement ArrayBuffer, TypedArray, and DataView. Use agent parallelization (sonnet for complex, haiku for small steps) but forbid sub-spawning.",
+  "impact": "Feature scope: binary data types as prerequisite for higher test262 pass rate. Process constraint: limit agent spawn depth to 1.",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-22",
+  "harness": "claude-code",
+  "title": "JIT architecture: platform-agnostic encoder design",
+  "quote": "try to keep it minimal (speed up only important hot paths) and design it in a way that is easy to support multiple platforms \u2014 arch-specific encoders separated from the compile loop",
+  "summary": "Established architectural principle for JIT implementation: minimize scope to hot paths, separate arch-specific encoders from core compiler to enable multi-platform support (arm64 + x86-64)",
+  "impact": "Guided JIT design to avoid monolithic architecture; enables future backends by isolating platform-specific code from compilation logic",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-22",
+  "harness": "claude-code",
+  "title": "Dispatch parallel exploration of copy-patch JIT approach",
+  "quote": "in PARALLEL, dispatch an agent to explore the template/copy-patch approach",
+  "summary": "Initiated parallel investigation of copy-patch (MAP_JIT) vs direct hand-emit approaches for JIT code generation while main effort continued",
+  "impact": "Established parallel evaluation discipline; copy-patch later deemed non-viable; informed decision to use direct hand-emit approach",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-23",
+  "harness": "opencode",
+  "title": "Scope perf PoCs to plans 61-64 with isolated worktrees",
+  "quote": "lets do the pocs for plan 61-64. dispatch an agent for each, using separate worktrees. use 'wt setup' to initialize the worktrees",
+  "summary": "Scoped parallel performance work to 4 specific designs (plans 61-64: dispatch, borrowed refs, IC, allocation); required worktree isolation and vendored source setup",
+  "impact": "Established parallel PoC workflow with isolated environments; constrained scope to specific, measurable implementations",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-24",
+  "harness": "claude-code",
+  "title": "Question missing perf gains from implemented optimization",
+  "quote": "I don't see the perf improvements it was supposed to bring. does it need a flag or something?",
+  "summary": "Challenged agent's performance verification; questioned whether optimizations were actually active or if measurement method was correct",
+  "impact": "Prompted validation discipline; later led to establishing tight measurement methodology and distrust of suspicious baseline swings",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-24",
+  "harness": "claude-code",
+  "title": "Full codebase review for deduplication and efficiency",
+  "quote": "do a full code review. look for things that can be deduplicated, written in more idiomatic or shorter ways, optimized without changing behaviour or benefit from c3 builtins. ideally we reduce code size",
+  "summary": "Requested comprehensive code review targeting deduplication, idiom improvement, optimization, and C3 stdlib utilization to reduce code size while maintaining behavior",
+  "impact": "Established quality standard for code maintainability; delegated architectural cleanup work to specialized agents",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-28",
+  "harness": "claude-code",
+  "title": "Batch small backlog items with 3-worktree workflow",
+  "quote": "lets start with the small items, 3 at a time. create three worktrees to reuse for each batch. pick haiku/sonnet/opus depending on the task complexity",
+  "summary": "Established workflow: batch 3 small tasks per iteration using dedicated worktrees; select model size based on task complexity (haiku/sonnet/opus)",
+  "impact": "Formalized parallel agent workflow with fixed batch size and model selection heuristics",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-28",
+  "harness": "claude-code",
+  "title": "Validate refcount design benefits for UI rendering latency",
+  "quote": "refcount is supposed to be on one of the big advantages of quickJS. UI rendering in js engines has a lot of thrashing, with refcount those get freed immediately instead of waiting for the next GC cycle",
+  "summary": "Questioned and documented intended advantage of refcounting: immediate deallocation for UI rendering workloads vs GC pause accumulation at 60fps",
+  "impact": "Clarified performance objective; refcount immediate-dealloc should motivate architectural designs",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-28",
+  "harness": "claude-code",
+  "title": "Question refcount API: RAII alternatives to manual decref",
+  "quote": "could we use C3 stdlib mechanisms to avoid all these manual .decref_tval() calls peppered around the codebase?",
+  "summary": "Questioned whether C3 standard library (likely defer or destructor mechanisms) could replace scattered manual decref calls",
+  "impact": "Prompted investigation into C3 RAII capabilities; potential future refactor to reduce manual memory management burden",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-28",
+  "harness": "claude-code",
+  "title": "Investigate O(n) random-access alternatives across ecosystems",
+  "quote": "investigate alternative designs that would avoid the O(n) random access. look at go, exotic languages, other engines",
+  "summary": "Directed investigation into how other runtimes avoid O(n) array/value-stack random access patterns; cross-ecosystem design research",
+  "impact": "Scoped architectural research to inform future design choices; comparative-language approach to baseline validation",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "opencode",
+  "title": "Strict-only engine: skip sloppy-mode tests",
+  "quote": "The engine is strict-only. These `onlyStrict` tests test sloppy-mode behavior and can never pass.",
+  "summary": "Establish that strict mode is the engine's permanent operational mode. Skip-list all `onlyStrict` tests that expect sloppy-mode behavior.",
+  "impact": "Clarifies the engine's scope: do not implement or fix sloppy-mode semantics. Reduces test262 churn from unfixable sloppy-mode failures.",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "opencode",
+  "title": "Private field semantics: bypass proxy traps",
+  "quote": "Private field access should NOT go through proxy's get trap. Per ES2022 spec, PrivateFieldGet does NOT call [[Get]] \u2014 it directly looks up the private field.",
+  "summary": "Ensure private field get/set bypasses proxy traps entirely. Fix evaluation order: RHS getter runs before membership check. Add extensibility check for non-extensible objects.",
+  "impact": "Fixes 7+ test262 failures related to private field semantics. Aligns engine behavior with ES2022 spec for private slots.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "opencode",
+  "title": "Proxy constructor: accept lightfunc targets",
+  "quote": "Fix the Proxy constructor to accept lightfunc (built-in function) values as valid targets.",
+  "summary": "Extend Proxy validation to allow built-in functions (lightfuncs) as valid Proxy targets, not just HObjects.",
+  "impact": "Unblocks 5 test262 tests that create proxies wrapping built-in functions like Math.max or Array.isArray.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "opencode",
+  "title": "Eval inherits super and new.target from caller",
+  "quote": "Eval code inside a method should inherit the super binding from the enclosing method. The eval code should be able to use `super.property` to access the parent prototype.",
+  "summary": "Enable eval to access caller's super binding and new.target. Fix SyntaxError vs TypeError distinctions for super/new.target at different context levels.",
+  "impact": "Fixes 10+ test262 failures in eval-code tests for super and new.target handling across function and non-function contexts.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "opencode",
+  "title": "TypedArray must NOT look up Symbol.species",
+  "quote": "TypedArray constructors should NOT look up Symbol.species when creating from another TypedArray.",
+  "summary": "Fix TypedArray constructor to skip Symbol.species lookup for same-typed-array sources. Use spec's ArraySpeciesCreate correctly.",
+  "impact": "Fixes test262 failures for TypedArray-to-TypedArray construction without triggering unnecessary species lookup.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "opencode",
+  "title": "Use shared ArrayIteratorPrototype.next",
+  "quote": "TypedArray construction from array should use the shared ArrayIteratorPrototype.next method.",
+  "summary": "Ensure TypedArray constructor iteration uses the standard shared iterator protocol, allowing iterator modifications to affect construction.",
+  "impact": "Enables proper observable iterator behavior in TypedArray construction; allows test code to verify iterator trap execution.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-20",
+  "harness": "opencode",
+  "title": "Enforce extensibility in indirect eval",
+  "quote": "Fix indirect eval to throw TypeError when trying to declare a global var/function on a non-extensible global object.",
+  "summary": "Indirect eval must respect global object extensibility. Throw TypeError for var/function declarations on non-extensible globals.",
+  "impact": "Ensures eval respects object extension invariants; correct semantics for sealed/frozen global object scenarios.",
+  "kind": "architecture"
+ },
+ {
+  "date": "2026-07-29",
+  "harness": "claude-code",
+  "title": "Code comment review for clarity and documentation",
+  "quote": "I want a full review of all the .c3 code comments here. Everything should be straight to the point, understandable, light in jargon and serve as good documentation for the engine. Dispatch agents for each file",
+  "summary": "Directive to review all .c3 comments for clarity, brevity, and documentation quality. Comments should be understandable with minimal jargon and serve as reference documentation.",
+  "impact": "Set quality standard for code documentation: humanizer-driven clarity and conciseness across all comments",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-29",
+  "harness": "claude-code",
+  "title": "Enable all test262 directories and dispatch parallel agents",
+  "quote": "let's enable all of those, and fix all remaining issues. dispatch agents once you have narrowed them down",
+  "summary": "Enable all test262 directories and dispatch agents once issues are narrowed to root causes",
+  "impact": "Directed expansion of test coverage and parallel agent deployment for targeted bug fixes",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-29",
+  "harness": "opencode",
+  "title": "Test authenticity requirement: Rosetta Code fidelity",
+  "quote": "Not production ready. The review found something the green suite was hiding. What's genuinely solid: - just test262-gate passes \u2014 44,734 pass / 0 fail, two consecutive runs, 4m17s - All 19 phases at 0 fails, golden 10/10, rosetta 100/100",
+  "summary": "Assessment that test suites hiding regressions; emphasized Rosetta Code suite passing (100/100) as validation of authentic code-sample testing",
+  "impact": "Established quality bar: test suite must faithfully execute real Rosetta Code samples without workarounds",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-29",
+  "harness": "claude-code",
+  "title": "Create 3 worktrees and dispatch parallel subagents",
+  "quote": "lets try something new. make 3 new worktrees. use wt setup on them. dispatch 'crush run --model minimax/MiniMax-M3 [prompt]' processes (subagents) to fix 3 issues at a time",
+  "summary": "Create 3 git worktrees with wt setup and dispatch parallel subagent processes to work on multiple issues simultaneously",
+  "impact": "Established parallel agent workflow using isolated worktrees and external model dispatch for concurrent bug fixes",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "opencode",
+  "title": "Regression correction: eval return value in for-in",
+  "quote": "Your group-E fix has a regression I found during validation. In your worktree .../agent-1: `eval('1; for (var a in {x:0}) { 5; }')` now returns `undefined`; spec (and main before your change) says **5**. Root cause: you emit `LDUNDEF eval_acc_reg` AFTER",
+  "summary": "Identified production-blocking regression where eval in for-in loop returns undefined instead of loop body value. Provided root cause and required fix.",
+  "impact": "Directed course correction to fix eval return-value bug blocking production readiness",
+  "kind": "course-correction"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "claude-code",
+  "title": "Enforce function strict-mode compliance",
+  "quote": "lets make function strict. verify all the tests that need to be fixed / skipped. track this is a todo task",
+  "summary": "Make all functions strict-mode by default; identify and track test failures or exemptions needed",
+  "impact": "Set policy: enforce strict-mode semantics; established backlog tracking for compliance gaps",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "claude-code",
+  "title": "Comment review with humanizer skill",
+  "quote": "I want a full review of all comments in the codebase for correctness and succintness, have agents use the humanizer skill. do it one file/function at a time",
+  "summary": "Full codebase comment review using humanizer skill to remove AI-writing patterns, improve clarity and conciseness, processed per file/function",
+  "impact": "Set quality standard: apply humanizer-driven AI-pattern removal to all code documentation",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "claude-code",
+  "title": "Manual comment editing for cohesion",
+  "quote": "lets do this without agents. read one comment block at a time, edit as you go, make sure the whole thing is cohesive. then update docs at the end",
+  "summary": "Switch from agent-based to manual editing to ensure cohesive, consistent comment quality across blocks before updating documentation",
+  "impact": "Directive: prioritize manual consistency review over agent parallelization for documentation quality",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "claude-code",
+  "title": "Comment style guidance: humanizer focus",
+  "quote": "no 'feel for the comment style'. We don't need to follow existing styles. focus on humanizer skills, keep them simple, friendly and technical. avoid mentions of past code states, avoid hyperbole, dramatic statements and speculation",
+  "summary": "Explicit guidance: ignore existing comment style conventions; apply humanizer rules (simple, friendly, technical); omit past-state references and speculation",
+  "impact": "Set explicit quality rules: humanizer-compliant, no style-matching; bounds on speculation and negative framing",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "claude-code",
+  "title": "Stop hook: Review all code comments",
+  "quote": "A session-scoped Stop hook is now active with condition: \"review all the comments in the codebase\". Briefly acknowledge the goal, then immediately start working toward it",
+  "summary": "Session-scoped Stop hook established: must review all code comments before session can end",
+  "impact": "Established programmatic completion goal: review all code comments (blocks session stop)",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "claude-code",
+  "title": "Stop hook: Complete the backlog",
+  "quote": "A session-scoped Stop hook is now active with condition: \"complete the backlog\". Briefly acknowledge the goal, then immediately start working toward it",
+  "summary": "Session-scoped Stop hook: backlog must reach zero open items before session can end",
+  "impact": "Established programmatic completion goal: reduce backlog to 0 open (blocks session stop)",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-30",
+  "harness": "claude-code",
+  "title": "Merge to main with conflict and comment review",
+  "quote": "lets now merge this into main. be careful with conflicts. edit any new comments introduced. add a mention of the humanizer skill to agents.md to instruct other agents on how to write comments.",
+  "summary": "Merge to main; carefully resolve conflicts and edit any new comments for consistency; update AGENTS.md to document humanizer-compliant comment guidelines",
+  "impact": "Prepared main integration with conflict review requirement and humanizer documentation for future agents",
+  "kind": "process"
+ },
+ {
+  "date": "2026-07-31",
+  "harness": "claude-code",
+  "title": "Rosetta Code test fidelity requirement",
+  "quote": "I want you to review the rosetta code examples. They should faithfully reproduce Rosetta Code website code samples, as a way of testing our engine with real code. They should _not_ contain workarounds for engine bugs or avoiding known-broken features.",
+  "summary": "Review Rosetta Code test samples to ensure faithful reproduction of published examples without workarounds or feature avoidance",
+  "impact": "Established test authenticity requirement: samples must faithfully mirror Rosetta Code, blocking bug workarounds in test code",
+  "kind": "quality-bar"
+ },
+ {
+  "date": "2026-07-31",
+  "harness": "claude-code",
+  "title": "Spec gap: unresolvable imports must fail",
+  "quote": "-  Unresolvable imports return undefined instead of failing to link. ES2015 \u00a715.2.1.16.3 makes that an early SyntaxError.",
+  "summary": "Identified spec violation: unresolvable imports currently return undefined; ES2015 requires early SyntaxError per section 15.2.1.16.3",
+  "impact": "Documented test gap requiring spec-compliant import linking behavior",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-31",
+  "harness": "claude-code",
+  "title": "Full work attribution and breakdown report",
+  "quote": "I want to produce a full breakdown of the work in this repo. With attribution to the correct model and harness used for each commit. I want to measure the # of lines that can be attributed to each model",
+  "summary": "Request for comprehensive work analysis: JSON commit history, per-model line attribution, work distribution across models and harnesses",
+  "impact": "Scoped new analysis task: measure codebase attribution per model/harness/session for work visibility",
+  "kind": "scope"
+ },
+ {
+  "date": "2026-07-31",
+  "harness": "claude-code",
+  "title": "Stop hook: Fix all remaining test failures",
+  "quote": "A session-scoped Stop hook is now active with condition: \"fix all remaining test failures\". Briefly acknowledge the goal, then immediately start working toward it",
+  "summary": "Session-scoped Stop hook: all test262 failures must be resolved before session can end",
+  "impact": "Established programmatic completion goal: reduce test failures to zero (blocks session stop)",
+  "kind": "process"
+ }
+]

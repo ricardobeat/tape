@@ -1,0 +1,965 @@
+<title>duktape-c3: build provenance</title>
+<style>
+:root{
+  --s1:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --ink3:#8a887f;
+  --rule:#e5e4df; --rule2:#f0efec; --raised:#ffffff;
+  --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100;
+  --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7; --c8:#e34948;
+  --good:#0ca30c; --warn:#fab219; --serious:#ec835a; --crit:#d03b3b;
+  --mono:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root{
+  --s1:#1a1a19; --plane:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --ink3:#8f8e85;
+  --rule:#33332f; --rule2:#242422; --raised:#222220;
+  --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500;
+  --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#e66767;
+}}
+:root[data-theme="dark"]{
+  --s1:#1a1a19; --plane:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --ink3:#8f8e85;
+  --rule:#33332f; --rule2:#242422; --raised:#222220;
+  --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500;
+  --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#e66767;
+}
+:root[data-theme="light"]{
+  --s1:#fcfcfb; --plane:#f9f9f7; --ink:#0b0b0b; --ink2:#52514e; --ink3:#8a887f;
+  --rule:#e5e4df; --rule2:#f0efec; --raised:#ffffff;
+  --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100;
+  --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7; --c8:#e34948;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--plane);color:var(--ink);font-family:var(--sans);
+  font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px 96px}
+h1,h2,h3{text-wrap:balance;margin:0}
+.mono{font-family:var(--mono)}
+.num{font-variant-numeric:tabular-nums}
+
+/* ---- masthead ---- */
+header{padding:64px 0 28px;border-bottom:2px solid var(--ink)}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--ink3);margin-bottom:14px}
+h1{font-size:clamp(30px,5vw,46px);line-height:1.05;letter-spacing:-.022em;font-weight:640}
+h1 em{font-style:normal;color:var(--ink3)}
+.dek{margin-top:14px;max-width:64ch;color:var(--ink2);font-size:16.5px}
+
+/* ---- stat strip ---- */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule);margin:0 0 8px}
+.stat{background:var(--s1);padding:15px 16px 13px}
+.stat .k{font-family:var(--mono);font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;
+  color:var(--ink3);margin-bottom:5px}
+.stat .v{font-family:var(--mono);font-size:23px;font-weight:600;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;line-height:1.15}
+.stat .s{font-size:11.5px;color:var(--ink3);margin-top:3px}
+
+section{margin-top:52px}
+.shead{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid var(--rule);
+  padding-bottom:9px;margin-bottom:20px;flex-wrap:wrap}
+.shead h2{font-size:19px;letter-spacing:-.012em;font-weight:640}
+.shead .note{font-size:12.5px;color:var(--ink3);margin-left:auto;font-family:var(--mono)}
+.lede{color:var(--ink2);max-width:70ch;margin:-6px 0 20px;font-size:14.5px}
+
+.card{background:var(--s1);border:1px solid var(--rule);padding:20px 22px}
+
+/* ---- bars ---- */
+.bars{display:flex;flex-direction:column;gap:9px}
+.bar{display:grid;grid-template-columns:172px 1fr 96px;align-items:center;gap:12px}
+.bar .lbl{font-family:var(--mono);font-size:12px;text-align:right;color:var(--ink2);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar .track{height:19px;background:var(--rule2);position:relative;border-radius:2px}
+.bar .fill{height:100%;border-radius:0 3px 3px 0;position:relative;transition:width .5s cubic-bezier(.2,.7,.3,1)}
+.bar .val{font-family:var(--mono);font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.bar .val b{color:var(--ink);font-weight:600}
+
+/* ---- stacked ---- */
+.stack{display:flex;height:34px;background:var(--s1)}
+.stack .period{display:flex;gap:2px;border-radius:3px;overflow:hidden;min-width:0}
+.plabels{display:flex;margin-top:6px}
+.plabels div{flex:1 1 0%;font-family:var(--mono);font-size:10.5px;color:var(--ink3);
+  text-align:center}
+.plabels div+div{margin-left:10px}
+.stack div{position:relative}
+/* one continuous horizontal bar: each period is a width-proportional column,
+   split vertically into its composition segments */
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:14px;font-size:12.5px;color:var(--ink2)}
+.legend span{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono)}
+.sw{width:11px;height:11px;border-radius:2px;flex:none}
+
+/* ---- table ---- */
+.tw{overflow-x:auto;border:1px solid var(--rule);background:var(--s1)}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:760px}
+th,td{padding:8px 12px;text-align:right;border-bottom:1px solid var(--rule2);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--ink3);text-align:right;position:sticky;top:0;background:var(--s1);
+  border-bottom:1px solid var(--rule)}
+td:first-child,th:first-child{text-align:left;font-family:var(--mono);font-size:12.5px}
+tbody tr:hover{background:var(--rule2)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:7px;vertical-align:-1px}
+.muted{color:var(--ink3)}
+
+/* ---- timeline chart ---- */
+.chart{position:relative;width:100%}
+svg{display:block;width:100%;overflow:visible}
+.gl{stroke:var(--rule2);stroke-width:1}
+.ax{font-family:var(--mono);font-size:10.5px;fill:var(--ink3)}
+.tip{position:absolute;pointer-events:none;background:var(--raised);border:1px solid var(--rule);
+  padding:9px 11px;font-family:var(--mono);font-size:11.5px;opacity:0;transition:opacity .12s;
+  box-shadow:0 6px 22px rgba(0,0,0,.14);z-index:9;min-width:150px;border-radius:3px}
+.tip .th{font-weight:600;margin-bottom:5px;color:var(--ink)}
+.tip .tr{display:flex;justify-content:space-between;gap:14px;color:var(--ink2)}
+.tip .tr b{color:var(--ink);font-variant-numeric:tabular-nums}
+.crosshair{stroke:var(--ink3);stroke-width:1;stroke-dasharray:3 3;opacity:0}
+
+/* ---- controls ---- */
+.ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+button{font-family:var(--mono);font-size:12px;padding:6px 12px;background:var(--s1);
+  color:var(--ink2);border:1px solid var(--rule);cursor:pointer;border-radius:3px}
+button:hover{border-color:var(--ink3);color:var(--ink)}
+button[aria-pressed="true"]{background:var(--ink);color:var(--plane);border-color:var(--ink)}
+button:focus-visible{outline:2px solid var(--c1);outline-offset:2px}
+
+/* ---- narrative: one line per event ---- */
+.evlist{display:flex;flex-direction:column}
+.evrow{display:grid;grid-template-columns:74px 12px 1fr auto;gap:12px;align-items:baseline;
+  padding:7px 0;border-bottom:1px solid var(--rule2)}
+.evrow:last-child{border-bottom:none}
+.evrow:hover{background:var(--rule2)}
+.evrow .d{font-family:var(--mono);font-size:11.5px;color:var(--ink3);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.evrow .dot{width:8px;height:8px;border-radius:50%;background:var(--ink3);
+  align-self:center}
+.evrow.catastrophic .dot{background:var(--crit)}
+.evrow.severe .dot{background:var(--serious)}
+.evrow.notable .dot{background:var(--warn)}
+.evrow.architecture .dot{background:var(--c7)}
+.evrow.course-correction .dot{background:var(--c2)}
+.evrow.quality-bar .dot{background:var(--c1)}
+.evrow.process .dot{background:var(--c3)}
+.evrow.scope .dot{background:var(--c4)}
+.evrow .t{font-size:14px;color:var(--ink);line-height:1.35}
+.evrow .m{font-family:var(--mono);font-size:11px;color:var(--ink3);white-space:nowrap;
+  text-align:right}
+.evrow .m .pass{color:var(--ink3);opacity:.8;margin-left:6px}
+.evrow .sha{font-family:var(--mono);font-size:10.5px;color:var(--ink3);
+  text-decoration:none;border-bottom:1px dotted var(--rule);margin-left:6px;
+  opacity:0;transition:opacity .12s}
+.evrow:hover .sha{opacity:1}
+.evrow .sha:hover{color:var(--ink);border-bottom-color:var(--ink3)}
+@media(max-width:700px){.evrow{grid-template-columns:64px 8px 1fr}
+  .evrow .m{grid-column:3;text-align:left;margin-top:2px}}
+.why{font-size:13px;color:var(--ink2);border-top:1px dashed var(--rule);padding-top:7px;margin-top:8px}
+.why b{color:var(--ink);font-weight:600}
+
+/* ---- caveat ---- */
+.caveat{background:var(--rule2);border:1px solid var(--rule);border-left:3px solid var(--warn);
+  padding:15px 18px;font-size:13.5px;color:var(--ink2);max-width:78ch}
+.caveat b{color:var(--ink)}
+.caveat ul{margin:8px 0 0;padding-left:18px} .caveat li{margin:4px 0}
+
+footer{margin-top:64px;padding-top:20px;border-top:1px solid var(--rule);
+  font-family:var(--mono);font-size:11.5px;color:var(--ink3);display:flex;
+  justify-content:space-between;gap:16px;flex-wrap:wrap}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+@media(max-width:820px){.grid2{grid-template-columns:1fr}
+  .bar{grid-template-columns:112px 1fr 78px}.bar .lbl{font-size:11px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Build provenance · <span id="daterange"></span></div>
+  <h1>Who wrote <em>duktape-c3</em>?</h1>
+  <p class="dek">A JavaScript engine in C3, built almost entirely by language models across three
+  agent harnesses. Using commit trailers and the harnesses' own session stores, this reconstructs
+  which model wrote which code, how much of it survived, and where a human changed course.</p>
+</header>
+
+<div class="stats" id="stats"></div>
+<p class="lede" style="margin-top:14px">Commit counts throughout are <b>source-only</b>: a commit
+counts when it changed engine, CLI, or script code. <span id="docsx"></span> documentation-only
+commits are excluded so markdown churn doesn't flatter anyone.</p>
+
+<section>
+  <div class="shead"><h2>Share of the surviving codebase</h2>
+    <span class="note" id="survnote"></span></div>
+  <p class="lede">Measured with <span class="mono">git blame</span> on HEAD, so this is code that is
+  <em>still there</em>, not everything ever authored. About half of all authored lines were later
+  rewritten.</p>
+  <div class="card"><div class="bars" id="sharebars"></div></div>
+</section>
+
+<section>
+  <div class="shead"><h2>Written vs. surviving</h2>
+    <span class="note">survival = surviving ÷ written</span></div>
+  <p class="lede">The gap between what a model wrote and what remains. Survival tracks
+  <em>recency</em> more than quality. Late work hasn't been rewritten yet, so read this column
+  against the median-date column rather than as a leaderboard.</p>
+  <div class="ctrl">
+    <button id="sortW" aria-pressed="true">sort by written</button>
+    <button id="sortS" aria-pressed="false">sort by surviving</button>
+    <button id="sortR" aria-pressed="false">sort by survival rate</button>
+  </div>
+  <div class="tw"><table id="mtable"><thead><tr>
+    <th>model</th><th>src commits</th><th>written</th><th>surviving</th>
+    <th>survival</th><th>% of code</th><th>out tokens</th><th>tok/line</th><th>messages</th><th>median</th>
+  </tr></thead><tbody></tbody></table></div>
+</section>
+
+<section>
+  <div class="shead"><h2>How the work shifted</h2>
+    <span class="note">each month scaled to its own total</span></div>
+  <p class="lede">One bar across the whole project. Each month takes an equal share of the width
+  and is split by its own composition, so segments are proportional within their month rather than
+  against the full run. Crush carried the bring-up, OpenCode took a stretch in mid-June, and
+  Claude Code ran July.</p>
+  <div class="card">
+    <h3 style="font-size:13px;margin-bottom:10px" class="mono">BY HARNESS</h3>
+    <div class="stack" id="hbar"></div>
+    <div class="plabels" id="hlab"></div>
+    <div class="legend" id="hleg"></div>
+  </div>
+  <div class="card" style="margin-top:22px">
+    <h3 style="font-size:13px;margin-bottom:10px" class="mono">BY WORK TYPE</h3>
+    <div class="stack" id="cbar"></div>
+    <div class="plabels" id="clab"></div>
+    <div class="legend" id="cleg"></div>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><h2>Cumulative source commits</h2>
+    <span class="note">hover for a day · top 8 models</span></div>
+  <div class="card"><div class="chart" id="tlwrap">
+    <svg id="tl" viewBox="0 0 1000 340" preserveAspectRatio="none" role="img"
+      aria-label="Cumulative source commits per model over time"></svg>
+    <div class="tip" id="tltip"></div>
+  </div><div class="legend" id="tllegend"></div></div>
+</section>
+
+<section>
+  <div class="shead"><h2>Cumulative source lines</h2>
+    <span class="note">source lines written, top 8 models</span></div>
+  <p class="lede">The same axis as above, measured in code rather than commits. This counts lines
+  added, not net of deletions: a model that rewrites a file in place would otherwise score zero
+  for work it clearly did. Bands stack in vendor groups, and only the eight largest contributors
+  are drawn, so the top edge is most of the work rather than all of it. How much of this code is
+  still in the tree is a separate question, answered in the table above.</p>
+  <div class="card"><div class="chart" id="ltwrap">
+    <svg id="ltsvg" viewBox="0 0 1000 340" preserveAspectRatio="none" role="img"
+      aria-label="Cumulative net source lines per model over time"></svg>
+    <div class="tip" id="lttip"></div>
+  </div><div class="legend" id="ltlegend"></div></div>
+</section>
+
+<section>
+  <div class="shead"><h2>Effort, including work that never shipped</h2>
+    <span class="note" id="nocommitnote"></span></div>
+  <p class="lede">Session activity straight from the harness stores, independent of commits. This is
+  the only view that sees models which ran and produced nothing. The commit and blame views are
+  structurally blind to those. The timeline groups models into vendor families so the bands stay
+  readable. Pi is a harness rather than a model and kept no session store, so it does not appear
+  here.</p>
+  <div class="ctrl">
+    <button id="effT" aria-pressed="true">table</button>
+    <button id="effC" aria-pressed="false">timeline</button>
+  </div>
+  <div class="card" id="effTableView"><div class="bars" id="effbars"></div></div>
+  <div class="card" id="effChartView" hidden>
+    <div class="chartrow">
+      <div class="vlegend" id="acleg"></div>
+      <div class="chart" id="acwrap" style="flex:1;min-width:0">
+        <svg id="acsvg" viewBox="0 0 1000 320" preserveAspectRatio="none" role="img"
+          aria-label="Assistant messages per week by model family"></svg>
+        <div class="tip" id="actip"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><h2>Tokens produced</h2>
+    <span class="note" id="toknote"></span></div>
+  <p class="lede">Output tokens are what each model actually generated. All three harnesses record
+  them the same way, which makes this the fair cross-harness comparable.
+  <span id="cachenote"></span></p>
+  <div class="caveat" style="margin:0 0 20px" id="spendnote"></div>
+  <div class="card"><div class="bars" id="tokbars"></div></div>
+
+  <div class="grid2" style="margin-top:22px">
+    <div class="card">
+      <h3 style="font-size:13px;margin-bottom:6px" class="mono">OUTPUT TOKENS PER LINE WRITTEN</h3>
+      <p style="font-size:12.5px;color:var(--ink3);margin:0 0 14px">Lower means less generated text per
+      line of code that landed. Reads as verbosity and rework, not quality.</p>
+      <div class="bars" id="effbars2"></div>
+    </div>
+    <div class="card">
+      <h3 style="font-size:13px;margin-bottom:6px" class="mono">INFERENCE COST</h3>
+      <p style="font-size:12.5px;color:var(--ink3);margin:0 0 14px">What the tokens would bill at each
+      provider's published rates. This measures compute consumed, not money spent. Where a harness
+      metered its own usage that number is used; otherwise the rate card is applied.</p>
+      <div class="bars" id="costbars"></div>
+    </div>
+  </div>
+</section>
+
+<section id="loopsec">
+  <div class="shead"><h2>The project ran itself, in a loop</h2>
+    <span class="note" id="loopnote"></span></div>
+  <p class="lede">A large share of the work was not directed task by task. Instead the same
+  self-directing prompt was re-sent over and over, letting the agent pick its own next job from a
+  spec file, do it, test it, and commit. This is the shape of the project's throughput, and it
+  explains why the loop-heavy harnesses show so many messages per commit.</p>
+  <div class="card">
+    <blockquote class="loopq mono" id="loopquote"></blockquote>
+    <div class="loopstats" id="loopstats"></div>
+  </div>
+  <div class="card" style="margin-top:22px">
+    <h3 style="font-size:13px;margin-bottom:6px" class="mono">WHO RAN THE LOOPS</h3>
+    <p style="font-size:12.5px;color:var(--ink3);margin:0 0 14px">Share of each family's source
+    commits that landed within two hours of a loop tick in the same harness. A rough attribution:
+    it counts commits that plausibly came out of a tick, not ones provably caused by it.</p>
+    <div class="bars" id="loopbars"></div>
+  </div>
+
+  <div class="card" style="margin-top:22px">
+    <h3 style="font-size:13px;margin-bottom:10px" class="mono">LOOP TICKS PER WEEK</h3>
+    <div class="chart" id="lpwrap">
+      <svg id="lpsvg" viewBox="0 0 1000 150" preserveAspectRatio="none" role="img"
+        aria-label="Autonomous loop ticks per week"></svg>
+    </div>
+  </div>
+</section>
+
+<section id="bugsec">
+  <div class="shead"><h2>Critical bugs found after a quiet stretch</h2>
+    <span class="note" id="bugnote"></span></div>
+  <p class="lede">Bugs that had been quietly wrong for a while before anyone noticed. Colour marks
+  severity; hover a line for the detail and the fix commit. The percentage is the test262 pass rate
+  at that point, and where the skip count was recorded, the rate over the whole suite as well.
+  <span id="bugdrop"></span> of the mined candidates were discarded for describing something the
+  commit does not actually say.</p>
+  <div class="evlist" id="bugs"></div>
+</section>
+
+<section id="decsec">
+  <div class="shead"><h2>Where the human changed course</h2>
+    <span class="note" id="decnote"></span></div>
+  <p class="lede">The moments a human stepped in and changed direction. Hover a line to see what
+  was actually typed at the time.</p>
+  <div class="evlist" id="decs"></div>
+</section>
+
+<section>
+  <div class="shead"><h2>How much of this is actually known</h2></div>
+  <div class="caveat" id="caveat"></div>
+</section>
+
+<footer>
+  <span>Generated from git + Crush, OpenCode and Claude Code session stores.</span>
+  <span id="genstamp"></span>
+</footer>
+</div>
+
+<script id="payload" type="application/json">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById('payload').textContent);
+const C = ['--c1','--c2','--c3','--c4','--c5','--c6','--c7','--c8'].map(v=>`var(${v})`);
+const fmt = n => n==null?'—':n.toLocaleString('en-US');
+const pct = n => n==null?'—':(n*100).toFixed(0)+'%';
+const el = (t,c,h)=>{const e=document.createElement(t);if(c)e.className=c;if(h!=null)e.innerHTML=h;return e};
+
+/* colour is assigned to the ENTITY once, by rank in the codebase, and never
+   recomputed when a view is filtered or re-sorted. */
+const TOP = D.models.filter(m=>m.model!=='unattributed').slice(0,8).map(m=>m.model);
+const COLOR = {}; TOP.forEach((m,i)=>COLOR[m]=C[i]);
+const colorOf = m => COLOR[m] || 'var(--ink3)';
+
+const M = D.meta;
+document.getElementById('daterange').textContent = M.first_commit+' → '+M.last_commit;
+document.getElementById('docsx').textContent = fmt(M.commits_docs_only);
+document.getElementById('genstamp').textContent = M.commits_head+' commits · '+M.files+' source files';
+document.getElementById('survnote').textContent = fmt(M.lines_surviving)+' lines across '+M.files+' files';
+document.getElementById('nocommitnote').textContent = M.models_no_commits+' models never landed a commit';
+
+/* ---------- stat strip ---------- */
+[['Models','' +M.models,'that landed code'],
+ ['Source commits',fmt(M.commits_source),'docs excluded'],
+ ['Lines surviving',fmt(M.lines_surviving),'of '+fmt(M.lines_written)+' written'],
+ ['Survival',pct(M.survival),'half was rewritten'],
+ ['Sessions',fmt(M.sessions),fmt(M.messages)+' messages'],
+ ['Output tokens',(M.tokens_out/1e6).toFixed(1)+'M','generated by models'],
+ ['Inference cost','$'+fmt(Math.round(M.cost_best)),'at list rates'],
+ ['Actually paid','$'+fmt(M.cost_actual),M.cost_multiple+'x cheaper']
+].forEach(([k,v,s])=>{
+  const d=el('div','stat'); d.append(el('div','k',k),el('div','v num',v),el('div','s',s));
+  document.getElementById('stats').append(d);
+});
+
+/* ---------- share bars ---------- */
+const share = D.models.filter(m=>m.lines_surviving>0).slice(0,14);
+const smax = share[0].lines_surviving;
+share.forEach(m=>{
+  const r=el('div','bar');
+  r.append(el('div','lbl',m.model));
+  const t=el('div','track'); const f=el('div','fill');
+  f.style.width=(100*m.lines_surviving/smax)+'%'; f.style.background=colorOf(m.model);
+  t.append(f); r.append(t);
+  r.append(el('div','val','<b>'+m.pct_codebase+'%</b> <span class="muted">'+fmt(m.lines_surviving)+'</span>'));
+  document.getElementById('sharebars').append(r);
+});
+
+/* ---------- table ---------- */
+const tb=document.querySelector('#mtable tbody');
+function drawTable(rows){
+  tb.innerHTML='';
+  rows.forEach(m=>{
+    const tr=el('tr');
+    tr.innerHTML =
+      `<td><span class="dot" style="background:${colorOf(m.model)}"></span>${m.model}</td>`+
+      `<td>${fmt(m.commits_source)}</td><td>${fmt(m.lines_written)}</td>`+
+      `<td>${fmt(m.lines_surviving)}</td><td>${m.survival==null?'—':pct(m.survival)}</td>`+
+      `<td>${m.pct_codebase}%</td>`+
+      `<td>${m.tokens_out?(m.tokens_out/1e6).toFixed(2)+'M':'—'}</td>`+
+      `<td>${m.tok_per_written?Math.round(m.tok_per_written):'—'}</td>`+
+      `<td>${fmt(m.messages)}</td>`+
+      `<td class="muted">${(m.first||'').slice(5)} to ${(m.last||'').slice(5)}</td>`;
+    tb.append(tr);
+  });
+}
+const withCommits = D.models.filter(m=>m.commits_source>0||m.lines_surviving>0);
+drawTable([...withCommits].sort((a,b)=>b.lines_written-a.lines_written));
+const btns={sortW:(a,b)=>b.lines_written-a.lines_written,
+            sortS:(a,b)=>b.lines_surviving-a.lines_surviving,
+            sortR:(a,b)=>(b.survival||0)-(a.survival||0)};
+Object.keys(btns).forEach(id=>{
+  document.getElementById(id).onclick=()=>{
+    Object.keys(btns).forEach(x=>document.getElementById(x).setAttribute('aria-pressed',x===id));
+    drawTable([...withCommits].sort(btns[id]));
+  };
+});
+
+/* ---------- composition bar ---------- */
+/* The original monthly stack, glued into one continuous bar: every period is a
+   width-proportional slice of the same row, each slice split into its full
+   composition. Same segments as before, no month break. */
+const HC={'shelley':'var(--c5)','crush':'var(--c2)','opencode':'var(--c3)',
+          'pi':'var(--c7)','claude-code':'var(--c1)'};
+const CC={bugfix:'var(--c8)',feature:'var(--c1)',test:'var(--c3)',refactor:'var(--c7)',
+          perf:'var(--c4)',docs:'var(--ink3)',build:'var(--c5)',chore:'var(--c6)'};
+
+function compositionBar(barId, legId, byPeriod, colors, order){
+  const bar=document.getElementById(barId), leg=document.getElementById(legId);
+  const periods=Object.keys(byPeriod).sort();
+  const keys=order.filter(k=>periods.some(p=>(byPeriod[p]||{})[k]));
+  bar.innerHTML=''; leg.innerHTML='';
+  // Each period occupies an EQUAL share of the bar and is subdivided by its own
+  // composition, so a segment's height reads against its month rather than
+  // against the whole run. This is what the separate monthly bars did; sizing
+  // periods by volume instead would let July's 884 commits crush May's 140.
+  periods.forEach((p,pi)=>{
+    const row=byPeriod[p]||{};
+    // sum only the series being rendered, so shares are of what's shown
+    const tot=keys.reduce((a,k)=>a+(row[k]||0),0);
+    if(!tot) return;
+    const cell=el('div','period');
+    cell.style.flex='1 1 0%';
+    if(pi) cell.style.marginLeft='10px';   // visible break between periods
+    keys.map(k=>[k,row[k]||0]).filter(e=>e[1]).sort((a,b)=>b[1]-a[1])
+      .forEach(([k,v])=>{
+        const d=el('div');
+        d.style.flex=`${v} 0 0%`;
+        d.style.minWidth='4px';
+        d.style.background=colors[k]||'var(--ink3)';
+        d.title=`${p} ${k}: ${v} (${Math.round(100*v/tot)}% of that month)`;
+        cell.append(d);
+      });
+    bar.append(cell);
+  });
+  order.filter(k=>keys.includes(k)).forEach(k=>
+    leg.append(el('span',null,`<i class="sw" style="background:${colors[k]}"></i>${k}`)));
+}
+
+compositionBar('hbar','hleg',D.harness_month,HC,
+  ['shelley','crush','opencode','pi','claude-code']);
+compositionBar('cbar','cleg',D.category_month,CC,
+  ['feature','bugfix','test','refactor','perf','build','docs']);
+['hlab','clab'].forEach(id=>{
+  const host=document.getElementById(id);
+  Object.keys(D.category_month).sort().forEach(m=>{
+    const tot=Object.values(D.category_month[m]).reduce((a,b)=>a+b,0);
+    host.append(el('div',null,
+      new Date(m+'-01T00:00:00Z').toLocaleDateString('en-US',{month:'long',timeZone:'UTC'})+
+      ` <span class="muted">${tot}</span>`));
+  });
+});
+
+/* ---------- cumulative timeline ---------- */
+(function(){
+  const svg=document.getElementById('tl'), W=1000,H=340,P={t:14,r:64,b:26,l:44};
+  const pts=D.timeline, series=TOP.slice(0,8);
+  const maxY=Math.max(...pts.map(p=>Math.max(...series.map(s=>p.totals[s]||0))));
+  const x=i=>P.l+(W-P.l-P.r)*i/(pts.length-1);
+  const y=v=>H-P.b-(H-P.t-P.b)*v/maxY;
+  const NS='http://www.w3.org/2000/svg';
+  const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e};
+
+  for(let g=0;g<=4;g++){
+    const v=maxY*g/4;
+    svg.append(mk('line',{x1:P.l,x2:W-P.r,y1:y(v),y2:y(v),class:'gl'}));
+    const t=mk('text',{x:P.l-8,y:y(v)+3.5,class:'ax','text-anchor':'end'});
+    t.textContent=Math.round(v); svg.append(t);
+  }
+  let lastM='';
+  pts.forEach((p,i)=>{
+    const m=p.date.slice(0,7);
+    if(m!==lastM){lastM=m;
+      const t=mk('text',{x:x(i),y:H-6,class:'ax','text-anchor':'middle'});
+      t.textContent=m.slice(5)+'/'+m.slice(2,4); svg.append(t);}
+  });
+  series.forEach(s=>{
+    const d=pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(p.totals[s]||0).toFixed(1)}`).join('');
+    svg.append(mk('path',{d,fill:'none',stroke:colorOf(s),'stroke-width':2,
+      'stroke-linejoin':'round','stroke-linecap':'round'}));
+    const fin=pts[pts.length-1].totals[s]||0;
+    const t=mk('text',{x:W-P.r+7,y:y(fin)+3.5,class:'ax'});
+    t.textContent=s.replace('claude-','c-').slice(0,13);
+    t.setAttribute('fill',colorOf(s)); svg.append(t);
+  });
+  const ch=mk('line',{y1:P.t,y2:H-P.b,class:'crosshair'}); svg.append(ch);
+  const tip=document.getElementById('tltip'), wrap=document.getElementById('tlwrap');
+  svg.addEventListener('pointermove',e=>{
+    const r=svg.getBoundingClientRect();
+    const i=Math.max(0,Math.min(pts.length-1,
+      Math.round((( (e.clientX-r.left)/r.width*W )-P.l)/((W-P.l-P.r)/(pts.length-1)))));
+    const p=pts[i];
+    ch.setAttribute('x1',x(i));ch.setAttribute('x2',x(i));ch.style.opacity=1;
+    tip.innerHTML='<div class="th">'+p.date+'</div>'+series
+      .map(s=>[s,p.totals[s]||0]).filter(r2=>r2[1]).sort((a,b)=>b[1]-a[1]).slice(0,6)
+      .map(([s,v])=>`<div class="tr"><span><i class="sw" style="display:inline-block;background:${colorOf(s)}"></i> ${s}</span><b>${v}</b></div>`).join('');
+    tip.style.opacity=1;
+    const px=x(i)/W*r.width;
+    tip.style.left=Math.min(r.width-176,Math.max(0,px+12))+'px'; tip.style.top='10px';
+  });
+  svg.addEventListener('pointerleave',()=>{tip.style.opacity=0;ch.style.opacity=0});
+  const lg=document.getElementById('tllegend');
+  series.forEach(s=>lg.append(el('span',null,`<i class="sw" style="background:${colorOf(s)}"></i>${s}`)));
+})();
+
+/* ---------- cumulative lines (stacked area) ---------- */
+(function(){
+  const svg=document.getElementById('ltsvg'), W=1000,H=340,P={t:14,r:74,b:26,l:56};
+  const pts=D.line_timeline||[]; if(!pts.length) return;
+  // Rank by lines written, then group vendor families so related models sit as
+  // one block in the stack (both mimo variants together, the claudes together).
+  const fin=pts[pts.length-1].totals;
+  const ranked=Object.keys(fin).filter(k=>fin[k]>0)
+    .sort((a,b)=>fin[b]-fin[a]).slice(0,8);
+  const fam=m=>m.startsWith('mimo')?'mimo':m.startsWith('claude')?'claude':
+               m.startsWith('deepseek')?'deepseek':m;
+  const seen=[], series=[];
+  ranked.forEach(m=>{const f=fam(m);
+    if(!seen.includes(f)) seen.push(f);});
+  seen.forEach(f=>ranked.filter(m=>fam(m)===f).forEach(m=>series.push(m)));
+  const NS='http://www.w3.org/2000/svg';
+  const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e};
+  // A model can go net-negative mid-run (a big refactor deleting more than it
+  // adds). Stacked bands cannot render below zero, so each series is floored at
+  // 0 for the geometry; the tooltip still reports the true signed value.
+  const val=(p,s)=>Math.max(0,p.totals[s]||0);
+  const stackTop=pts.map(p=>series.reduce((a,s)=>a+val(p,s),0));
+  const maxY=Math.max(...stackTop,1);
+  const x=i=>P.l+(W-P.l-P.r)*i/(pts.length-1);
+  const y=v=>H-P.b-(H-P.t-P.b)*v/maxY;
+
+  for(let g=0;g<=4;g++){
+    const v=maxY*g/4;
+    svg.append(mk('line',{x1:P.l,x2:W-P.r,y1:y(v),y2:y(v),class:'gl'}));
+    const t=mk('text',{x:P.l-8,y:y(v)+3.5,class:'ax','text-anchor':'end'});
+    t.textContent=v>=1000?Math.round(v/1000)+'k':Math.round(v);
+    svg.append(t);
+  }
+  let lastM='';
+  pts.forEach((p,i)=>{
+    const m=p.date.slice(0,7);
+    if(m!==lastM){lastM=m;
+      const t=mk('text',{x:x(i),y:H-6,class:'ax','text-anchor':'middle'});
+      t.textContent=m.slice(5)+'/'+m.slice(2,4); svg.append(t);}
+  });
+
+  const base=pts.map(()=>0);
+  series.forEach(sName=>{
+    const top=pts.map((p,i)=>base[i]+val(p,sName));
+    const d=[...pts.map((p,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(top[i]).toFixed(1)}`),
+             ...pts.map((p,i)=>{const j=pts.length-1-i;return `L${x(j).toFixed(1)},${y(base[j]).toFixed(1)}`}),
+             'Z'].join('');
+    svg.append(mk('path',{d,fill:colorOf(sName),'fill-opacity':.9,
+      stroke:'var(--s1)','stroke-width':1}));
+    pts.forEach((p,i)=>base[i]=top[i]);
+    const fin=base[pts.length-1];
+    if(fin/maxY>0.03){
+      const t=mk('text',{x:W-P.r+7,y:y(fin-val(pts[pts.length-1],sName)/2)+3.5,class:'ax'});
+      t.textContent=sName.replace('claude-','c-').slice(0,13);
+      t.setAttribute('fill',colorOf(sName)); svg.append(t);
+    }
+  });
+
+  const ch=mk('line',{y1:P.t,y2:H-P.b,class:'crosshair'}); svg.append(ch);
+  const tip=document.getElementById('lttip');
+  svg.addEventListener('pointermove',e=>{
+    const r=svg.getBoundingClientRect();
+    const i=Math.max(0,Math.min(pts.length-1,
+      Math.round((((e.clientX-r.left)/r.width*W)-P.l)/((W-P.l-P.r)/(pts.length-1)))));
+    const p=pts[i];
+    ch.setAttribute('x1',x(i));ch.setAttribute('x2',x(i));ch.style.opacity=1;
+    tip.innerHTML='<div class="th">'+p.date+'</div>'+series
+      .map(s=>[s,p.totals[s]||0]).filter(r2=>r2[1]).sort((a,b)=>b[1]-a[1])
+      .map(([s,v])=>`<div class="tr"><span><i class="sw" style="display:inline-block;background:${colorOf(s)}"></i> ${s}</span><b>${fmt(v)}</b></div>`).join('')+
+      `<div class="tr" style="margin-top:4px;border-top:1px solid var(--rule);padding-top:4px"><span>total</span><b>${fmt(stackTop[i])}</b></div>`;
+    tip.style.opacity=1;
+    const px=x(i)/W*r.width;
+    tip.style.left=Math.min(r.width-186,Math.max(0,px+12))+'px'; tip.style.top='10px';
+  });
+  svg.addEventListener('pointerleave',()=>{tip.style.opacity=0;ch.style.opacity=0});
+  const lg=document.getElementById('ltlegend');
+  series.forEach(s=>lg.append(el('span',null,`<i class="sw" style="background:${colorOf(s)}"></i>${s}`)));
+})();
+
+/* ---------- effort ---------- */
+const eff=[...D.sessions_all].sort((a,b)=>b.assistant_messages-a.assistant_messages).slice(0,16);
+const emax=eff[0].assistant_messages;
+eff.forEach(m=>{
+  const r=el('div','bar');
+  r.append(el('div','lbl',m.model));
+  const t=el('div','track'), f=el('div','fill');
+  f.style.width=(100*m.assistant_messages/emax)+'%';
+  f.style.background=m.committed?colorOf(m.model):'var(--rule)';
+  if(!m.committed){f.style.border='1px dashed var(--ink3)';f.style.borderLeft='none'}
+  t.append(f); r.append(t);
+  r.append(el('div','val','<b>'+fmt(m.assistant_messages)+'</b> <span class="muted">'+
+    (m.committed?fmt(m.commits)+'c':'0c')+'</span>'));
+  document.getElementById('effbars').append(r);
+});
+document.getElementById('effbars').after((()=>{
+  const l=el('div','legend');
+  l.innerHTML='<span><i class="sw" style="background:var(--c1)"></i>landed commits</span>'+
+    '<span><i class="sw" style="background:var(--rule);border:1px dashed var(--ink3)"></i>never committed</span>';
+  return l;})());
+
+/* ---------- tokens ---------- */
+(function(){
+  const rows=(D.tokens&&D.tokens.by_model||[]).filter(r=>r.tokens_out>0);
+  const T=D.tokens&&D.tokens.totals||{};
+  document.getElementById('toknote').textContent=
+    (T.tokens_out/1e6).toFixed(1)+'M output across '+rows.length+' models';
+  document.getElementById('cachenote').innerHTML=
+    'Input is split into <b>'+(T.tokens_fresh_in/1e6).toFixed(0)+'M</b> freshly processed vs <b>'+
+    (T.tokens_cache_in/1e9).toFixed(1)+'B</b> re-read from cache. Counting cache reads as input '+
+    'would overstate the work by about '+Math.round(T.tokens_cache_in/T.tokens_fresh_in)+'×.';
+
+  const top=rows.slice(0,14), mx=top[0].tokens_out;
+  const host=document.getElementById('tokbars');
+  top.forEach(r=>{
+    const row=el('div','bar');
+    row.append(el('div','lbl',r.model));
+    const t=el('div','track'), f=el('div','fill');
+    f.style.width=(100*r.tokens_out/mx)+'%'; f.style.background=colorOf(r.model);
+    t.append(f); row.append(t);
+    row.append(el('div','val','<b>'+(r.tokens_out/1e6).toFixed(2)+'M</b> '+
+      '<span class="muted">'+fmt(r.out_per_msg)+'/msg</span>'));
+    host.append(row);
+  });
+
+  // efficiency: output tokens per line of code written
+  const eff=rows.filter(r=>r.tokens_per_written_line).sort((a,b)=>a.tokens_per_written_line-b.tokens_per_written_line).slice(0,10);
+  const emx=Math.max(...eff.map(r=>r.tokens_per_written_line));
+  const h2=document.getElementById('effbars2');
+  eff.forEach(r=>{
+    const row=el('div','bar'); row.style.gridTemplateColumns='128px 1fr 62px';
+    row.append(el('div','lbl',r.model));
+    const t=el('div','track'), f=el('div','fill');
+    f.style.width=(100*r.tokens_per_written_line/emx)+'%'; f.style.background=colorOf(r.model);
+    t.append(f); row.append(t);
+    row.append(el('div','val','<b>'+Math.round(r.tokens_per_written_line)+'</b>'));
+    h2.append(row);
+  });
+
+  // cost
+  const CB={};(D.models||[]).forEach(m=>{CB[m.model]={v:m.cost_usd,rec:m.cost_recorded}});
+  const cost=Object.entries(CB).filter(([,c])=>c.v).map(([model,c])=>({model,cost_usd:c.v,rec:c.rec}))
+    .sort((a,b)=>b.cost_usd-a.cost_usd).slice(0,12);
+  const cmx=cost.length?cost[0].cost_usd:1;
+  const h3=document.getElementById('costbars');
+  cost.forEach(r=>{
+    const row=el('div','bar'); row.style.gridTemplateColumns='128px 1fr 62px';
+    row.append(el('div','lbl',r.model));
+    const t=el('div','track'), f=el('div','fill');
+    f.style.width=(100*r.cost_usd/cmx)+'%'; f.style.background=colorOf(r.model);
+    t.append(f); row.append(t);
+    row.append(el('div','val','<b>$'+Math.round(r.cost_usd)+'</b>'+
+      (r.rec?'':' <span class="muted" title="estimated from published rates">e</span>')));
+    h3.append(row);
+  });
+  if(!cost.length) h3.innerHTML='<p class="muted">No cost recorded.</p>';
+})();
+
+/* ---------- actual spend vs inference cost ---------- */
+(function(){
+  const c=D.costs&&D.costs.actual_spend; if(!c) return;
+  const M=D.meta;
+  document.getElementById('spendnote').innerHTML=
+   `<b>Inference cost is not the bill.</b> Priced at list rates the tokens come to
+    <b>$${fmt(Math.round(M.cost_best))}</b>, but the work ran on prepaid credits and flat-rate
+    plans: $${c.credits_total_usd} in provider credits, plus Claude at $20/month for the first
+    two months and $90 for July, when most of the Claude work happened. That is
+    <b>$${c.total_usd}</b> out of pocket, about <b>${M.cost_multiple}x</b> less than the metered
+    value of the compute. Read the per-model figures below as how much inference each model
+    consumed, not as what it charged.`;
+})();
+
+/* ---------- effort timeline (stacked area) ---------- */
+(function(){
+  const A=D.activity_weekly; if(!A||!A.weeks) return;
+  const svg=document.getElementById('acsvg'), W=1000,H=320,P={t:14,r:16,b:26,l:52};
+  const weeks=A.weeks, NS='http://www.w3.org/2000/svg';
+  const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e};
+  const est=A.estimated||{};
+
+  // Merge variants into vendor families: 43 models is unreadable as bands, and
+  // mimo-v2.5 vs mimo-v2.5-pro is not the distinction this chart is answering.
+  const fam=m=>m.startsWith('mimo')?'mimo':m.startsWith('claude')?'claude':
+    m.startsWith('deepseek')?'deepseek':m.startsWith('minimax')?'minimax':
+    (m.startsWith('kimi')||m.startsWith('k3'))?'kimi':
+    (m.startsWith('qwen')||m.startsWith('qwopus'))?'qwen':'other';
+  const FC={claude:'var(--c1)',mimo:'var(--c2)',minimax:'var(--c3)',
+            deepseek:'var(--c4)',kimi:'var(--c5)',qwen:'var(--c6)',
+            other:'var(--ink3)'};
+
+  const byFam={}, estFam=new Set();
+  weeks.forEach(w=>{
+    byFam[w]={};
+    Object.entries(A.by_week[w]||{}).forEach(([m,v])=>{
+      const f=fam(m); byFam[w][f]=(byFam[w][f]||0)+v;
+      if(est[m]) estFam.add(f);
+    });
+  });
+  const totals={};
+  weeks.forEach(w=>Object.entries(byFam[w]).forEach(([f,v])=>totals[f]=(totals[f]||0)+v));
+  // largest first so the thickest band sits at the bottom of the stack
+  const series=Object.keys(totals).sort((a,b)=>totals[b]-totals[a]);
+
+  const val=(w,f)=>(byFam[w]||{})[f]||0;
+  const stackTop=weeks.map(w=>series.reduce((a,f)=>a+val(w,f),0));
+  const maxY=Math.max(...stackTop,1);
+  const x=i=>P.l+(W-P.l-P.r)*i/(weeks.length-1);
+  const y=v=>H-P.b-(H-P.t-P.b)*v/maxY;
+
+  const defs=mk('defs',{});
+  const pat=mk('pattern',{id:'estHatch',width:6,height:6,patternUnits:'userSpaceOnUse',
+    patternTransform:'rotate(45)'});
+  pat.append(mk('rect',{width:6,height:6,fill:'var(--c7)','fill-opacity':.28}));
+  pat.append(mk('line',{x1:0,y1:0,x2:0,y2:6,stroke:'var(--c7)','stroke-width':3}));
+  defs.append(pat); svg.append(defs);
+
+  for(let g=0;g<=4;g++){
+    const v=maxY*g/4;
+    svg.append(mk('line',{x1:P.l,x2:W-P.r,y1:y(v),y2:y(v),class:'gl'}));
+    const t=mk('text',{x:P.l-8,y:y(v)+3.5,class:'ax','text-anchor':'end'});
+    t.textContent=v>=1000?Math.round(v/1000)+'k':Math.round(v);
+    svg.append(t);
+  }
+  let lastM='';
+  weeks.forEach((w,i)=>{
+    const m=w.slice(0,7);
+    if(m!==lastM){lastM=m;
+      const t=mk('text',{x:x(i),y:H-6,class:'ax','text-anchor':'middle'});
+      t.textContent=new Date(w+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',timeZone:'UTC'});
+      svg.append(t);}
+  });
+
+  const base=weeks.map(()=>0);
+  series.forEach(f=>{
+    const top=weeks.map((w,i)=>base[i]+val(w,f));
+    const d=[...weeks.map((w,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(top[i]).toFixed(1)}`),
+             ...weeks.map((w,i)=>{const j=weeks.length-1-i;return `L${x(j).toFixed(1)},${y(base[j]).toFixed(1)}`}),
+             'Z'].join('');
+    const isEst=estFam.has(f);
+    svg.append(mk('path',{d,
+      fill:isEst?'url(#estHatch)':FC[f],
+      'fill-opacity':isEst?1:.9,
+      stroke:isEst?FC[f]:'var(--s1)',
+      'stroke-width':isEst?1.5:1,
+      'stroke-dasharray':isEst?'4 3':'none'}));
+    weeks.forEach((w,i)=>base[i]=top[i]);
+  });
+
+  const ch=mk('line',{y1:P.t,y2:H-P.b,class:'crosshair'}); svg.append(ch);
+  const tip=document.getElementById('actip');
+  svg.addEventListener('pointermove',e=>{
+    const r=svg.getBoundingClientRect();
+    const i=Math.max(0,Math.min(weeks.length-1,
+      Math.round((((e.clientX-r.left)/r.width*W)-P.l)/((W-P.l-P.r)/(weeks.length-1)))));
+    const w=weeks[i];
+    ch.setAttribute('x1',x(i));ch.setAttribute('x2',x(i));ch.style.opacity=1;
+    tip.innerHTML='<div class="th">week of '+w+'</div>'+series
+      .map(f=>[f,val(w,f)]).filter(r2=>r2[1]).sort((a,b)=>b[1]-a[1])
+      .map(([f,v])=>`<div class="tr"><span><i class="sw" style="display:inline-block;background:${FC[f]}"></i> ${f}${estFam.has(f)?' <span class="muted">est</span>':''}</span><b>${fmt(v)}</b></div>`).join('')+
+      `<div class="tr" style="margin-top:4px;border-top:1px solid var(--rule);padding-top:4px"><span>messages</span><b>${fmt(stackTop[i])}</b></div>`;
+    tip.style.opacity=1;
+    const px=x(i)/W*r.width;
+    tip.style.left=Math.min(r.width-190,Math.max(0,px+12))+'px'; tip.style.top='10px';
+  });
+  svg.addEventListener('pointerleave',()=>{tip.style.opacity=0;ch.style.opacity=0});
+
+  const lg=document.getElementById('acleg');
+  series.forEach(f=>{
+    const sw=estFam.has(f)
+      ? `<i class="sw" style="background:transparent;border:1.5px dashed ${FC[f]}"></i>`
+      : `<i class="sw" style="background:${FC[f]}"></i>`;
+    lg.append(el('span',null,
+      `${sw}${f}${estFam.has(f)?' <span class="muted">est</span>':''}`+
+      `<span class="n">${(totals[f]/1000).toFixed(1)}k</span>`));
+  });
+})();
+
+// table <-> timeline toggle for the effort section
+(function(){
+  const tb=document.getElementById('effT'), ch=document.getElementById('effC');
+  const tv=document.getElementById('effTableView'), cv=document.getElementById('effChartView');
+  if(!tb) return;
+  const show=chart=>{
+    tv.hidden=chart; cv.hidden=!chart;
+    tb.setAttribute('aria-pressed',String(!chart));
+    ch.setAttribute('aria-pressed',String(chart));
+  };
+  tb.onclick=()=>show(false); ch.onclick=()=>show(true);
+})();
+
+/* ---------- autonomous loops ---------- */
+(function(){
+  const L=D.loops; if(!L) return;
+  document.getElementById('loopnote').textContent=
+    L.tick_count+' ticks, '+L.variant_count+' variants';
+  document.getElementById('loopquote').textContent=(L.variants[0]||{}).text||'';
+  const c=L.cadence_minutes||{};
+  [['Loop ticks',fmt(L.tick_count),Math.round(L.tick_share*1000)/10+'% of all prompts'],
+   ['Variants',L.variant_count,'tuned to different goals'],
+   ['Median gap',c.median+' min','between identical ticks'],
+   ['Machine-paced',c.under_2min,'gaps under 2 minutes'],
+   ['Sentinels',fmt(L.markers['<promise>']),'&lt;promise&gt; completion tokens']
+  ].forEach(([k,v,sub])=>{
+    const d=el('div');
+    d.append(el('div','k',k),el('div','v',String(v)),el('div','s',sub));
+    document.getElementById('loopstats').append(d);
+  });
+
+  // per-family loop share
+  const lb=document.getElementById('loopbars');
+  (L.by_model||[]).filter(r=>r.model!=='unattributed').forEach(r=>{
+    const row=el('div','bar');
+    row.append(el('div','lbl',r.model));
+    const t=el('div','track'), f=el('div','fill');
+    f.style.width=(100*r.loop_share)+'%';
+    f.style.background='var(--c7)';
+    t.append(f); row.append(t);
+    row.append(el('div','val',`<b>${Math.round(100*r.loop_share)}%</b> `+
+      `<span class="muted">${r.loop_commits}/${r.commits}</span>`));
+    lb.append(row);
+  });
+
+  // ticks per week, aligned to the same axis as the other timelines
+  const svg=document.getElementById('lpsvg'), W=1000,H=150,P={t:12,r:16,b:24,l:44};
+  const weeks=(D.activity_weekly||{}).weeks||Object.keys(L.by_week).sort();
+  const NS='http://www.w3.org/2000/svg';
+  const mk=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e};
+  const v=w=>L.by_week[w]||0, maxY=Math.max(...weeks.map(v),1);
+  const band=(W-P.l-P.r)/weeks.length, bw=band*0.68;
+  const y=n=>H-P.b-(H-P.t-P.b)*n/maxY;
+  for(let g=0;g<=2;g++){
+    const n=maxY*g/2;
+    svg.append(mk('line',{x1:P.l,x2:W-P.r,y1:y(n),y2:y(n),class:'gl'}));
+    const t=mk('text',{x:P.l-8,y:y(n)+3.5,class:'ax','text-anchor':'end'});
+    t.textContent=Math.round(n); svg.append(t);
+  }
+  let lastM='';
+  weeks.forEach((w,i)=>{
+    const cx=P.l+band*i+band/2, n=v(w);
+    if(n) svg.append(mk('rect',{x:cx-bw/2,y:y(n),width:bw,height:Math.max(1,y(0)-y(n)),
+      fill:'var(--c7)','fill-opacity':.85,rx:2}));
+    const m=w.slice(0,7);
+    if(m!==lastM){lastM=m;
+      const t=mk('text',{x:cx,y:H-6,class:'ax','text-anchor':'middle'});
+      t.textContent=new Date(w+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',timeZone:'UTC'});
+      svg.append(t);}
+    if(n){const t=mk('text',{x:cx,y:y(n)-4,class:'ax','text-anchor':'middle'});
+      t.textContent=n; svg.append(t);}
+  });
+})();
+
+/* ---------- narrative ---------- */
+const N=D.narrative||{bugs:[],decisions:[]};
+const SEV={catastrophic:'crit',severe:'ser',notable:'not'};
+const NC=N.counts||{};
+document.getElementById('bugnote').textContent=
+  (N.bugs||[]).length+' shown of '+(NC.bugs_verified||0)+' verified';
+document.getElementById('decnote').textContent=
+  (N.decisions||[]).length+' shown of '+(NC.decisions_verified||0)+' verified';
+document.getElementById('bugdrop').textContent=(NC.bugs_dropped||0)+' of '+(NC.bugs_in||0)+' candidates';
+const bh=document.getElementById('bugs');
+// one figure per row: pass rate over the tests actually run
+const rate=st=>(st&&st.pct_run!=null)?`<span class="pass">${st.pct_run}%</span>`:'';
+(N.bugs||[]).forEach(b=>{
+  const r=el('div','evrow '+(b.severity||'notable'));
+  const who=b.who?`${b.who} / ${b.where}`:(b.where||'');
+  r.innerHTML=`<div class="d">${b.label||''}</div><div class="dot"></div>`+
+    `<div class="t">${b.line||b.title||''}`+
+    (b.sha?` <a class="sha" href="#" data-sha="${b.sha}" title="fix commit ${b.sha}">${b.sha}</a>`:'')+
+    `</div><div class="m">${who} ${rate(b.t262)}</div>`;
+  r.title=[b.summary,b.why_critical,
+    b.t262?`test262 as of ${b.t262.as_of}: ${b.t262.pct_run}% of tests run`+
+      (b.t262.pct_all?`, ${b.t262.pct_all}% of the full suite`:''):''
+  ].filter(Boolean).join(' — ');
+  bh.append(r);
+});
+if(!(N.bugs||[]).length) bh.innerHTML='<p class="muted">No verified findings.</p>';
+
+const dh=document.getElementById('decs');
+(N.decisions||[]).forEach(x=>{
+  const r=el('div','evrow '+(x.kind||''));
+  r.innerHTML=`<div class="d">${x.label||''}</div><div class="dot"></div>`+
+    `<div class="t">${x.line||x.title||''}</div>`+
+    `<div class="m">${x.where||''} ${rate(x.t262)}</div>`;
+  r.title=[x.quote,x.summary,
+    x.t262?`test262 as of ${x.t262.as_of}: ${x.t262.pct_run}% of tests run`+
+      (x.t262.pct_all?`, ${x.t262.pct_all}% of the full suite`:''):''
+  ].filter(Boolean).join(' — ');
+  dh.append(r);
+});
+if(!(N.decisions||[]).length) dh.innerHTML='<p class="muted">No verified findings.</p>';
+
+/* ---------- caveats ---------- */
+(function(){
+  const q=D.by_quality_lines||{}, tot=Object.values(q).reduce((a,b)=>a+b,0)||1;
+  const hi=Math.round(100*((q.high||0))/tot), lo=Math.round(100*((q.low||0))/tot);
+  const c=D.coverage||{};
+  document.getElementById('caveat').innerHTML=
+   `<b>${hi}% of attributed lines rest on hard evidence:</b> a commit trailer, or an exact match
+    between the commit subject and a <span class="mono">git commit</span> the harness recorded itself
+    running. The remaining <b>${lo}%</b> is inferred from session timestamps.
+    <ul>
+      <li><b>Timestamp inference is weak here.</b> Backtested against commits that carry a trailer, it
+        picks the right model only about a third of the time, because agents ran concurrently and
+        52% of commits fall inside two or more overlapping sessions.</li>
+      <li><b>Claude Code's transcripts start ${(c['claude-code']||{}).store||'late'}</b>, but its
+        trailered commits begin 2026-05-29, so its May and June effort numbers are undercounted.
+        Commit and line counts are unaffected, since those come from trailers.</li>
+      <li><b>Pi kept no local session store.</b> Work with no trailer, no commit invocation, and no
+        active session in the other three stores is labeled Pi by elimination. That is inference from
+        absence rather than evidence, so those rows stay at the lowest confidence.</li>
+      <li><b>Vendored <span class="mono">libregexp</span></b> (9,936 lines imported wholesale) is
+        excluded from every model total.</li>
+      <li><b>Survival rate is confounded by recency.</b> Later work hasn't been rewritten yet.</li>
+    </ul>`;
+})();
+</script>
